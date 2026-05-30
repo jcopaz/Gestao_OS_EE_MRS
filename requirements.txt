@@ -9,3 +9,4 @@ streamlit-js-eval
 streamlit-echarts
 openpyxl
 reportlab
+streamlit-calendar
