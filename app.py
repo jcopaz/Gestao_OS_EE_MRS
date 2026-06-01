@@ -254,7 +254,10 @@ def parse_data_programada(valor):
         return pd.NaT
 
 def agora_dt():
-    return datetime.now()
+    from datetime import timezone, timedelta
+    # Força o horário oficial de Brasília (UTC-3)
+    fuso_br = timezone(timedelta(hours=-3))
+    return datetime.now(fuso_br)
 
 def formatar_dt_br(dt: datetime) -> str:
     return dt.strftime("%d/%m/%Y %H:%M")
