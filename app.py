@@ -5,7 +5,6 @@ import math
 import re
 import os
 import shutil
-import sqlite3
 import hashlib
 from datetime import datetime
 from pathlib import Path
@@ -18,66 +17,81 @@ import folium
 from streamlit_folium import st_folium
 from geopy.geocoders import Nominatim
 from streamlit_js_eval import get_geolocation
-
 from streamlit_echarts import st_echarts, JsCode
+
+import psycopg2
+from psycopg2 import pool
 
 # --- CONFIGURAÇÕES GLOBAIS ---
 st.set_page_config(page_title="Painel de OS Eletroeletrônica", layout="wide")
 
-# SÓ MOSTRA O TÍTULO SE NÃO ESTIVER LOGADO
 if not st.session_state.get("logged_in", False):
-    # Criamos três colunas: as laterais vazias centralizam a do meio
     col_vazia1, col_centro, col_vazia2 = st.columns([1, 6, 1])
     with col_centro:
         st.markdown("<h1 style='text-align: center;'>⚡ Sistema de Gestão de Ordens de Serviço</h1>", unsafe_allow_html=True)
 
-# --- FUNÇÕES DE APOIO E PERSISTÊNCIA (Definidas ANTES de serem usadas) ---
-def db_path():
-    return "baixas_os.db"
+# --- GERENCIAMENTO DE CONEXÃO NEON (POSTGRES) ---
+@st.cache_resource
+def init_connection_pool():
+    return psycopg2.pool.SimpleConnectionPool(
+        1, 20, st.secrets["NEON_POSTGRES_URL"]
+    )
 
-def db_users_path():
-    return "usuarios.db"
+pool_conexoes = init_connection_pool()
+
+def get_connection():
+    return pool_conexoes.getconn()
+
+def release_connection(conn):
+    pool_conexoes.putconn(conn)
 
 def hash_senha(senha):
     return hashlib.sha256(senha.encode()).hexdigest()
 
-# Variáveis de status globais
 _status_prazo  = {"REALIZADO"}
 _status_atraso = {"REALIZADO FORA DA DATA DE PROGRAMAÇÃO", "REALIZADO FORA DO PRAZO"}
 _status_aberto = {"NÃO REALIZADO", "NAO REALIZADO", "PENDENTE", "ATRASADO", ""}
 
 def init_db():
-    # 1. Banco de Operação (Baixas)
-    conn_b = sqlite3.connect(db_path())
-    cur_b = conn_b.cursor()
-    cur_b.execute("CREATE TABLE IF NOT EXISTS baixas (os TEXT PRIMARY KEY, status TEXT NOT NULL, realizado_em TEXT NOT NULL, coordenacao TEXT NOT NULL, concluido_por TEXT)")
-    conn_b.commit(); conn_b.close()
-    
-    # 2. Banco de Segurança (Usuários)
-    conn_u = sqlite3.connect(db_users_path())
-    cur_u = conn_u.cursor()
-    cur_u.execute("CREATE TABLE IF NOT EXISTS usuarios (username TEXT PRIMARY KEY, senha_hash TEXT NOT NULL, perfil TEXT NOT NULL, escopo TEXT NOT NULL)")
-    conn_u.commit(); conn_u.close()
-
-def atualizar_banco_usuarios():
-    # Agora aponta para o banco isolado de usuários
-    conn = sqlite3.connect(db_users_path())
+    conn = get_connection()
     cur = conn.cursor()
-    # Adicionamos as colunas extras de segurança
-    cols = {
-        "palavra_recuperacao": "TEXT", 
-        "dica_recuperacao": "TEXT", 
-        "reset_obrigatorio": "INTEGER DEFAULT 1", 
-        "coordenacao_padrao": "TEXT DEFAULT 'ICG'"
-    }
-    for col, tipo in cols.items():
-        try: cur.execute(f"ALTER TABLE usuarios ADD COLUMN {col} {tipo}")
-        except sqlite3.OperationalError: pass
-    conn.commit(); conn.close()
+    
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS baixas (
+            os VARCHAR(255) PRIMARY KEY, 
+            status VARCHAR(255) NOT NULL, 
+            realizado_em VARCHAR(255) NOT NULL, 
+            coordenacao VARCHAR(255) NOT NULL, 
+            concluido_por VARCHAR(255)
+        );
+    """)
+    
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS usuarios (
+            username VARCHAR(255) PRIMARY KEY, 
+            senha_hash VARCHAR(255) NOT NULL, 
+            perfil VARCHAR(50) NOT NULL, 
+            escopo VARCHAR(50) NOT NULL,
+            palavra_recuperacao VARCHAR(255) DEFAULT 'PENDENTE', 
+            dica_recuperacao VARCHAR(255) DEFAULT 'PENDENTE', 
+            reset_obrigatorio INTEGER DEFAULT 1, 
+            coordenacao_padrao VARCHAR(100) DEFAULT 'ICG'
+        );
+    """)
+    
+    # Criar um usuário admin padrão caso o banco esteja vazio
+    cur.execute("SELECT COUNT(*) FROM usuarios")
+    if cur.fetchone()[0] == 0:
+        cur.execute("""
+            INSERT INTO usuarios (username, senha_hash, perfil, escopo, reset_obrigatorio) 
+            VALUES (%s, %s, %s, %s, 1)
+        """, ('admin', hash_senha('mrs123'), 'Gerência', 'Todas'))
+        
+    conn.commit()
+    cur.close()
+    release_connection(conn)
 
-# AGORA, como as funções já existem, podemos chamá-las com segurança:
 init_db()
-atualizar_banco_usuarios()
 #endregion
 
 #region SESSÃO 1.5: Barreira de Login Corrigida
@@ -89,7 +103,6 @@ if not st.session_state["logged_in"]:
     col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
     
     with col_l2:
-        # 1. FLUXO DE RESET OBRIGATÓRIO (Troca de senha + Definição de Palavra-Chave)
         if st.session_state.get("needs_reset"):
             st.warning("⚠️ Bem-vindo! Configure sua senha e sua palavra de recuperação.")
             with st.form("form_reset"):
@@ -103,19 +116,23 @@ if not st.session_state["logged_in"]:
                     elif not palavra_nova:
                         st.error("Você precisa definir uma palavra-chave!")
                     else:
-                        conn = sqlite3.connect(db_users_path())
-                        # Agora atualizamos a senha, a palavra-chave e tiramos a obrigatoriedade
-                        conn.cursor().execute("""
+                        conn = get_connection()
+                        cur = conn.cursor()
+                        cur.execute("""
                             UPDATE usuarios 
-                            SET senha_hash = ?, palavra_recuperacao = ?, reset_obrigatorio = 0 
-                            WHERE username = ?
+                            SET senha_hash = %s, palavra_recuperacao = %s, reset_obrigatorio = 0 
+                            WHERE username = %s
                         """, (hash_senha(nova_senha), palavra_nova.strip(), st.session_state["reset_user"]))
-                        conn.commit(); conn.close()
-                        st.success("Configuração concluída! Entre com sua nova senha."); st.session_state["needs_reset"] = False; st.rerun()
+                        conn.commit()
+                        cur.close()
+                        release_connection(conn)
+                        
+                        st.success("Configuração concluída! Entre com sua nova senha.")
+                        st.session_state["needs_reset"] = False
+                        st.rerun()
             if st.button("⬅️ Voltar"):
                 st.session_state["needs_reset"] = False; st.rerun()
 
-        # 2. FLUXO DE RECUPERAÇÃO (Esqueci a senha)
         elif st.session_state.get("recuperando"):
             st.info("Digite seu login e a palavra-chave.")
             with st.form("form_recuperar"):
@@ -123,12 +140,14 @@ if not st.session_state["logged_in"]:
                 palavra_rec = st.text_input("Palavra-Chave")
                 submit_rec = st.form_submit_button("Validar")
             
-            # O botão de voltar deve ficar FORA do form
             if submit_rec:
-                conn = sqlite3.connect(db_users_path())
+                conn = get_connection()
                 cur = conn.cursor()
-                cur.execute("SELECT palavra_recuperacao FROM usuarios WHERE username = ?", (user_rec.strip(),))
-                row = cur.fetchone(); conn.close()
+                cur.execute("SELECT palavra_recuperacao FROM usuarios WHERE username = %s", (user_rec.strip(),))
+                row = cur.fetchone()
+                cur.close()
+                release_connection(conn)
+                
                 if row and row[0] == palavra_rec.strip():
                     st.session_state["needs_reset"] = True
                     st.session_state["reset_user"] = user_rec.strip()
@@ -139,7 +158,6 @@ if not st.session_state["logged_in"]:
             if st.button("⬅️ Voltar ao Login"): 
                 st.session_state["recuperando"] = False; st.rerun()
 
-        # 3. FLUXO DE LOGIN PADRÃO
         else:
             with st.form("form_login"):
                 user_input = st.text_input("Usuário")
@@ -147,11 +165,13 @@ if not st.session_state["logged_in"]:
                 submit = st.form_submit_button("Entrar", use_container_width=True)
             
             if submit:
-                # AQUI ESTAVA O ERRO! CORRIGIDO PARA db_users_path()
-                conn = sqlite3.connect(db_users_path())
+                conn = get_connection()
                 cur = conn.cursor()
-                cur.execute("SELECT senha_hash, perfil, escopo, reset_obrigatorio FROM usuarios WHERE username = ?", (user_input.strip(),))
-                row = cur.fetchone(); conn.close()
+                cur.execute("SELECT senha_hash, perfil, escopo, reset_obrigatorio FROM usuarios WHERE username = %s", (user_input.strip(),))
+                row = cur.fetchone()
+                cur.close()
+                release_connection(conn)
+                
                 if row and row[0] == hash_senha(pass_input):
                     if row[3] == 1:
                         st.session_state["needs_reset"] = True
@@ -370,24 +390,24 @@ def tentar_gps_uma_vez():
 #region SESSÃO 2.2 ===== Persistência (SQLite) =====
 
 def upsert_baixa(os_id: str, status: str, realizado_em_str: str, coordenacao: str, concluido_por: str):
-    conn = sqlite3.connect(db_path())
+    conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
         INSERT INTO baixas (os, status, realizado_em, coordenacao, concluido_por)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(os) DO UPDATE SET
-            status=excluded.status,
-            realizado_em=excluded.realizado_em,
-            concluido_por=excluded.concluido_por
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (os) DO UPDATE SET
+            status = EXCLUDED.status,
+            realizado_em = EXCLUDED.realizado_em,
+            concluido_por = EXCLUDED.concluido_por;
     """, (str(os_id), str(status), str(realizado_em_str), str(coordenacao), str(concluido_por)))
     conn.commit()
-    conn.close()
+    cur.close()
+    release_connection(conn)
 
 def carregar_baixas_df() -> pd.DataFrame:
-    # A inicialização do banco (init_db) já ocorreu globalmente na Sessão 1
-    conn = sqlite3.connect(db_path())
+    conn = get_connection()
     df = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por FROM baixas", conn)
-    conn.close()
+    release_connection(conn)
     if df.empty:
         return df
     df["os"] = df["os"].astype(str)
@@ -863,6 +883,7 @@ def resumir_conclusoes_por_turno_data(
 #endregion
 
 #region SESSÃO 3: Banco de Coordenadas Fixo
+
 #region SESSÃO 3.1 Coordenadas Fixas
 COORDENADAS_FIXAS = {
     "FPI": [-23.444413, -46.309269],
@@ -914,7 +935,6 @@ COORDENADAS_FIXAS = {
 }
 #endregion
 
-
 #region SESSÃO 3.2 Continuação do código da função de obtenção da base padrão do usuário
 def obter_base_padrao_usuario():
     username = str(st.session_state.get("username", "")).strip()
@@ -937,14 +957,15 @@ def obter_base_padrao_usuario():
     # Busca no banco de usuários
     if username:
         try:
-            conn = sqlite3.connect(db_users_path())
+            conn = get_connection()
             cur = conn.cursor()
             cur.execute(
-                "SELECT coordenacao_padrao FROM usuarios WHERE username = ?",
+                "SELECT coordenacao_padrao FROM usuarios WHERE username = %s",
                 (username,)
             )
             row = cur.fetchone()
-            conn.close()
+            cur.close()
+            release_connection(conn)
 
             if row and row[0]:
                 valor_base = str(row[0]).strip()
@@ -1583,31 +1604,34 @@ if st.session_state["perfil"] == "Gerência":
 
             if st.form_submit_button("Salvar Novo Usuário"):
                 if n_user:
-                    conn = sqlite3.connect(db_users_path())
+                    conn = get_connection()
+                    cur = conn.cursor()
                     try:
-                        conn.cursor().execute(
+                        cur.execute(
                             """
                             INSERT INTO usuarios
                             (username, senha_hash, perfil, escopo, palavra_recuperacao, dica_recuperacao, coordenacao_padrao, reset_obrigatorio)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                             """,
                             (n_user.strip(), hash_senha("mrs123"), n_perf, n_esco, "PENDENTE", "PENDENTE", n_sede, 1)
                         )
                         conn.commit()
-                        conn.close()
                         st.session_state["msg_sucesso_user"] = f"Usuário '{n_user}' criado com sucesso!"
                         st.rerun()
-                    except sqlite3.IntegrityError:
-                        conn.close()
+                    except psycopg2.IntegrityError:
+                        conn.rollback()
                         st.error("Erro: Este usuário já existe no sistema.")
+                    finally:
+                        cur.close()
+                        release_connection(conn)
                 else:
                     st.warning("Preencha o login do usuário.")
 
         st.markdown("<br><b style='color: #F8FAFC;'>👥 Gerenciar Usuários</b>", unsafe_allow_html=True)
 
-        conn = sqlite3.connect(db_users_path())
+        conn = get_connection()
         df_usuarios = pd.read_sql_query("SELECT username, perfil, escopo, coordenacao_padrao FROM usuarios", conn)
-        conn.close()
+        release_connection(conn)
 
         lista_users = df_usuarios["username"].tolist()
 
@@ -1648,26 +1672,30 @@ if st.session_state["perfil"] == "Gerência":
                     n_sede_edit = st.selectbox("Sede", sedes_validas_edit, index=idx_sede, key=f"edit_sede_{usr_sel}", format_func=lambda x: x.replace("Sede ", ""))
 
                     if st.form_submit_button("Salvar Alterações"):
-                        conn = sqlite3.connect(db_users_path())
-                        conn.cursor().execute(
-                            "UPDATE usuarios SET perfil = ?, escopo = ?, coordenacao_padrao = ? WHERE username = ?",
+                        conn = get_connection()
+                        cur = conn.cursor()
+                        cur.execute(
+                            "UPDATE usuarios SET perfil = %s, escopo = %s, coordenacao_padrao = %s WHERE username = %s",
                             (n_perf_edit, n_esco_edit, n_sede_edit, usr_sel)
                         )
                         conn.commit()
-                        conn.close()
+                        cur.close()
+                        release_connection(conn)
                         st.session_state["msg_sucesso_user"] = f"Permissões de {usr_sel} atualizadas!"
                         st.rerun()
 
             elif acao == "🔑 Resetar Senha":
                 st.warning("A senha voltará para 'mrs123' e o usuário será forçado a criar uma nova.")
                 if st.button("Confirmar Reset", key=f"btn_reset_{usr_sel}"):
-                    conn = sqlite3.connect(db_users_path())
-                    conn.cursor().execute(
-                        "UPDATE usuarios SET senha_hash = ?, reset_obrigatorio = 1 WHERE username = ?",
+                    conn = get_connection()
+                    cur = conn.cursor()
+                    cur.execute(
+                        "UPDATE usuarios SET senha_hash = %s, reset_obrigatorio = 1 WHERE username = %s",
                         (hash_senha("mrs123"), usr_sel)
                     )
                     conn.commit()
-                    conn.close()
+                    cur.close()
+                    release_connection(conn)
                     st.session_state["msg_sucesso_user"] = f"Senha de {usr_sel} resetada com sucesso!"
                     st.rerun()
 
@@ -1677,10 +1705,12 @@ if st.session_state["perfil"] == "Gerência":
                 else:
                     st.warning("O acesso será removido. O histórico de OS continuará intacto.")
                     if st.button("Confirmar Exclusão", key=f"btn_del_{usr_sel}", type="primary"):
-                        conn = sqlite3.connect(db_users_path())
-                        conn.cursor().execute("DELETE FROM usuarios WHERE username = ?", (usr_sel,))
+                        conn = get_connection()
+                        cur = conn.cursor()
+                        cur.execute("DELETE FROM usuarios WHERE username = %s", (usr_sel,))
                         conn.commit()
-                        conn.close()
+                        cur.close()
+                        release_connection(conn)
                         st.session_state["msg_sucesso_user"] = f"Usuário {usr_sel} excluído permanentemente."
                         st.rerun()
 #endregion
@@ -1698,17 +1728,17 @@ with col_acoes:
         st.rerun()
     if st.button("🔑 Trocar", use_container_width=True):
         usr_atual = st.session_state["username"]
-        conn = sqlite3.connect(db_users_path())
-        conn.cursor().execute("UPDATE usuarios SET reset_obrigatorio = 1 WHERE username = ?", (usr_atual,))
-        conn.commit(); conn.close()
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("UPDATE usuarios SET reset_obrigatorio = 1 WHERE username = %s", (usr_atual,))
+        conn.commit()
+        cur.close()
+        release_connection(conn)
+        
         st.session_state.clear()
         st.session_state["logged_in"] = False
         st.session_state["needs_reset"] = True
         st.session_state["reset_user"] = usr_atual
-        st.rerun()
-    if st.button("🚪 Sair", use_container_width=True):
-        st.session_state.clear() 
-        st.session_state["logged_in"] = False
         st.rerun()
 
 st.markdown("---")
@@ -2830,4 +2860,5 @@ with tab2:
         st.markdown("#### 📋 Cronograma de Execução de Campo")
         st.caption("OS Pendentes recomendadas no raio de atuação visual por prioridade")
         st.info("Nenhuma OS pendente localizada dentro do raio de atuação selecionado.")
+#endregion
 #endregion
