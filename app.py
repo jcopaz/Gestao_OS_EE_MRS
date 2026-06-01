@@ -1724,8 +1724,10 @@ with col_titulo:
 
 with col_acoes:
     st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+    
     if st.button("🔄 Atualizar", use_container_width=True):
         st.rerun()
+        
     if st.button("🔑 Trocar", use_container_width=True):
         usr_atual = st.session_state["username"]
         conn = get_connection()
@@ -1739,6 +1741,11 @@ with col_acoes:
         st.session_state["logged_in"] = False
         st.session_state["needs_reset"] = True
         st.session_state["reset_user"] = usr_atual
+        st.rerun()
+        
+    if st.button("🚪 Sair", use_container_width=True):
+        st.session_state.clear() 
+        st.session_state["logged_in"] = False
         st.rerun()
 
 st.markdown("---")
