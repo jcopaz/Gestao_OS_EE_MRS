@@ -1,7 +1,6 @@
 streamlit
 pandas
 numpy
-plotly
 folium
 streamlit-folium
 geopy
@@ -10,3 +9,5 @@ streamlit-echarts
 openpyxl
 reportlab
 streamlit-calendar
+geopandas
+shapely

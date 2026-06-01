@@ -19,8 +19,6 @@ from streamlit_folium import st_folium
 from geopy.geocoders import Nominatim
 from streamlit_js_eval import get_geolocation
 
-import plotly.express as px
-import plotly.graph_objects as go
 from streamlit_echarts import st_echarts, JsCode
 
 # --- CONFIGURAÇÕES GLOBAIS ---
@@ -867,41 +865,76 @@ def resumir_conclusoes_por_turno_data(
 #region SESSÃO 3: Banco de Coordenadas Fixo
 #region SESSÃO 3.1 Coordenadas Fixas
 COORDENADAS_FIXAS = {
-    "IAA":[-23.862936, -46.398189],
-    "IEF":[-23.478373, -46.361580],
-    "OLU":[-23.533829, -46.638487],
-    "IPA":[-23.777009, -46.302837],
-    "IRS":[-23.829653, -46.363524],
-    "IPG":[-23.848363, -46.371212],
-    "ICG":[-23.767355, -46.344117],
-    "IRG":[-23.743597, -46.391209],
-    "IOF":[-23.681450, -46.360191],
-    "ISU":[-23.550703, -46.288168],
-    "ILA":[-23.515341, -46.708494],
-    "IJN":[-23.195297, -46.870829],
-    "ZPD":[-22.363436, -48.711002],
-    "IIP":[-23.578880, -46.597936],
-    "Sede IPA":[-23.767355, -46.344117],
-    "Sede IPG":[-23.850772,-46.37176]
+    "FPI": [-23.444413, -46.309269],
+    "IAB": [-23.521338, -46.688570],
+    "ICG": [-23.767863, -46.343114],
+    "ICP": [-23.658495, -46.490753],
+    "ICR": [-23.640310, -46.323992],
+    "IEF": [-23.477809, -46.360984],
+    "IES": [-23.545441, -46.603648],
+    "IIP": [-23.564977, -46.604896],
+    "ILA": [-23.520217, -46.698082],
+    "IMO": [-23.557803, -46.608382],
+    "IOF": [-23.658579, -46.338538],
+    "IPA": [-23.774399, -46.306769],
+    "IPG": [-23.847950, -46.370812],
+    "IPR": [-23.537749, -46.625522],
+    "IRG": [-23.736705, -46.382241],
+    "IRP": [-23.713578, -46.414862],
+    "IRS": [-23.828162, -46.363101],
+    "ISA": [-23.647553, -46.531007],
+    "ISC": [-23.613874, -46.558834],
+    "ISL": [-23.752383, -46.389262],
+    "ISU": [-23.551210, -46.288671],
+    "IUT": [-23.624864, -46.544716],
+    "OAR": [-23.500419, -46.339111],
+    "OBF": [-23.525591, -46.666726],
+    "OBR": [-23.545397, -46.616293],
+    "OCE": [-23.484980, -46.481471],
+    "OCV": [-23.525061, -46.333701],
+    "OEG": [-23.498082, -46.519759],
+    "OET": [-23.510887, -46.552273],
+    "OGP": [-23.691962, -46.448784],
+    "OIC": [-23.479040, -46.367395],
+    "OIT": [-23.493970, -46.401392],
+    "OLU": [-23.535423, -46.634503],
+    "OMA": [-23.667910, -46.462083],
+    "OMP": [-23.490530, -46.443668],
+    "OPS": [-23.637494, -46.537198],
+    "OSU": [-23.534010, -46.308025],
+    "OTA": [-23.591863, -46.590075],
+    "OTT": [-23.539844, -46.575501],
+    "IAA": [-23.862936, -46.398189],
+    "IJN": [-23.195297, -46.870829],
+    "ZPD": [-22.363436, -48.711002],
+
+    # ✅ CORRIGIDO: PADRÃO UPPER PARA EVITAR MATCH ERROR
+    "Sede IPA": [-23.767355, -46.344117],
+    "Sede IPG": [-23.850772, -46.371760]
 }
 #endregion
+
 
 #region SESSÃO 3.2 Continuação do código da função de obtenção da base padrão do usuário
 def obter_base_padrao_usuario():
     username = str(st.session_state.get("username", "")).strip()
     escopo = str(st.session_state.get("escopo", "")).strip()
 
+    # Mapeamento ajustado para conversar com os nós reais da malha
     mapa_normalizacao = {
-        "Paranapiacaba": ("Sede IPA", "Sede IPA"),
-        "Piaçaguera": ("Sede IPG", "Sede IPG"),
-        "Todas": ("Sede IPA", "Sede IPA"),
+        "Paranapiacaba": ("IPA", "Sede IPA"),
+        "Piaçaguera": ("IPG", "Sede IPG"),
+        "Todas": ("IPA", "Sede Padrão (IPA)"),
         "ICG": ("ICG", "Campo Grande (ICG)"),
-        "Sede IPA": ("Sede IPA", "Sede IPA"),
-        "Sede IPG": ("Sede IPG", "Sede IPG")
+        "IPA": ("IPA", "Sede IPA"),
+        "IPG": ("IPG", "Base IPG"),
+        "SEDE IPA": ("IPA", "Sede IPA"),
+        "SEDE IPG": ("IPG", "Sede IPG"),
     }
 
     valor_base = None
 
+    # Busca no banco de usuários
     if username:
         try:
             conn = sqlite3.connect(db_users_path())
@@ -918,15 +951,24 @@ def obter_base_padrao_usuario():
         except Exception:
             valor_base = None
 
+    # Fallback para o escopo
     if not valor_base:
         valor_base = escopo
 
-    chave_coord, nome_exibicao = mapa_normalizacao.get(
-        valor_base,
-        ("Sede IPA", "Sede IPA")
-    )
+    valor_base = str(valor_base).strip()
+    valor_base_upper = valor_base.upper()
 
-    lat, lon = COORDENADAS_FIXAS.get(chave_coord, COORDENADAS_FIXAS["Sede IPA"])
+    # Tradução final
+    if valor_base in mapa_normalizacao:
+        chave_coord, nome_exibicao = mapa_normalizacao[valor_base]
+    elif valor_base_upper in mapa_normalizacao:
+        chave_coord, nome_exibicao = mapa_normalizacao[valor_base_upper]
+    else:
+        chave_coord, nome_exibicao = ("IPA", "Base Padrão (IPA)")
+
+    # Busca coordenada segura
+    coord = COORDENADAS_FIXAS.get(chave_coord, COORDENADAS_FIXAS["IPA"])
+    lat, lon = coord
     return float(lat), float(lon), nome_exibicao
 #endregion
 #endregion
@@ -1383,8 +1425,6 @@ if st.session_state["perfil"] == "Gerência":
 else:
     filtro_visao = st.session_state["escopo"]
     st.sidebar.info(f"Visão Restrita: {filtro_visao}")
-
-st.sidebar.markdown("---")
 #endregion
 
 #region SESSÃO 5.2: Carregamento da base operacional
@@ -1485,8 +1525,6 @@ df_filtrado = aplicar_filtros_sidebar(
 #endregion
 
 #region SESSÃO 6: Sistema, dados e gestão de usuários
-st.sidebar.markdown("---")
-
 if st.session_state["perfil"] == "Gerência":
     with st.sidebar.expander("⚙️ Sistema, Dados e Gestão", expanded=False):
         
@@ -2243,29 +2281,76 @@ with tab2:
         else:
             seta, cor_badge, bg_badge, sinal = "→", "#475569", "#E2E8F0", ""
 
-        # Card 2 - Total de OS do Dia (Verde com Mini Sparkline Otimizado)
+        # Card 2 - Total de OS do Dia (Verde sem gráfico embaixo e com borda arredondada)
         total_os_options = {
-            "backgroundColor": "#F0FDF4", 
+            "backgroundColor": "transparent",
             "animation": False,
-            "grid": { "left": "6%", "right": "6%", "top": "68%", "bottom": "8%" },
-            "xAxis": { "type": "category", "show": False, "boundaryGap": False, "data": resumo_card["labels_mes"] },
-            "yAxis": { "type": "value", "show": False },
-            "series": [{
-                "type": "bar",
-                "barWidth": 3,
-                "itemStyle": { "color": "#10B981", "borderRadius": [2, 2, 0, 0] }, 
-                "data": resumo_card["serie_total_os_mes"]
-            }],
             "graphic": [
-                { "type": "text", "left": "6%", "top": "12%", "style": { "text": "TOTAL DE OS DO DIA", "fill": "#064E3B", "font": "700 14px 'Source Sans Pro', sans-serif" } },
-                { "type": "text", "left": "6%", "top": "34%", "style": { "text": f"{hoje_total} 🎯", "fill": "#065F46", "font": "400 32px 'Source Sans Pro', sans-serif" } },
-                { "type": "text", "left": "6%", "top": "70%", "style": { "text": f"{seta} {sinal}{delta_pct:.1f}% vs ontem", "fill": "#10B981", "font": "400 12px 'Source Sans Pro', sans-serif" } },
-                { "type": "rect", "left": 0, "top": 0, "shape": {"width": 5, "height": 140}, "style": {"fill": "#10B981"} } 
+                {
+                    "type": "rect",
+                    "left": 0,
+                    "top": 0,
+                    "shape": {
+                        "x": 0,
+                        "y": 0,
+                        "width": 320,
+                        "height": 140,
+                        "r": 18
+                    },
+                    "style": {
+                        "fill": "#F0FDF4"
+                    }
+                },
+                {
+                    "type": "rect",
+                    "left": 0,
+                    "top": 0,
+                    "shape": {
+                        "x": 0,
+                        "y": 0,
+                        "width": 5,
+                        "height": 140,
+                        "r": [18, 0, 0, 18]
+                    },
+                    "style": {
+                        "fill": "#10B981"
+                    }
+                },
+                {
+                    "type": "text",
+                    "left": "6%",
+                    "top": "16%",
+                    "style": {
+                        "text": "TOTAL DE OS DO DIA",
+                        "fill": "#064E3B",
+                        "font": "700 14px 'Source Sans Pro', sans-serif"
+                    }
+                },
+                {
+                    "type": "text",
+                    "left": "6%",
+                    "top": "40%",
+                    "style": {
+                        "text": f"{hoje_total} 🎯",
+                        "fill": "#065F46",
+                        "font": "400 32px 'Source Sans Pro', sans-serif"
+                    }
+                },
+                {
+                    "type": "text",
+                    "left": "6%",
+                    "top": "72%",
+                    "style": {
+                        "text": f"{seta} {sinal}{delta_pct:.1f}% vs ontem",
+                        "fill": "#10B981",
+                        "font": "400 12px 'Source Sans Pro', sans-serif"
+                    }
+                }
             ]
         }
-        
+
         st_echarts(options=total_os_options, height="140px", key="card_total_os_dia")
-        st.markdown("<div style='margin-bottom: 16px;'></div>", unsafe_allow_html=True) 
+        st.markdown("<div style='margin-bottom: 16px;'></div>", unsafe_allow_html=True)
 
         # Card 3 - Pátio Prioritário (Vermelho)
         st.markdown(
@@ -2318,95 +2403,174 @@ with tab2:
 
     st.markdown("---")
 
-    # 8.3.2 Navegação geográfica operacional
+# 8.3.2 Navegação geográfica operacional   # 8.3.2 Navegação geográfica operacional
     st.markdown("### 🗺️ Navegação Geográfica Operacional")
 
     col_mapa, col_acao = st.columns([6, 4], gap="large")
-    
+
     # Proteção caso df_filtrado não esteja no escopo
     if "df_filtrado" in locals():
         df_pendentes_f = df_filtrado[df_filtrado["Status_norm"].isin(_status_aberto)].copy()
     else:
         df_pendentes_f = df_visao[df_visao["Status_norm"].isin(_status_aberto)].copy()
 
+    # Inicialização de segurança
+    df_recomendado = pd.DataFrame()
+
     with col_acao:
         st.markdown("#### ⚙️ Ferramentas de Campo")
 
+        # Estado inicial da origem
         if "lat_partida" not in st.session_state:
             lat_base, lon_base, nome_base = obter_base_padrao_usuario()
             st.session_state["lat_partida"] = lat_base
             st.session_state["lon_partida"] = lon_base
             st.session_state["local_nome"] = nome_base
+            st.session_state["origem_tipo"] = "BASE"
 
-        if "gps_pending" not in st.session_state: st.session_state["gps_pending"] = False
-        if "gps_trials" not in st.session_state: st.session_state["gps_trials"] = 0
+        if "gps_pending" not in st.session_state:
+            st.session_state["gps_pending"] = False
+
+        if "gps_trials" not in st.session_state:
+            st.session_state["gps_trials"] = 0
+
+        if "origem_tipo" not in st.session_state:
+            st.session_state["origem_tipo"] = "BASE"
+
+        GPS_MAX_TRIALS = 25
 
         c1, c2 = st.columns(2)
 
         with c1:
             if st.button("📍 Minha Localização", use_container_width=True, key="btn_gps_localizacao"):
-                st.session_state["gps_pending"] = True; st.session_state["gps_trials"] = 0
+                st.session_state["gps_pending"] = True
+                st.session_state["gps_trials"] = 0
+                st.rerun()
 
         with c2:
             if st.button("🏠 Minha Base", use_container_width=True, key="btn_minha_base"):
                 lat_base, lon_base, nome_base = obter_base_padrao_usuario()
-                st.session_state["lat_partida"] = lat_base; st.session_state["lon_partida"] = lon_base; st.session_state["local_nome"] = nome_base
-                st.session_state["gps_pending"] = False; st.session_state["gps_trials"] = 0; st.rerun()
+                st.session_state["lat_partida"] = lat_base
+                st.session_state["lon_partida"] = lon_base
+                st.session_state["local_nome"] = nome_base
+                st.session_state["origem_tipo"] = "BASE"
+                st.session_state["gps_pending"] = False
+                st.session_state["gps_trials"] = 0
+                st.rerun()
 
+        # Captura do GPS
         if st.session_state.get("gps_pending"):
+            st.info("Aguardando autorização do navegador e captura do GPS...")
             loc = get_geolocation()
+
             if loc and isinstance(loc, dict) and "coords" in loc:
                 coords = loc.get("coords", {})
-                lat = coords.get("latitude"); lon = coords.get("longitude")
+                lat = coords.get("latitude")
+                lon = coords.get("longitude")
+
                 if lat is not None and lon is not None:
-                    st.session_state["lat_partida"] = float(lat); st.session_state["lon_partida"] = float(lon)
+                    st.session_state["lat_partida"] = float(lat)
+                    st.session_state["lon_partida"] = float(lon)
                     st.session_state["local_nome"] = reverse_geocode_coordenada(float(lat), float(lon))
-                    st.session_state["gps_pending"] = False; st.session_state["gps_trials"] = 0; st.success("GPS Ativado!"); st.rerun()
+                    st.session_state["origem_tipo"] = "GPS"
+                    st.session_state["gps_pending"] = False
+                    st.session_state["gps_trials"] = 0
+                    st.success("GPS ativado com sucesso!")
+                    st.rerun()
+
             elif loc and isinstance(loc, dict) and "error" in loc:
-                st.session_state["gps_pending"] = False; st.session_state["gps_trials"] = 0
-                st.error(f"GPS falhou: {loc['error'].get('message', 'Erro')}")
+                st.session_state["gps_pending"] = False
+                st.session_state["gps_trials"] = 0
+                st.error(f"GPS falhou: {loc['error'].get('message', 'Erro desconhecido')}")
+
             else:
                 st.session_state["gps_trials"] += 1
-                if st.session_state["gps_trials"] < 8:
-                    st.info("Aguardando permissão do navegador..."); st.rerun()
+                if st.session_state["gps_trials"] < GPS_MAX_TRIALS:
+                    st.info("Aguardando permissão do navegador...")
+                    time.sleep(0.3)
+                    st.rerun()
                 else:
-                    st.session_state["gps_pending"] = False; st.session_state["gps_trials"] = 0
-                    st.error("Tempo do GPS esgotado.")
+                    st.session_state["gps_pending"] = False
+                    st.session_state["gps_trials"] = 0
+                    st.error("Tempo do GPS esgotado. Tente novamente ou use a opção Minha Base.")
 
         st.markdown("---")
         raio_busca_km = st.slider("📏 Raio de Atuação Visual (km):", 0, 50, 10, 5, key="slider_raio_atuacao")
-        st.caption(f"📌 Origem: **{st.session_state['local_nome']}**")
+
+        origem_label = "📍 GPS" if st.session_state.get("origem_tipo") == "GPS" else "🏠 Base"
+        st.caption(f"{origem_label}: **{st.session_state['local_nome']}**")
 
         lat_origem = float(st.session_state["lat_partida"])
         lon_origem = float(st.session_state["lon_partida"])
 
         if not df_pendentes_f.empty:
             df_calc = df_pendentes_f.copy()
-            df_calc["lat_patio"] = df_calc["Patio"].map(lambda p: COORDENADAS_FIXAS.get(str(p), [np.nan, np.nan])[0])
-            df_calc["lon_patio"] = df_calc["Patio"].map(lambda p: COORDENADAS_FIXAS.get(str(p), [np.nan, np.nan])[1])
+            df_calc["lat_patio"] = df_calc["Patio"].map(
+                lambda p: COORDENADAS_FIXAS.get(str(p).strip().upper(), [np.nan, np.nan])[0]
+            )
+            df_calc["lon_patio"] = df_calc["Patio"].map(
+                lambda p: COORDENADAS_FIXAS.get(str(p).strip().upper(), [np.nan, np.nan])[1]
+            )
             com_coord = df_calc.dropna(subset=["lat_patio", "lon_patio"]).copy()
 
             if not com_coord.empty:
                 hoje_atual = datetime.now().date()
-                com_coord["Ordem_Prazo"] = com_coord["dt_prog_filtro"].apply(lambda dt: 1 if pd.notna(dt) and dt.date() < hoje_atual else (2 if pd.notna(dt) and dt.date() == hoje_atual else 3))
-                com_coord["Distancia_km"] = haversine_vectorized(lat_origem, lon_origem, com_coord["lat_patio"], com_coord["lon_patio"])
-                df_recomendado = com_coord[com_coord["Distancia_km"] <= raio_busca_km].sort_values(by=["Ordem_Prazo", "Criticidade_rank", "Distancia_km"])
+                com_coord["Ordem_Prazo"] = com_coord["dt_prog_filtro"].apply(
+                    lambda dt: 1 if pd.notna(dt) and dt.date() < hoje_atual
+                    else (2 if pd.notna(dt) and dt.date() == hoje_atual else 3)
+                )
+                com_coord["Distancia_km"] = haversine_vectorized(
+                    lat_origem,
+                    lon_origem,
+                    com_coord["lat_patio"],
+                    com_coord["lon_patio"]
+                )
+                df_recomendado = com_coord[
+                    com_coord["Distancia_km"] <= raio_busca_km
+                ].sort_values(by=["Ordem_Prazo", "Criticidade_rank", "Distancia_km"])
 
-        st.info(f"**{len(df_recomendado)} OS pendentes** encontradas no raio de {raio_busca_km}km.")
+        st.info(f"**{len(df_recomendado)} OS pendentes** encontradas no raio de {raio_busca_km} km.")
 
         if not df_recomendado.empty:
             st.markdown("---")
             st.markdown("#### ✅ Confirmar Execução")
-            os_selecionada = st.selectbox("Escolha a OS concluída:", df_recomendado["Ordem servico"].astype(str).tolist())
+            os_selecionada = st.selectbox(
+                "Escolha a OS concluída:",
+                df_recomendado["Ordem servico"].astype(str).tolist()
+            )
+
             if st.button("Gravar Baixa no Sistema", use_container_width=True, type="primary"):
                 realizado_dt = agora_dt()
-                usr = st.session_state["username"]
-                mask = (st.session_state["df_os"]["Ordem servico"].astype(str) == str(os_selecionada))
-                dt_prog = st.session_state["df_os"].loc[mask, "Data inicial programada"].iloc[0] if len(st.session_state["df_os"].loc[mask]) > 0 else pd.NaT
-                novo_status = determinar_status_execucao(dt_prog, realizado_dt)
-                coord = st.session_state["df_os"].loc[mask, "Coordenacao"].iloc[0]
-                upsert_baixa(str(os_selecionada), novo_status, formatar_dt_br(realizado_dt), coord, usr)
-                st.toast(f"OS {os_selecionada} baixada com sucesso!"); st.rerun()
+                usr = str(st.session_state.get("username", "")).strip() or "Técnico"
+
+                mask = (
+                    st.session_state["df_os"]["Ordem servico"].astype(str)
+                    == str(os_selecionada)
+                )
+
+                dt_prog = (
+                    st.session_state["df_os"].loc[mask, "Data inicial programada"].iloc[0]
+                    if len(st.session_state["df_os"].loc[mask]) > 0 else pd.NaT
+                )
+                coord = (
+                    st.session_state["df_os"].loc[mask, "Coordenacao"].iloc[0]
+                    if len(st.session_state["df_os"].loc[mask]) > 0 else "Campo"
+                )
+
+                novo_status = determinar_status_execucao(
+                    pd.to_datetime(dt_prog, errors="coerce"),
+                    realizado_dt
+                )
+
+                upsert_baixa(
+                    str(os_selecionada),
+                    novo_status,
+                    formatar_dt_br(realizado_dt),
+                    coord,
+                    usr
+                )
+                st.toast(f"OS {os_selecionada} baixada com sucesso!")
+                st.rerun()
 
     with col_mapa:
         SP_MIN_LAT, SP_MAX_LAT = -25.50, -19.50
@@ -2425,18 +2589,104 @@ with tab2:
 
         zoom_mapa = calcular_zoom_por_raio(raio_busca_km, lat_centro)
 
-        mapa = folium.Map(location=[lat_centro, lon_centro], zoom_start=zoom_mapa, max_bounds=True, min_lat=SP_MIN_LAT, max_lat=SP_MAX_LAT, min_lon=SP_MIN_LON, max_lon=SP_MAX_LON, control_scale=True)
-        folium.Marker([lat_origem, lon_origem], popup="Sua Posição", icon=folium.Icon(color="red", icon="play")).add_to(mapa)
-        folium.Circle([lat_origem, lon_origem], radius=raio_busca_km * 1000.0, color="blue", fill=True, fill_opacity=0.08).add_to(mapa)
+        mapa = folium.Map(
+            location=[lat_centro, lon_centro],
+            zoom_start=zoom_mapa,
+            max_bounds=True,
+            min_lat=SP_MIN_LAT,
+            max_lat=SP_MAX_LAT,
+            min_lon=SP_MIN_LON,
+            max_lon=SP_MAX_LON,
+            control_scale=True,
+            tiles="CartoDB positron",
+            prefer_canvas=True,
+        )
+
+        # Traçado real da ferrovia
+        try:
+            import geopandas as gpd
+            from shapely.geometry import LineString, MultiLineString
+
+            caminho_kml = "malha_mrs.kml"
+            if os.path.exists(caminho_kml):
+                gdf_malha = gpd.read_file(caminho_kml, driver="KML")
+
+                def adicionar_trecho_ferrovia(geom_trecho):
+                    estilo = {
+                        "color": "#2563EB",
+                        "weight": 2,
+                        "opacity": 0.70,
+                    }
+                    folium.GeoJson(
+                        geom_trecho.__geo_interface__,
+                        style_function=lambda x, estilo=estilo: estilo,
+                        control=False,
+                    ).add_to(mapa)
+
+                for _, row in gdf_malha.iterrows():
+                    geom = row.geometry
+                    if geom is None or geom.is_empty:
+                        continue
+                    if isinstance(geom, LineString):
+                        adicionar_trecho_ferrovia(geom)
+                    elif isinstance(geom, MultiLineString):
+                        for subgeom in geom.geoms:
+                            adicionar_trecho_ferrovia(subgeom)
+        except Exception as e:
+            st.warning(f"Não foi possível carregar o traçado da ferrovia: {e}")
+
+        folium.Marker(
+            location=[lat_origem, lon_origem],
+            tooltip=f"Origem: {st.session_state['local_nome']}",
+            icon=folium.Icon(
+                color="red",
+                icon="home" if st.session_state.get("origem_tipo") != "GPS" else "map-marker",
+                prefix="fa"
+            )
+        ).add_to(mapa)
+
+        folium.Circle(
+            radius=raio_busca_km * 1000,
+            location=[lat_origem, lon_origem],
+            color="#3B82F6",
+            fill=True,
+            fill_opacity=0.08,
+            weight=2,
+            tooltip=f"Raio de atuação: {raio_busca_km} km"
+        ).add_to(mapa)
 
         if not df_recomendado.empty:
-            for _, row in df_recomendado.iterrows():
-                folium.Marker([row["lat_patio"], row["lon_patio"]], popup=f"OS: {row['Ordem servico']}", icon=folium.Icon(color="blue", icon="info-sign")).add_to(mapa)
+            agg_map = (
+                df_recomendado.groupby("Patio", as_index=False)
+                .agg(
+                    lat_patio=("lat_patio", "first"),
+                    lon_patio=("lon_patio", "first"),
+                    qtd_os=("Ordem servico", "count"),
+                    menor_dist=("Distancia_km", "min")
+                )
+                .sort_values(["menor_dist", "Patio"])
+            )
+
+            for _, row in agg_map.iterrows():
+                folium.CircleMarker(
+                    location=[row["lat_patio"], row["lon_patio"]],
+                    radius=6,
+                    color="#1D4ED8",
+                    weight=1.5,
+                    fill=True,
+                    fill_color="#3B82F6",
+                    fill_opacity=0.95,
+                    tooltip=(
+                        f"Pátio: {row['Patio']}<br>"
+                        f"OS no raio: {row['qtd_os']}<br>"
+                        f"Menor distância: {row['menor_dist']:.1f} km"
+                    )
+                ).add_to(mapa)
 
         st_folium(mapa, height=650, use_container_width=True, key="mapa_final_limpo")
 
     st.markdown("---")
-    
+
     # 8.3.4 Cronograma de Execução de Campo
     if not df_recomendado.empty:
         df_tabela_campo = df_recomendado.copy()
@@ -2446,14 +2696,14 @@ with tab2:
         colunas_exibir = ["OS", "Data da Programação", "Patio", "Ativo", "Criticidade", "Classificação", "Descrição Longa"]
 
         col_tit_crono, col_btn_crono = st.columns([7.5, 2.5])
-        
+
         with col_tit_crono:
             st.markdown("#### 📋 Cronograma de Execução de Campo")
             st.caption("OS Pendentes recomendadas no raio de atuação visual por prioridade")
-            
+
         with col_btn_crono:
             st.markdown("<div style='margin-top: 5px;'></div>", unsafe_allow_html=True)
-            
+
             def exportar_cronograma_pdf(dataframe, usuario_logado):
                 try:
                     from reportlab.lib.pagesizes import letter, landscape
@@ -2461,32 +2711,67 @@ with tab2:
                     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
                     from reportlab.lib import colors
                     import io
-                    
+
                     pdf_buffer = io.BytesIO()
-                    doc = SimpleDocTemplate(pdf_buffer, pagesize=landscape(letter), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
+                    doc = SimpleDocTemplate(
+                        pdf_buffer,
+                        pagesize=landscape(letter),
+                        rightMargin=20,
+                        leftMargin=20,
+                        topMargin=20,
+                        bottomMargin=20,
+                    )
                     elements = []
-                    
+
                     styles = getSampleStyleSheet()
-                    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontName='Helvetica-Bold', fontSize=18, textColor=colors.HexColor('#1A202C'), spaceAfter=6)
-                    sub_style = ParagraphStyle('SubStyle', fontName='Helvetica', fontSize=10, textColor=colors.HexColor('#475569'), spaceAfter=15)
-                    cell_style = ParagraphStyle('CellStyle', fontName='Helvetica', fontSize=9, leading=11, textColor=colors.HexColor('#1E293B'))
-                    header_style = ParagraphStyle('HeaderStyle', fontName='Helvetica-Bold', fontSize=10, leading=12, textColor=colors.white)
-                    
+                    title_style = ParagraphStyle(
+                        'TitleStyle',
+                        parent=styles['Heading1'],
+                        fontName='Helvetica-Bold',
+                        fontSize=18,
+                        textColor=colors.HexColor('#1A202C'),
+                        spaceAfter=6,
+                    )
+                    sub_style = ParagraphStyle(
+                        'SubStyle',
+                        fontName='Helvetica',
+                        fontSize=10,
+                        textColor=colors.HexColor('#475569'),
+                        spaceAfter=15,
+                    )
+                    cell_style = ParagraphStyle(
+                        'CellStyle',
+                        fontName='Helvetica',
+                        fontSize=9,
+                        leading=11,
+                        textColor=colors.HexColor('#1E293B'),
+                    )
+                    header_style = ParagraphStyle(
+                        'HeaderStyle',
+                        fontName='Helvetica-Bold',
+                        fontSize=10,
+                        leading=12,
+                        textColor=colors.white,
+                    )
+
                     elements.append(Paragraph("⚡ MRS LOGÍSTICA — CRONOGRAMA OPERACIONAL DE CAMPO", title_style))
-                    elements.append(Paragraph(f"Emitido em: {datetime.now().strftime('%d/%m/%Y %H:%M')} | Operador responsável: {usuario_logado.upper()}", sub_style))
-                    
+                    elements.append(Paragraph(
+                        f"Emitido em: {datetime.now().strftime('%d/%m/%Y %H:%M')} | Operador responsável: {usuario_logado.upper()}",
+                        sub_style,
+                    ))
+
                     dados_pdf = [[Paragraph(col, header_style) for col in colunas_exibir]]
-                    
+
                     for _, row in dataframe[colunas_exibir].iterrows():
                         linha = []
                         for col in colunas_exibir:
-                            texto_limpo = str(row[col]).replace('\n', ' ').replace('\r', '')
+                            texto_limpo = str(row[col]).replace('<br>', ' ').replace('<br/>', ' ')
                             linha.append(Paragraph(texto_limpo, cell_style))
                         dados_pdf.append(linha)
-                    
+
                     larguras_colunas = [65, 80, 50, 110, 75, 120, 252]
                     tabela_pdf = Table(dados_pdf, colWidths=larguras_colunas, repeatRows=1)
-                    
+
                     tabela_style = TableStyle([
                         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1A202C')),
                         ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
@@ -2495,14 +2780,13 @@ with tab2:
                         ('TOPPADDING', (0, 0), (-1, 0), 8),
                         ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#CBD5E1')),
                     ])
-                    
+
                     for i in range(1, len(dados_pdf)):
                         if i % 2 == 0:
                             tabela_style.add('BACKGROUND', (0, i), (-1, i), colors.HexColor('#F8FAFC'))
-                            
+
                     tabela_pdf.setStyle(tabela_style)
                     elements.append(tabela_pdf)
-                    
                     doc.build(elements)
                     pdf_buffer.seek(0)
                     return pdf_buffer.read()
@@ -2510,22 +2794,38 @@ with tab2:
                     return None
 
             pdf_bytes = exportar_cronograma_pdf(df_tabela_campo, st.session_state.get('username', 'técnico'))
-            
+
             if pdf_bytes:
-                st.download_button("📄 Gerar PDF para Impressão", data=pdf_bytes, file_name=f"Cronograma_MRS_{datetime.now().strftime('%d%m%Y_%H%M')}.pdf", mime="application/pdf", use_container_width=True)
+                st.download_button(
+                    "📄 Gerar PDF para Impressão",
+                    data=pdf_bytes,
+                    file_name=f"Cronograma_MRS_{datetime.now().strftime('%d%m%Y_%H%M')}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
             else:
                 st.button("📄 Erro ao estruturar PDF", disabled=True, use_container_width=True)
 
         def aplicar_cor_prazo(row):
             dt = row["dt_prog_filtro"]
-            if pd.isna(dt): return [""] * len(row)
-            d = dt.date(); hoje_ref = datetime.now().date()
-            if d < hoje_ref: return ["background-color: #FEE2E2; color: #7F1D1D; font-weight: 500;"] * len(row)
-            elif d == hoje_ref: return ["background-color: #FEF3C7; color: #78350F; font-weight: 500;"] * len(row)
+            if pd.isna(dt):
+                return [""] * len(row)
+            d = dt.date()
+            hoje_ref = datetime.now().date()
+            if d < hoje_ref:
+                return ["background-color: #FEE2E2; color: #7F1D1D; font-weight: 500;"] * len(row)
+            elif d == hoje_ref:
+                return ["background-color: #FEF3C7; color: #78350F; font-weight: 500;"] * len(row)
             return [""] * len(row)
 
         df_estilizado = df_tabela_campo.style.apply(aplicar_cor_prazo, axis=1)
-        st.dataframe(df_estilizado, use_container_width=True, height=350, hide_index=True, column_order=colunas_exibir)
+        st.dataframe(
+            df_estilizado,
+            use_container_width=True,
+            height=350,
+            hide_index=True,
+            column_order=colunas_exibir,
+        )
     else:
         st.markdown("#### 📋 Cronograma de Execução de Campo")
         st.caption("OS Pendentes recomendadas no raio de atuação visual por prioridade")
