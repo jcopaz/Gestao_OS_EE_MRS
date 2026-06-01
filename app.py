@@ -2050,7 +2050,11 @@ with tab1:
             df_lista["Data inicial programada"] = pd.to_datetime(df_lista["Data inicial programada"], errors="coerce").dt.strftime("%d/%m/%Y")
 
         if "Data/Hora Realizado" in df_lista.columns:
-            df_lista["Data/Hora Realizado"] = pd.to_datetime(df_lista["Data/Hora Realizado"], errors="coerce").dt.strftime("%d/%m/%Y %H:%M").fillna("")
+            df_lista["Data/Hora Realizado"] = pd.to_datetime(
+                df_lista["Data/Hora Realizado"], 
+                dayfirst=True, 
+                errors="coerce"
+            ).dt.strftime("%d/%m/%Y %H:%M").fillna("")
 
         colunas_ordem = ["OS", "Patio", "Ativo", "Criticidade", "Classificacao", "Descrição Longa", "Data inicial programada", "Status da Operação", "Data/Hora Realizado", "Concluído por"]
 
