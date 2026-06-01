@@ -1145,7 +1145,7 @@ def aplicar_overlay_baixas(
     if df_base.empty:
         return df_base
 
-    init_db()
+    #init_db()
     df_baixas = carregar_baixas_df()
 
     if df_baixas.empty:
@@ -1453,7 +1453,7 @@ usar_sim = st.session_state.get("chk_sim", False)
 qtd_sim = st.session_state.get("qtd_sim", 1200)
 seed_sim = st.session_state.get("seed_sim", 42)
 
-baixas_mtime = os.path.getmtime(db_path()) if os.path.exists(db_path()) else 0.0
+baixas_mtime = time.time()
 
 df_base_bruto = carregar_base_sem_overlay(
     usar_sim=usar_sim,
