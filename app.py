@@ -1158,29 +1158,52 @@ def carregar_base_sem_overlay(
     if usar_sim:
         return gerar_base_simulada(qtd=qtd_sim, seed=seed_sim)
 
-    pasta_bases = Path("bases_os")
-    pasta_bases.mkdir(exist_ok=True)
+    # 1. Conecta ao Neon e puxa os dados salvos pelo Admin/Assistente
+    conn = get_connection()
+    try:
+        df_raw_db = pd.read_sql_query("SELECT coordenacao, dados_completos FROM os_programadas", conn)
+    except Exception as e:
+        df_raw_db = pd.DataFrame()
+    finally:
+        release_connection(conn)
 
-    arquivos = [f for f in pasta_bases.glob("*.xlsx") if not f.name.startswith("~$")]
-    if not arquivos:
+    if df_raw_db.empty:
         return pd.DataFrame()
 
-    dfs = []
-    for arq in arquivos:
-        df_temp = carregar_excel_por_path(str(arq), etl_version)
-        nome_coord = arq.stem.replace("OS_", "").replace("_", " ").strip()
-        df_temp["Coordenacao"] = nome_coord
-        dfs.append(df_temp)
+    import json
+    dfs_tratados = []
+    
+    # 2. Agrupa por coordenação e remonta o formato Excel a partir do JSON do banco
+    for coord, group in df_raw_db.groupby("coordenacao"):
+        lista_linhas = []
+        for _, row in group.iterrows():
+            dados = row["dados_completos"]
+            if isinstance(dados, str):
+                dados = json.loads(dados)
+            lista_linhas.append(dados)
+            
+        if lista_linhas:
+            df_bruto_coord = pd.DataFrame(lista_linhas)
+            try:
+                # 3. Passa os dados pelo motor de tratamento (ETL) que você já construiu
+                df_tratado_coord = tratar_df_os(df_bruto_coord)
+                df_tratado_coord["Coordenacao"] = coord
+                dfs_tratados.append(df_tratado_coord)
+            except Exception:
+                pass # Ignora silenciosamente se uma coordenação estiver com dados corrompidos
 
-    df_base_bruto = pd.concat(dfs, ignore_index=True)
+    if not dfs_tratados:
+        return pd.DataFrame()
 
+    df_base_final = pd.concat(dfs_tratados, ignore_index=True)
+
+    # 4. Aplica o filtro de escopo de quem está logado
     if escopo_usuario != "Todas":
-        df_base_bruto = df_base_bruto[
-            df_base_bruto["Coordenacao"].str.contains(escopo_usuario, case=False, na=False)
+        df_base_final = df_base_final[
+            df_base_final["Coordenacao"].str.contains(escopo_usuario, case=False, na=False)
         ]
 
-    return df_base_bruto
-
+    return df_base_final
 
 @st.cache_data(show_spinner=False)
 def aplicar_overlay_baixas(
