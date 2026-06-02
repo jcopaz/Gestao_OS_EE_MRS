@@ -57,75 +57,63 @@ def init_db():
         conn = get_connection()
         cur = conn.cursor()
         
+        # Criação padrão das tabelas...
         cur.execute("""
             CREATE TABLE IF NOT EXISTS baixas (
-                os VARCHAR(255) PRIMARY KEY, 
-                status VARCHAR(255) NOT NULL, 
-                realizado_em VARCHAR(255) NOT NULL, 
-                coordenacao VARCHAR(255) NOT NULL, 
-                concluido_por VARCHAR(255)
+                os VARCHAR(255) PRIMARY KEY, status VARCHAR(255) NOT NULL, 
+                realizado_em VARCHAR(255) NOT NULL, coordenacao VARCHAR(255) NOT NULL, concluido_por VARCHAR(255)
             );
         """)
-        
         cur.execute("""
             CREATE TABLE IF NOT EXISTS usuarios (
-                username VARCHAR(255) PRIMARY KEY, 
-                senha_hash VARCHAR(255) NOT NULL, 
-                perfil VARCHAR(50) NOT NULL, 
-                escopo VARCHAR(50) NOT NULL,
-                palavra_recuperacao VARCHAR(255) DEFAULT 'PENDENTE', 
-                dica_recuperacao VARCHAR(255) DEFAULT 'PENDENTE', 
-                reset_obrigatorio INTEGER DEFAULT 1, 
-                coordenacao_padrao VARCHAR(100) DEFAULT 'ICG'
+                username VARCHAR(255) PRIMARY KEY, senha_hash VARCHAR(255) NOT NULL, 
+                perfil VARCHAR(50) NOT NULL, escopo VARCHAR(50) NOT NULL,
+                palavra_recuperacao VARCHAR(255) DEFAULT 'PENDENTE', dica_recuperacao VARCHAR(255) DEFAULT 'PENDENTE', 
+                reset_obrigatorio INTEGER DEFAULT 1, coordenacao_padrao VARCHAR(100) DEFAULT 'ICG'
             );
         """)
-
-        # Tabela para auditoria de acessos e tempo de uso
         cur.execute("""
             CREATE TABLE IF NOT EXISTS logs_acesso (
-                id SERIAL PRIMARY KEY,
-                username VARCHAR(255) NOT NULL,
-                data_hora_login TIMESTAMP NOT NULL,
-                data_hora_logout TIMESTAMP,
-                geolocalizacao_login VARCHAR(255),
-                sessao_ativa BOOLEAN DEFAULT TRUE
+                id SERIAL PRIMARY KEY, username VARCHAR(255) NOT NULL, data_hora_login TIMESTAMP NOT NULL,
+                data_hora_logout TIMESTAMP, geolocalizacao_login VARCHAR(255), sessao_ativa BOOLEAN DEFAULT TRUE
             );
         """)
-
-        # Tabela para armazenar as OS programadas
         cur.execute("""
             CREATE TABLE IF NOT EXISTS os_programadas (
-                id SERIAL PRIMARY KEY,
-                os VARCHAR(255) UNIQUE NOT NULL,
-                mes_referencia VARCHAR(50),
-                dados_completos JSONB,
-                data_upload TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                id SERIAL PRIMARY KEY, os VARCHAR(255) UNIQUE NOT NULL, mes_referencia VARCHAR(50),
+                dados_completos JSONB, data_upload TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
         
-        # Criar um usuário admin padrão caso o banco esteja vazio
+        # --- ATUALIZAÇÕES AUTOMÁTICAS DE ESTRUTURA (UPGRADE V6) ---
+        try:
+            cur.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS governanca VARCHAR(255) DEFAULT 'Painel Gerencial,Mapa de Campo';")
+        except Exception: conn.rollback()
+        
+        try:
+            cur.execute("ALTER TABLE os_programadas ADD COLUMN IF NOT EXISTS coordenacao VARCHAR(100);")
+        except Exception: conn.rollback()
+        
+        # Criar o admin mestre se não existir
         cur.execute("SELECT COUNT(*) FROM usuarios")
         if cur.fetchone()[0] == 0:
             cur.execute("""
-                INSERT INTO usuarios (username, senha_hash, perfil, escopo, reset_obrigatorio) 
-                VALUES (%s, %s, %s, %s, 1)
-            """, ('admin', hash_senha('mrs123'), 'Gerência', 'Todas'))
+                INSERT INTO usuarios (username, senha_hash, perfil, escopo, reset_obrigatorio, governanca) 
+                VALUES (%s, %s, %s, %s, 1, %s)
+            """, ('admin', hash_senha('mrs123'), 'Gerência', 'Todas', 'Painel Gerencial,Mapa de Campo,Upload de Dados,Gestão de Usuários'))
             
         conn.commit()
         cur.close()
         release_connection(conn)
-        
-    except Exception as e:
-        # Se houver micro-queda de SSL no Neon, o Python apenas ignora e segue a vida,
-        # pois sabemos que as tabelas já estão criadas no banco.
+    except Exception:
         pass
 
 init_db()
 #endregion
 
-#region SESSÃO 1.5: Barreira de Login Corrigida
+#region SESSÃO 1.5: Barreira de Login com Governança
 if "logged_in" not in st.session_state:
-    st.session_state.update({"logged_in": False, "username": "", "perfil": "", "escopo": "", "needs_reset": False, "recuperando": False, "trocar_senha": False})
+    st.session_state.update({"logged_in": False, "username": "", "perfil": "", "escopo": "", "governanca": "", "needs_reset": False, "recuperando": False})
 
 if not st.session_state["logged_in"]:
     st.markdown("<h3 style='text-align: center; color: #475569;'>Acesso Restrito</h3>", unsafe_allow_html=True)
@@ -133,60 +121,23 @@ if not st.session_state["logged_in"]:
     
     with col_l2:
         if st.session_state.get("needs_reset"):
-            st.warning("⚠️ Bem-vindo! Configure sua senha e sua palavra de recuperação.")
+            st.warning("⚠️ Configure sua senha e sua palavra de recuperação.")
             with st.form("form_reset"):
                 nova_senha = st.text_input("Nova Senha", type="password")
                 conf_senha = st.text_input("Confirmar Nova Senha", type="password")
-                palavra_nova = st.text_input("Definir sua Palavra-Chave de Recuperação")
-                
+                palavra_nova = st.text_input("Palavra-Chave de Recuperação")
                 if st.form_submit_button("Finalizar Cadastro"):
-                    if nova_senha != conf_senha:
-                        st.error("As senhas não conferem.")
-                    elif not palavra_nova:
-                        st.error("Você precisa definir uma palavra-chave!")
+                    if nova_senha != conf_senha: st.error("As senhas não conferem.")
+                    elif not palavra_nova: st.error("Defina uma palavra-chave!")
                     else:
                         conn = get_connection()
                         cur = conn.cursor()
-                        cur.execute("""
-                            UPDATE usuarios 
-                            SET senha_hash = %s, palavra_recuperacao = %s, reset_obrigatorio = 0 
-                            WHERE username = %s
-                        """, (hash_senha(nova_senha), palavra_nova.strip(), st.session_state["reset_user"]))
+                        cur.execute("UPDATE usuarios SET senha_hash = %s, palavra_recuperacao = %s, reset_obrigatorio = 0 WHERE username = %s", (hash_senha(nova_senha), palavra_nova.strip(), st.session_state["reset_user"]))
                         conn.commit()
                         cur.close()
                         release_connection(conn)
-                        
-                        st.success("Configuração concluída! Entre com sua nova senha.")
-                        st.session_state["needs_reset"] = False
-                        st.rerun()
-            if st.button("⬅️ Voltar"):
-                st.session_state["needs_reset"] = False; st.rerun()
-
-        elif st.session_state.get("recuperando"):
-            st.info("Digite seu login e a palavra-chave.")
-            with st.form("form_recuperar"):
-                user_rec = st.text_input("Login")
-                palavra_rec = st.text_input("Palavra-Chave")
-                submit_rec = st.form_submit_button("Validar")
-            
-            if submit_rec:
-                conn = get_connection()
-                cur = conn.cursor()
-                cur.execute("SELECT palavra_recuperacao FROM usuarios WHERE username = %s", (user_rec.strip(),))
-                row = cur.fetchone()
-                cur.close()
-                release_connection(conn)
-                
-                if row and row[0] == palavra_rec.strip():
-                    st.session_state["needs_reset"] = True
-                    st.session_state["reset_user"] = user_rec.strip()
-                    st.session_state["recuperando"] = False
-                    st.rerun()
-                else: st.error("Dados incorretos.")
-                
-            if st.button("⬅️ Voltar ao Login"): 
-                st.session_state["recuperando"] = False; st.rerun()
-
+                        st.success("Concluído! Entre com sua nova senha."); st.session_state["needs_reset"] = False; st.rerun()
+            if st.button("⬅️ Voltar"): st.session_state["needs_reset"] = False; st.rerun()
         else:
             with st.form("form_login"):
                 user_input = st.text_input("Usuário")
@@ -196,7 +147,8 @@ if not st.session_state["logged_in"]:
             if submit:
                 conn = get_connection()
                 cur = conn.cursor()
-                cur.execute("SELECT senha_hash, perfil, escopo, reset_obrigatorio FROM usuarios WHERE username = %s", (user_input.strip(),))
+                # Adicionado a leitura da coluna governanca
+                cur.execute("SELECT senha_hash, perfil, escopo, reset_obrigatorio, governanca FROM usuarios WHERE username = %s", (user_input.strip(),))
                 row = cur.fetchone()
                 cur.close()
                 release_connection(conn)
@@ -207,11 +159,10 @@ if not st.session_state["logged_in"]:
                         st.session_state["reset_user"] = user_input.strip()
                         st.rerun()
                     else:
-                        st.session_state.update({"logged_in": True, "username": user_input.strip(), "perfil": row[1], "escopo": row[2]})
+                        # Salva a governança na sessão do usuário
+                        st.session_state.update({"logged_in": True, "username": user_input.strip(), "perfil": row[1], "escopo": row[2], "governanca": row[4] or "Mapa de Campo"})
                         st.rerun()
                 else: st.error("❌ Usuário ou senha incorretos.")
-            
-            if st.button("Esqueci minha senha"): st.session_state["recuperando"] = True; st.rerun()
     st.stop()
 #endregion
 
@@ -921,64 +872,62 @@ def render_tela_admin():
     st.title("⚙️ Administração de Dados")
     st.markdown("Faça o upload da base de **OS Programadas** para atualizar o sistema central.")
     
-    # Seleção do Mês de Referência para organizar o histórico
-    mes_ref = st.text_input("Mês de Referência (ex: Junho/2026)", placeholder="Mês/Ano")
+    col_up1, col_up2 = st.columns(2)
+    with col_up1:
+        mes_ref = st.text_input("Mês de Referência (ex: Junho/2026)", placeholder="Mês/Ano")
+    with col_up2:
+        coord_upload = st.selectbox("Coordenação da Planilha", ["Paranapiacaba", "Piaçaguera"])
     
-    # Campo de Upload (aceita CSV com separador ; ou Excel padrão)
-    arquivo_upload = st.file_uploader("Selecione a planilha da coordenação", type=["csv", "xlsx"])
+    arquivo_upload = st.file_uploader("Selecione a planilha Excel ou CSV", type=["csv", "xlsx"])
     
     if arquivo_upload is not None and mes_ref:
         if st.button("🚀 Processar e Salvar no Banco", use_container_width=True, type="primary"):
+            
+            # --- TRAVA DE SEGURANÇA DE GOVERNANÇA ---
+            escopo_user = st.session_state.get("escopo", "Todas")
+            if escopo_user != "Todas" and escopo_user != coord_upload:
+                st.error(f"⚠️ **ACESSO BLOQUEADO:** Seu perfil está restrito à coordenação **{escopo_user}**. Você não tem permissão para fazer upload de bases de **{coord_upload}**.")
+                st.stop()
+            # ----------------------------------------
+
             with st.spinner("Lendo e processando dados..."):
                 try:
-                    # Tenta ler como CSV primeiro, se der erro, lê como Excel
-                    if arquivo_upload.name.endswith('.csv'):
-                        df = pd.read_csv(arquivo_upload, sep=';', encoding='utf-8-sig')
-                    else:
-                        df = pd.read_excel(arquivo_upload)
+                    if arquivo_upload.name.endswith('.csv'): df = pd.read_csv(arquivo_upload, sep=';', encoding='utf-8-sig')
+                    else: df = pd.read_excel(arquivo_upload)
                     
-                    # Verifica se a coluna vital existe
                     if "Ordem servico" not in df.columns:
-                        st.error("❌ A coluna 'Ordem servico' não foi encontrada na planilha. Verifique o arquivo.")
+                        st.error("❌ A coluna 'Ordem servico' não foi encontrada. Verifique o arquivo.")
                         return
                     
-                    # Limpeza de dados: substitui valores vazios (NaN) por string vazia para o banco aceitar
                     df = df.fillna("")
-                    
-                    # Prepara a conexão com o banco
                     conn = get_connection()
                     cur = conn.cursor()
-                    
                     sucesso_count = 0
                     
-                    # Lógica de inserção inteligente (Upsert)
                     comando_sql = """
-                        INSERT INTO os_programadas (os, mes_referencia, dados_completos)
-                        VALUES (%s, %s, %s)
+                        INSERT INTO os_programadas (os, mes_referencia, coordenacao, dados_completos)
+                        VALUES (%s, %s, %s, %s)
                         ON CONFLICT (os) DO UPDATE 
                         SET mes_referencia = EXCLUDED.mes_referencia,
+                            coordenacao = EXCLUDED.coordenacao,
                             dados_completos = EXCLUDED.dados_completos,
                             data_upload = CURRENT_TIMESTAMP;
                     """
                     
-                    # Transforma cada linha num dicionário e manda para o Neon
                     for _, row in df.iterrows():
                         os_num = str(row["Ordem servico"]).strip()
-                        if os_num: # Só salva se tiver número de OS
-                            dados_json = json.dumps(row.to_dict())
-                            cur.execute(comando_sql, (os_num, mes_ref, dados_json))
+                        if os_num: 
+                            cur.execute(comando_sql, (os_num, mes_ref, coord_upload, json.dumps(row.to_dict())))
                             sucesso_count += 1
                             
                     conn.commit()
                     cur.close()
                     release_connection(conn)
-                    
-                    st.success(f"✅ Base processada com sucesso! {sucesso_count} Ordens de Serviço foram salvas/atualizadas para o mês de {mes_ref}.")
-                    
+                    st.success(f"✅ Sucesso! {sucesso_count} Ordens de Serviço foram atualizadas na base de {coord_upload}.")
                 except Exception as e:
                     st.error(f"❌ Ocorreu um erro ao processar o arquivo: {e}")
-    elif arquivo_upload is not None and not mes_ref:
-        st.warning("⚠️ Por favor, digite o Mês de Referência antes de processar.")
+    elif arquivo_upload is not None:
+        st.warning("⚠️ Preencha o Mês e a Coordenação antes de processar.")
 #endregion
 
 #region SESSÃO 3: Banco de Coordenadas Fixo
@@ -1538,34 +1487,31 @@ st.markdown("""
 st.sidebar.image("logo_mrs.png", use_container_width=True)
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
-# 5.1.3 Navegação e definição do escopo visual
+# 5.1.3 Navegação Inteligente (Baseada na Governança)
 st.sidebar.markdown("### 🧭 Navegação")
 
-# --- LÓGICA DE ROTEAMENTO (ADMIN VS DASHBOARD) ---
 if "tela_atual" not in st.session_state:
     st.session_state["tela_atual"] = "dashboard"
 
-if st.session_state["perfil"] in ["Gerência", "Admin"]:
-    col_nav1, col_nav2 = st.sidebar.columns(2)
-    with col_nav1:
-        if st.button("📊 Painel", use_container_width=True): st.session_state["tela_atual"] = "dashboard"
-    with col_nav2:
-        if st.button("⚙️ Dados", use_container_width=True): st.session_state["tela_atual"] = "admin"
-# -------------------------------------------------
+gov_usuario = st.session_state.get("governanca", "")
 
-# Se o usuário clicar em "⚙️ Dados", renderiza a tela de admin e PARA o código 
-# (evita carregar os gráficos pesados atoa)
+# Cria os botões dependendo do que o usuário tem acesso
+col_nav1, col_nav2 = st.sidebar.columns(2)
+with col_nav1:
+    if "Painel Gerencial" in gov_usuario or "Mapa de Campo" in gov_usuario:
+        if st.button("📊 Painel", use_container_width=True): st.session_state["tela_atual"] = "dashboard"
+with col_nav2:
+    if "Upload de Dados" in gov_usuario:
+        if st.button("⚙️ Dados", use_container_width=True): st.session_state["tela_atual"] = "admin"
+
 if st.session_state.get("tela_atual") == "admin":
     render_tela_admin()
     st.stop()
 
-# Continuação normal para o Dashboard
-if st.session_state["perfil"] == "Gerência":
+if "Painel Gerencial" in gov_usuario:
     visao_selecionada = st.sidebar.radio(
-        "Selecione a Visão:", 
-        ["Gerência", "Paranapiacaba", "Piaçaguera"], 
-        label_visibility="collapsed",
-        key="radio_visao_gerencial"
+        "Selecione a Visão:", ["Gerência", "Paranapiacaba", "Piaçaguera"], 
+        label_visibility="collapsed", key="radio_visao_gerencial"
     )
     filtro_visao = "Todas" if visao_selecionada == "Gerência" else visao_selecionada
 else:
@@ -1671,61 +1617,47 @@ df_filtrado = aplicar_filtros_sidebar(
 #endregion
 
 #region SESSÃO 6: Sistema, dados e gestão de usuários
-if st.session_state["perfil"] == "Gerência":
+if "Gestão de Usuários" in st.session_state.get("governanca", ""):
     with st.sidebar.expander("⚙️ Sistema, Dados e Gestão", expanded=False):
         
         st.checkbox("🧪 Usar dados simulados (teste rápido)", key="chk_sim")
-
         if st.session_state.get("chk_sim"):
-            st.slider("Volume de OS simuladas", min_value=100, max_value=4000, value=1200, step=100, key="qtd_sim")
+            st.slider("Volume de OS simuladas", 100, 4000, 1200, 100, key="qtd_sim")
             st.number_input("Seed (repete mesmos dados)", value=42, key="seed_sim")
         else:
-            if st.button("🔄 Recarregar dados (ETL)", use_container_width=True, key="btn_recarregar_etl"):
-                st.cache_data.clear()
-                st.rerun()
+            if st.button("🔄 Recarregar dados (ETL)", use_container_width=True):
+                st.cache_data.clear(); st.rerun()
 
-        st.markdown(
-            "<div style='background-color: #FF4B4B; color: #FFFFFF; font-weight: bold; text-align: center; padding: 8px; border-radius: 6px; margin-top: 15px; margin-bottom: 10px; font-size: 16px;'>"
-            "Gestão de Usuários"
-            "</div>",
-            unsafe_allow_html=True
-        )
+        st.markdown("<div style='background-color: #FF4B4B; color: #FFFFFF; font-weight: bold; text-align: center; padding: 8px; border-radius: 6px; margin-top: 15px; margin-bottom: 10px;'>Gestão de Usuários</div>", unsafe_allow_html=True)
 
         if "msg_sucesso_user" in st.session_state:
             st.success(st.session_state["msg_sucesso_user"])
             del st.session_state["msg_sucesso_user"]
 
         def sedes_por_escopo(escopo: str):
-            escopo = str(escopo).strip()
             if escopo == "Paranapiacaba": return ["Sede IPA"]
             elif escopo == "Piaçaguera": return ["Sede IPG"]
-            elif escopo == "Todas": return ["Sede IPA", "Sede IPG"]
-            return ["Sede IPA"]
+            return ["Sede IPA", "Sede IPG"]
 
         with st.form("form_novo_user", clear_on_submit=True):
             n_user = st.text_input("Login (Nova conta)", key="novo_user_login")
-            n_perf = st.selectbox("Perfil", ["Técnico", "Coordenador", "Gerência"], key="novo_user_perfil")
-            n_esco = st.selectbox("Escopo", ["Paranapiacaba", "Piaçaguera", "Todas"], key="novo_user_escopo")
-
+            n_perf = st.selectbox("Perfil", ["Técnico", "Assistente", "Coordenador", "Gerência"], key="novo_user_perfil")
+            n_esco = st.selectbox("Escopo (Base)", ["Paranapiacaba", "Piaçaguera", "Todas"], key="novo_user_escopo")
+            
             sedes_validas = sedes_por_escopo(n_esco)
-
-            sede_default = {
-                "Paranapiacaba": "Sede IPA",
-                "Piaçaguera": "Sede IPG",
-                "Todas": "Sede IPA"
-            }.get(n_esco, "Sede IPA")
-
-            idx_sede_default = sedes_validas.index(sede_default) if sede_default in sedes_validas else 0
-
-            n_sede = st.selectbox(
-                "Sede",
-                sedes_validas,
-                index=idx_sede_default,
-                key="novo_user_sede",
-                format_func=lambda x: x.replace("Sede ", "")
-            )
-
-            st.caption("A senha inicial padrão será definida automaticamente como **mrs123**.")
+            n_sede = st.selectbox("Sede Física", sedes_validas, key="novo_user_sede", format_func=lambda x: x.replace("Sede ", ""))
+            
+            st.markdown("---")
+            st.markdown("**Governança (O que o usuário pode ver/fazer?)**")
+            
+            # Define marcações automáticas inteligentes com base no perfil escolhido
+            if n_perf == "Técnico": def_gov = ["Mapa de Campo"]
+            elif n_perf == "Assistente": def_gov = ["Painel Gerencial", "Upload de Dados"]
+            elif n_perf == "Coordenador": def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados"]
+            else: def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Gestão de Usuários"]
+            
+            opcoes_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Gestão de Usuários"]
+            n_gov = st.multiselect("Permissões de Acesso:", opcoes_gov, default=def_gov, key="novo_user_gov")
 
             if st.form_submit_button("Salvar Novo Usuário"):
                 if n_user:
@@ -1735,109 +1667,65 @@ if st.session_state["perfil"] == "Gerência":
                         cur.execute(
                             """
                             INSERT INTO usuarios
-                            (username, senha_hash, perfil, escopo, palavra_recuperacao, dica_recuperacao, coordenacao_padrao, reset_obrigatorio)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            (username, senha_hash, perfil, escopo, palavra_recuperacao, dica_recuperacao, coordenacao_padrao, reset_obrigatorio, governanca)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """,
-                            (n_user.strip(), hash_senha("mrs123"), n_perf, n_esco, "PENDENTE", "PENDENTE", n_sede, 1)
+                            (n_user.strip(), hash_senha("mrs123"), n_perf, n_esco, "PENDENTE", "PENDENTE", n_sede, 1, ",".join(n_gov))
                         )
                         conn.commit()
                         st.session_state["msg_sucesso_user"] = f"Usuário '{n_user}' criado com sucesso!"
                         st.rerun()
                     except psycopg2.IntegrityError:
-                        conn.rollback()
-                        st.error("Erro: Este usuário já existe no sistema.")
+                        conn.rollback(); st.error("Erro: Este usuário já existe.")
                     finally:
-                        cur.close()
-                        release_connection(conn)
-                else:
-                    st.warning("Preencha o login do usuário.")
+                        cur.close(); release_connection(conn)
+                else: st.warning("Preencha o login do usuário.")
 
         st.markdown("<br><b style='color: #F8FAFC;'>👥 Gerenciar Usuários</b>", unsafe_allow_html=True)
-
         conn = get_connection()
-        df_usuarios = pd.read_sql_query("SELECT username, perfil, escopo, coordenacao_padrao FROM usuarios", conn)
+        df_usuarios = pd.read_sql_query("SELECT username, perfil, escopo, coordenacao_padrao, governanca FROM usuarios", conn)
         release_connection(conn)
 
-        lista_users = df_usuarios["username"].tolist()
-
-        usr_sel = st.selectbox("Selecione um usuário para gerenciar:", [""] + lista_users, key="gerenciar_usuario_select")
+        usr_sel = st.selectbox("Selecione um usuário:", [""] + df_usuarios["username"].tolist())
 
         if usr_sel != "":
             dados_usr = df_usuarios[df_usuarios["username"] == usr_sel].iloc[0]
+            gov_atual_lista = str(dados_usr["governanca"]).split(",") if pd.notna(dados_usr["governanca"]) else []
 
-            st.caption(
-                f"**Perfil Atual:** {dados_usr['perfil']} | "
-                f"**Visão:** {dados_usr['escopo']} | "
-                f"**Sede Atual:** {str(dados_usr['coordenacao_padrao']).replace('Sede ', '')}"
-            )
+            st.caption(f"**Perfil:** {dados_usr['perfil']} | **Visão:** {dados_usr['escopo']} | **Sede:** {str(dados_usr['coordenacao_padrao']).replace('Sede ', '')}")
 
-            acao = st.radio(
-                "Escolha a ação:",
-                ["✏️ Editar Acesso", "🔑 Resetar Senha", "🗑️ Excluir"],
-                horizontal=True,
-                key=f"acao_usuario_{usr_sel}"
-            )
+            acao = st.radio("Ação:", ["✏️ Editar Acesso", "🔑 Resetar Senha", "🗑️ Excluir"], horizontal=True)
 
             if acao == "✏️ Editar Acesso":
                 with st.form(f"form_edit_{usr_sel}"):
-                    perfis_validos = ["Técnico", "Coordenador", "Gerência"]
-                    escopos_validos = ["Paranapiacaba", "Piaçaguera", "Todas"]
-
-                    idx_perf = perfis_validos.index(dados_usr["perfil"]) if dados_usr["perfil"] in perfis_validos else 0
-                    idx_esco = escopos_validos.index(dados_usr["escopo"]) if dados_usr["escopo"] in escopos_validos else 0
-
-                    n_perf_edit = st.selectbox("Novo Perfil", perfis_validos, index=idx_perf, key=f"edit_perf_{usr_sel}")
-                    n_esco_edit = st.selectbox("Nova Visão", escopos_validos, index=idx_esco, key=f"edit_escopo_{usr_sel}")
-
-                    sedes_validas_edit = sedes_por_escopo(n_esco_edit)
-
-                    sede_atual = str(dados_usr["coordenacao_padrao"]).strip() if pd.notna(dados_usr["coordenacao_padrao"]) else "Sede IPA"
-                    idx_sede = sedes_validas_edit.index(sede_atual) if sede_atual in sedes_validas_edit else 0
-
-                    n_sede_edit = st.selectbox("Sede", sedes_validas_edit, index=idx_sede, key=f"edit_sede_{usr_sel}", format_func=lambda x: x.replace("Sede ", ""))
+                    n_perf_edit = st.selectbox("Novo Perfil", ["Técnico", "Assistente", "Coordenador", "Gerência"], index=["Técnico", "Assistente", "Coordenador", "Gerência"].index(dados_usr["perfil"]))
+                    n_esco_edit = st.selectbox("Nova Visão", ["Paranapiacaba", "Piaçaguera", "Todas"], index=["Paranapiacaba", "Piaçaguera", "Todas"].index(dados_usr["escopo"]))
+                    n_sede_edit = st.selectbox("Sede", sedes_por_escopo(n_esco_edit), format_func=lambda x: x.replace("Sede ", ""))
+                    
+                    gov_editadas = st.multiselect("Governança:", opcoes_gov, default=[g for g in gov_atual_lista if g in opcoes_gov])
 
                     if st.form_submit_button("Salvar Alterações"):
-                        conn = get_connection()
-                        cur = conn.cursor()
+                        conn = get_connection(); cur = conn.cursor()
                         cur.execute(
-                            "UPDATE usuarios SET perfil = %s, escopo = %s, coordenacao_padrao = %s WHERE username = %s",
-                            (n_perf_edit, n_esco_edit, n_sede_edit, usr_sel)
+                            "UPDATE usuarios SET perfil=%s, escopo=%s, coordenacao_padrao=%s, governanca=%s WHERE username=%s",
+                            (n_perf_edit, n_esco_edit, n_sede_edit, ",".join(gov_editadas), usr_sel)
                         )
-                        conn.commit()
-                        cur.close()
-                        release_connection(conn)
-                        st.session_state["msg_sucesso_user"] = f"Permissões de {usr_sel} atualizadas!"
-                        st.rerun()
+                        conn.commit(); cur.close(); release_connection(conn)
+                        st.session_state["msg_sucesso_user"] = f"Acessos de {usr_sel} atualizados!"; st.rerun()
 
             elif acao == "🔑 Resetar Senha":
-                st.warning("A senha voltará para 'mrs123' e o usuário será forçado a criar uma nova.")
-                if st.button("Confirmar Reset", key=f"btn_reset_{usr_sel}"):
-                    conn = get_connection()
-                    cur = conn.cursor()
-                    cur.execute(
-                        "UPDATE usuarios SET senha_hash = %s, reset_obrigatorio = 1 WHERE username = %s",
-                        (hash_senha("mrs123"), usr_sel)
-                    )
-                    conn.commit()
-                    cur.close()
-                    release_connection(conn)
-                    st.session_state["msg_sucesso_user"] = f"Senha de {usr_sel} resetada com sucesso!"
-                    st.rerun()
+                if st.button("Confirmar Reset"):
+                    conn = get_connection(); cur = conn.cursor()
+                    cur.execute("UPDATE usuarios SET senha_hash = %s, reset_obrigatorio = 1 WHERE username = %s", (hash_senha("mrs123"), usr_sel))
+                    conn.commit(); cur.close(); release_connection(conn)
+                    st.session_state["msg_sucesso_user"] = f"Senha de {usr_sel} resetada!"; st.rerun()
 
             elif acao == "🗑️ Excluir":
-                if usr_sel == st.session_state["username"]:
-                    st.error("Você não pode excluir a si mesmo para evitar bloqueio do sistema.")
-                else:
-                    st.warning("O acesso será removido. O histórico de OS continuará intacto.")
-                    if st.button("Confirmar Exclusão", key=f"btn_del_{usr_sel}", type="primary"):
-                        conn = get_connection()
-                        cur = conn.cursor()
-                        cur.execute("DELETE FROM usuarios WHERE username = %s", (usr_sel,))
-                        conn.commit()
-                        cur.close()
-                        release_connection(conn)
-                        st.session_state["msg_sucesso_user"] = f"Usuário {usr_sel} excluído permanentemente."
-                        st.rerun()
+                if st.button("Confirmar Exclusão", type="primary"):
+                    conn = get_connection(); cur = conn.cursor()
+                    cur.execute("DELETE FROM usuarios WHERE username = %s", (usr_sel,))
+                    conn.commit(); cur.close(); release_connection(conn)
+                    st.session_state["msg_sucesso_user"] = f"Usuário {usr_sel} excluído."; st.rerun()
 #endregion
 
 #region SESSÃO 7: DASHBOARD HEADER E KPI METRICS
