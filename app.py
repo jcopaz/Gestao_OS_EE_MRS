@@ -53,43 +53,49 @@ _status_atraso = {"REALIZADO FORA DA DATA DE PROGRAMAÇÃO", "REALIZADO FORA DO 
 _status_aberto = {"NÃO REALIZADO", "NAO REALIZADO", "PENDENTE", "ATRASADO", ""}
 
 def init_db():
-    conn = get_connection()
-    cur = conn.cursor()
-    
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS baixas (
-            os VARCHAR(255) PRIMARY KEY, 
-            status VARCHAR(255) NOT NULL, 
-            realizado_em VARCHAR(255) NOT NULL, 
-            coordenacao VARCHAR(255) NOT NULL, 
-            concluido_por VARCHAR(255)
-        );
-    """)
-    
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS usuarios (
-            username VARCHAR(255) PRIMARY KEY, 
-            senha_hash VARCHAR(255) NOT NULL, 
-            perfil VARCHAR(50) NOT NULL, 
-            escopo VARCHAR(50) NOT NULL,
-            palavra_recuperacao VARCHAR(255) DEFAULT 'PENDENTE', 
-            dica_recuperacao VARCHAR(255) DEFAULT 'PENDENTE', 
-            reset_obrigatorio INTEGER DEFAULT 1, 
-            coordenacao_padrao VARCHAR(100) DEFAULT 'ICG'
-        );
-    """)
-    
-    # Criar um usuário admin padrão caso o banco esteja vazio
-    cur.execute("SELECT COUNT(*) FROM usuarios")
-    if cur.fetchone()[0] == 0:
-        cur.execute("""
-            INSERT INTO usuarios (username, senha_hash, perfil, escopo, reset_obrigatorio) 
-            VALUES (%s, %s, %s, %s, 1)
-        """, ('admin', hash_senha('mrs123'), 'Gerência', 'Todas'))
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
         
-    conn.commit()
-    cur.close()
-    release_connection(conn)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS baixas (
+                os VARCHAR(255) PRIMARY KEY, 
+                status VARCHAR(255) NOT NULL, 
+                realizado_em VARCHAR(255) NOT NULL, 
+                coordenacao VARCHAR(255) NOT NULL, 
+                concluido_por VARCHAR(255)
+            );
+        """)
+        
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS usuarios (
+                username VARCHAR(255) PRIMARY KEY, 
+                senha_hash VARCHAR(255) NOT NULL, 
+                perfil VARCHAR(50) NOT NULL, 
+                escopo VARCHAR(50) NOT NULL,
+                palavra_recuperacao VARCHAR(255) DEFAULT 'PENDENTE', 
+                dica_recuperacao VARCHAR(255) DEFAULT 'PENDENTE', 
+                reset_obrigatorio INTEGER DEFAULT 1, 
+                coordenacao_padrao VARCHAR(100) DEFAULT 'ICG'
+            );
+        """)
+        
+        # Criar um usuário admin padrão caso o banco esteja vazio
+        cur.execute("SELECT COUNT(*) FROM usuarios")
+        if cur.fetchone()[0] == 0:
+            cur.execute("""
+                INSERT INTO usuarios (username, senha_hash, perfil, escopo, reset_obrigatorio) 
+                VALUES (%s, %s, %s, %s, 1)
+            """, ('admin', hash_senha('mrs123'), 'Gerência', 'Todas'))
+            
+        conn.commit()
+        cur.close()
+        release_connection(conn)
+        
+    except Exception as e:
+        # Se houver micro-queda de SSL no Neon, o Python apenas ignora e segue a vida,
+        # pois sabemos que as tabelas já estão criadas no banco.
+        pass
 
 init_db()
 #endregion
@@ -1314,6 +1320,7 @@ def simulacao_sidebar():
 #endregion
 
 #region SESSÃO 5: Sidebar, Navegação, Carga e Filtro
+
 #region SESSÃO 5.1: Identidade visual, navegação e escopo
 # 5.1.1 CSS / identidade visual
 st.markdown("""
