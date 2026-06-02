@@ -1565,12 +1565,42 @@ if st.session_state["perfil"] == "Gerência":
         "Selecione a Visão:", 
         ["Gerência", "Paranapiacaba", "Piaçaguera"], 
         label_visibility="collapsed",
-        key="radio_visao_gerencial"  # <--- Essa 'key' impede o erro de duplicidade
+        key="radio_visao_gerencial"
     )
     filtro_visao = "Todas" if visao_selecionada == "Gerência" else visao_selecionada
 else:
     filtro_visao = st.session_state["escopo"]
     st.sidebar.info(f"Visão Restrita: {filtro_visao}")
+#endregion
+
+#region SESSÃO 5.2: Carregamento da base operacional
+usar_sim = st.session_state.get("chk_sim", False)
+qtd_sim = st.session_state.get("qtd_sim", 1200)
+seed_sim = st.session_state.get("seed_sim", 42)
+
+baixas_mtime = time.time()
+
+df_base_bruto = carregar_base_sem_overlay(
+    usar_sim=usar_sim,
+    qtd_sim=int(qtd_sim),
+    seed_sim=int(seed_sim),
+    escopo_usuario=st.session_state["escopo"],
+    etl_version=ETL_VERSION
+)
+
+if df_base_bruto.empty and not usar_sim:
+    pasta_bases = Path("bases_os")
+    st.error(f"Nenhuma planilha encontrada na pasta '{pasta_bases.absolute()}'.")
+    st.stop()
+
+df_base = aplicar_overlay_baixas(
+    df_base_bruto=df_base_bruto,
+    escopo_usuario=st.session_state["escopo"],
+    baixas_mtime=baixas_mtime
+)
+
+st.session_state["df_os"] = df_base
+df_visao = preparar_df_visao(df_base, filtro_visao)
 #endregion
 
 #region SESSÃO 5.3: Filtros da sidebar
