@@ -79,6 +79,29 @@ def init_db():
                 coordenacao_padrao VARCHAR(100) DEFAULT 'ICG'
             );
         """)
+
+        # Tabela para auditoria de acessos e tempo de uso
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS logs_acesso (
+                id SERIAL PRIMARY KEY,
+                username VARCHAR(255) NOT NULL,
+                data_hora_login TIMESTAMP NOT NULL,
+                data_hora_logout TIMESTAMP,
+                geolocalizacao_login VARCHAR(255),
+                sessao_ativa BOOLEAN DEFAULT TRUE
+            );
+        """)
+
+        # Tabela para armazenar as OS programadas
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS os_programadas (
+                id SERIAL PRIMARY KEY,
+                os VARCHAR(255) UNIQUE NOT NULL,
+                mes_referencia VARCHAR(50),
+                dados_completos JSONB,
+                data_upload TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
         
         # Criar um usuário admin padrão caso o banco esteja vazio
         cur.execute("SELECT COUNT(*) FROM usuarios")
@@ -891,6 +914,73 @@ def resumir_conclusoes_por_turno_data(
 #endregion
 #endregion
 
+#region SESSÃO 2.7 ===== Administração de Dados =====
+import json
+
+def render_tela_admin():
+    st.title("⚙️ Administração de Dados")
+    st.markdown("Faça o upload da base de **OS Programadas** para atualizar o sistema central.")
+    
+    # Seleção do Mês de Referência para organizar o histórico
+    mes_ref = st.text_input("Mês de Referência (ex: Junho/2026)", placeholder="Mês/Ano")
+    
+    # Campo de Upload (aceita CSV com separador ; ou Excel padrão)
+    arquivo_upload = st.file_uploader("Selecione a planilha da coordenação", type=["csv", "xlsx"])
+    
+    if arquivo_upload is not None and mes_ref:
+        if st.button("🚀 Processar e Salvar no Banco", use_container_width=True, type="primary"):
+            with st.spinner("Lendo e processando dados..."):
+                try:
+                    # Tenta ler como CSV primeiro, se der erro, lê como Excel
+                    if arquivo_upload.name.endswith('.csv'):
+                        df = pd.read_csv(arquivo_upload, sep=';', encoding='utf-8-sig')
+                    else:
+                        df = pd.read_excel(arquivo_upload)
+                    
+                    # Verifica se a coluna vital existe
+                    if "Ordem servico" not in df.columns:
+                        st.error("❌ A coluna 'Ordem servico' não foi encontrada na planilha. Verifique o arquivo.")
+                        return
+                    
+                    # Limpeza de dados: substitui valores vazios (NaN) por string vazia para o banco aceitar
+                    df = df.fillna("")
+                    
+                    # Prepara a conexão com o banco
+                    conn = get_connection()
+                    cur = conn.cursor()
+                    
+                    sucesso_count = 0
+                    
+                    # Lógica de inserção inteligente (Upsert)
+                    comando_sql = """
+                        INSERT INTO os_programadas (os, mes_referencia, dados_completos)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (os) DO UPDATE 
+                        SET mes_referencia = EXCLUDED.mes_referencia,
+                            dados_completos = EXCLUDED.dados_completos,
+                            data_upload = CURRENT_TIMESTAMP;
+                    """
+                    
+                    # Transforma cada linha num dicionário e manda para o Neon
+                    for _, row in df.iterrows():
+                        os_num = str(row["Ordem servico"]).strip()
+                        if os_num: # Só salva se tiver número de OS
+                            dados_json = json.dumps(row.to_dict())
+                            cur.execute(comando_sql, (os_num, mes_ref, dados_json))
+                            sucesso_count += 1
+                            
+                    conn.commit()
+                    cur.close()
+                    release_connection(conn)
+                    
+                    st.success(f"✅ Base processada com sucesso! {sucesso_count} Ordens de Serviço foram salvas/atualizadas para o mês de {mes_ref}.")
+                    
+                except Exception as e:
+                    st.error(f"❌ Ocorreu um erro ao processar o arquivo: {e}")
+    elif arquivo_upload is not None and not mes_ref:
+        st.warning("⚠️ Por favor, digite o Mês de Referência antes de processar.")
+#endregion
+
 #region SESSÃO 3: Banco de Coordenadas Fixo
 
 #region SESSÃO 3.1 Coordenadas Fixas
@@ -1486,6 +1576,36 @@ df_base = aplicar_overlay_baixas(
 
 st.session_state["df_os"] = df_base
 df_visao = preparar_df_visao(df_base, filtro_visao)
+#endregion
+
+# 5.1.3 Navegação e definição do escopo visual
+st.sidebar.markdown("### 🧭 Navegação")
+
+# --- LÓGICA DE ROTEAMENTO (ADMIN VS DASHBOARD) ---
+if "tela_atual" not in st.session_state:
+    st.session_state["tela_atual"] = "dashboard"
+
+if st.session_state["perfil"] in ["Gerência", "Admin"]:
+    col_nav1, col_nav2 = st.sidebar.columns(2)
+    with col_nav1:
+        if st.button("📊 Painel", use_container_width=True): st.session_state["tela_atual"] = "dashboard"
+    with col_nav2:
+        if st.button("⚙️ Dados", use_container_width=True): st.session_state["tela_atual"] = "admin"
+# -------------------------------------------------
+
+# Se o usuário clicar em "⚙️ Dados", renderiza a tela de admin e PARA o código 
+# (evita carregar os gráficos pesados atoa)
+if st.session_state.get("tela_atual") == "admin":
+    render_tela_admin()
+    st.stop()
+
+# Continuação normal para o Dashboard
+if st.session_state["perfil"] == "Gerência":
+    visao_selecionada = st.sidebar.radio("Selecione a Visão:", ["Gerência", "Paranapiacaba", "Piaçaguera"], label_visibility="collapsed")
+    filtro_visao = "Todas" if visao_selecionada == "Gerência" else visao_selecionada
+else:
+    filtro_visao = st.session_state["escopo"]
+    st.sidebar.info(f"Visão Restrita: {filtro_visao}")
 #endregion
 
 #region SESSÃO 5.3: Filtros da sidebar
