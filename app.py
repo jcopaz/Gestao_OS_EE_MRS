@@ -195,7 +195,7 @@ if not st.session_state["logged_in"]:
             with st.form("form_login"):
                 user_input = st.text_input("Usuário")
                 pass_input = st.text_input("Senha", type="password")
-                submit = st.form_submit_button("Entrar", use_container_width=True)
+                submit = st.form_submit_button("Entrar", width="stretch")
             
             if submit:
                 conn = get_connection()
@@ -996,7 +996,7 @@ def render_tela_admin():
     arquivo_upload = st.file_uploader("Selecione a planilha Excel ou CSV", type=["csv", "xlsx"])
     
     if arquivo_upload is not None and mes_ref:
-        if st.button("🚀 Processar e Salvar no Banco", use_container_width=True, type="primary"):
+        if st.button("🚀 Processar e Salvar no Banco", width="stretch", type="primary"):
             
             escopo_user = st.session_state.get("escopo", "Todas")
             if escopo_user != "Todas" and escopo_user != coord_upload:
@@ -1079,7 +1079,7 @@ def render_tela_admin():
                             data=arquivo_sap,
                             file_name=f"Baixa_Massa_SAP_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            use_container_width=False,
+                            use_container_width="content",
                             type="primary"
                         )
                 else:
@@ -1640,7 +1640,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # 5.1.2 Logotipo
-st.sidebar.image("logo_mrs.png", use_container_width=True)
+st.sidebar.image("logo_mrs.png", width="stretch")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 # 5.1.3 Navegação Inteligente (Baseada na Governança)
@@ -1655,18 +1655,18 @@ gov_usuario = st.session_state.get("governanca", "")
 col_nav1, col_nav2 = st.sidebar.columns(2)
 with col_nav1:
     if "Painel Gerencial" in gov_usuario or "Mapa de Campo" in gov_usuario:
-        if st.button("📊 Painel", use_container_width=True): 
+        if st.button("📊 Painel", width="stretch"): 
             st.session_state["tela_atual"] = "dashboard"
             st.rerun()
 with col_nav2:
     if "Upload de Dados" in gov_usuario:
-        if st.button("⚙️ Dados", use_container_width=True): 
+        if st.button("⚙️ Dados", width="stretch"): 
             st.session_state["tela_atual"] = "admin"
             st.rerun()
 
 # Botão exclusivo para liderança (CORRIGIDO PARA A SIDEBAR)
 if "Gestão de Usuários" in gov_usuario or "Exportar SAP" in gov_usuario:
-    if st.sidebar.button("🛡️ Governança (Auditoria)", use_container_width=True): 
+    if st.sidebar.button("🛡️ Governança (Auditoria)", width="stretch"): 
         st.session_state["tela_atual"] = "governanca"
         st.rerun()
 
@@ -1793,7 +1793,7 @@ if "Gestão de Usuários" in st.session_state.get("governanca", ""):
             st.slider("Volume de OS simuladas", 100, 4000, 1200, 100, key="qtd_sim")
             st.number_input("Seed (repete mesmos dados)", value=42, key="seed_sim")
         else:
-            if st.button("🔄 Recarregar dados (ETL)", use_container_width=True):
+            if st.button("🔄 Recarregar dados (ETL)", width="stretch"):
                 st.cache_data.clear(); st.rerun()
 
         st.markdown("<div style='background-color: #FF4B4B; color: #FFFFFF; font-weight: bold; text-align: center; padding: 8px; border-radius: 6px; margin-top: 15px; margin-bottom: 10px;'>Gestão de Usuários</div>", unsafe_allow_html=True)
@@ -1906,10 +1906,10 @@ with col_titulo:
 with col_acoes:
     st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
     
-    if st.button("🔄 Atualizar", use_container_width=True):
+    if st.button("🔄 Atualizar", width="stretch"):
         st.rerun()
         
-    if st.button("🔑 Trocar", use_container_width=True):
+    if st.button("🔑 Trocar", width="stretch"):
         usr_atual = st.session_state["username"]
         conn = get_connection()
         cur = conn.cursor()
@@ -1924,7 +1924,7 @@ with col_acoes:
         st.session_state["reset_user"] = usr_atual
         st.rerun()
         
-    if st.button("🚪 Sair", use_container_width=True):
+    if st.button("🚪 Sair", width="stretch"):
         st.session_state.clear() 
         st.session_state["logged_in"] = False
         st.rerun()
@@ -2250,7 +2250,7 @@ with tab1:
 
         if not df_lista.empty:
             df_styled = df_lista[colunas_ordem].style.set_properties(**{'text-align': 'center'}).set_table_styles([{'selector': 'th', 'props': [('text-align', 'center')]}])
-            st.dataframe(df_styled, use_container_width=True, height=400, hide_index=True)
+            st.dataframe(df_styled, width="stretch", height=400, hide_index=True)
 #endregion
 
 #region 8.3: ABA 2 — Roteirização e Mapa de Campo
@@ -2639,7 +2639,7 @@ if perfil_seguro in perfis_autorizados:
                     df_metric_atencao = df_metric_atencao.sort_values(by="Desvio Médio (Min)", ascending=False)
                     
                     df_metric_atencao.columns = ["Colaborador", "Volume OS", "Média Real (min)", "Média Plano (min)", "Desvio Médio (min)", "Taxa Aderência", "Avaliação de Risco"]
-                    st.dataframe(df_metric_atencao[["Colaborador", "Volume OS", "Desvio Médio (min)", "Taxa Aderência", "Avaliação de Risco"]], use_container_width=True, hide_index=True)
+                    st.dataframe(df_metric_atencao[["Colaborador", "Volume OS", "Desvio Médio (min)", "Taxa Aderência", "Avaliação de Risco"]], width="stretch", hide_index=True)
                 else:
                     st.info("Amostragem insuficiente para gerar matriz de atenção.")
 
@@ -2778,7 +2778,7 @@ if perfil_seguro in perfis_autorizados:
                         df_exibir["Tempo Realizado"] = df_concluidas["tempo_real_min"].round(1).astype(str) + " min"
                         df_exibir["Data/Hora Concluido a OS"] = df_concluidas[c_concluido] if c_concluido else "---"
 
-                        st.dataframe(df_exibir, use_container_width=True, height=350, hide_index=True)
+                        st.dataframe(df_exibir, width="stretch", height=350, hide_index=True)
 #endregion
 #endregion
 #endregion
