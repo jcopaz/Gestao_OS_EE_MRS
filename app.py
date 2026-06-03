@@ -2109,20 +2109,14 @@ if st.session_state.get("tela_atual") == "governanca":
         return 'color: #065F46;'
 
     st.dataframe(
-        df_auditoria.style.applymap(highlight_gps, subset=["Localização do Celular"]),
+        df_auditoria.style.map(highlight_gps, subset=["Localização do Celular"]),
         use_container_width=True, 
         height=300, 
         hide_index=True
     )
 
     st.stop() # Interrompe a execução para não desenhar o resto das abas do sistema
-    st.dataframe(
-            df_auditoria.style.applymap(highlight_gps, subset=["Localização do Celular"]),
-            use_container_width=True, 
-            height=300, 
-            hide_index=True
-        )
-    st.stop()
+#endregion
 #endregion
 
 #region SESSÃO 7: DASHBOARD HEADER E KPI METRICS
