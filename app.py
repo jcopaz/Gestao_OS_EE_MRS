@@ -409,7 +409,8 @@ def upsert_baixa(os_id: str, status: str, realizado_em_str: str, coordenacao: st
 
 def carregar_baixas_df() -> pd.DataFrame:
     conn = get_connection()
-    df = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por FROM baixas", conn)
+    # Correção Ponto 3: Adicionando a geolocalizacao_baixa na busca do banco
+    df = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa FROM baixas", conn)
     release_connection(conn)
     if df.empty:
         return df
@@ -1232,73 +1233,45 @@ def carregar_base_sem_overlay(
     return df_base_final
 
 @st.cache_data(show_spinner=False)
-def aplicar_overlay_baixas(
-    df_base_bruto: pd.DataFrame,
-    escopo_usuario: str,
-    baixas_mtime: float
-) -> pd.DataFrame:
+def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, baixas_mtime: float) -> pd.DataFrame:
     df_base = df_base_bruto.copy()
+    if df_base.empty: return df_base
 
-    if df_base.empty:
-        return df_base
+    # Correção Ponto 4: Força qualquer status vazio ou nulo a virar "Pendente" antes do cruzamento
+    if "Status da Operação" in df_base.columns:
+        df_base["Status da Operação"] = df_base["Status da Operação"].replace(["", "nan", "NaN", "None"], "Pendente")
 
-    #init_db()
     df_baixas = carregar_baixas_df()
-
-    if df_baixas.empty:
-        return df_base
+    if df_baixas.empty: return df_base
 
     df_base["Ordem servico"] = df_base["Ordem servico"].astype(str)
 
     if escopo_usuario != "Todas":
-        df_baixas = df_baixas[
-            df_baixas["coordenacao"].str.contains(escopo_usuario, case=False, na=False)
-        ]
+        df_baixas = df_baixas[df_baixas["coordenacao"].str.contains(escopo_usuario, case=False, na=False)]
 
-    for col in ["Status da Operação", "Data/Hora Realizado", "Concluído por"]:
-        if col not in df_base.columns:
-            df_base[col] = ""
+    # Correção Ponto 3: Incluindo a geolocalização no cruzamento
+    colunas_overlay = ["Status da Operação", "Data/Hora Realizado", "Concluído por", "Geolocalização de Baixa"]
+    for col in colunas_overlay:
+        if col not in df_base.columns: df_base[col] = ""
 
     df_baixas = df_baixas.rename(columns={
-        "os": "Ordem servico",
-        "status": "Status da Operação",
-        "realizado_em": "Data/Hora Realizado",
-        "concluido_por": "Concluído por"
+        "os": "Ordem servico", "status": "Status da Operação", 
+        "realizado_em": "Data/Hora Realizado", "concluido_por": "Concluído por",
+        "geolocalizacao_baixa": "Geolocalização de Baixa"
     })
 
     df_base = df_base.merge(
-        df_baixas[["Ordem servico", "Status da Operação", "Data/Hora Realizado", "Concluído por"]],
-        on="Ordem servico",
-        how="left",
-        suffixes=("", "_baixado")
+        df_baixas[["Ordem servico"] + colunas_overlay],
+        on="Ordem servico", how="left", suffixes=("", "_baixado")
     )
 
-    df_base["Status da Operação"] = np.where(
-        df_base["Status da Operação_baixado"].notna(),
-        df_base["Status da Operação_baixado"],
-        df_base["Status da Operação"]
-    )
-
-    df_base["Data/Hora Realizado"] = np.where(
-        df_base["Data/Hora Realizado_baixado"].notna(),
-        df_base["Data/Hora Realizado_baixado"],
-        df_base["Data/Hora Realizado"]
-    )
-
-    df_base["Concluído por"] = np.where(
-        df_base["Concluído por_baixado"].notna(),
-        df_base["Concluído por_baixado"],
-        df_base["Concluído por"]
-    )
-
-    df_base.drop(
-        columns=[
-            "Status da Operação_baixado",
-            "Data/Hora Realizado_baixado",
-            "Concluído por_baixado"
-        ],
-        inplace=True
-    )
+    for col in colunas_overlay:
+        df_base[col] = np.where(
+            df_base[f"{col}_baixado"].notna() & (df_base[f"{col}_baixado"] != ""),
+            df_base[f"{col}_baixado"],
+            df_base[col]
+        )
+        df_base.drop(columns=[f"{col}_baixado"], inplace=True)
 
     return df_base
 #endregion
@@ -2116,7 +2089,7 @@ with tab1:
                 errors="coerce"
             ).dt.strftime("%d/%m/%Y %H:%M").fillna("")
 
-        colunas_ordem = ["OS", "Patio", "Ativo", "Criticidade", "Classificacao", "Descrição Longa", "Data inicial programada", "Status da Operação", "Data/Hora Realizado", "Concluído por"]
+        colunas_ordem = ["OS", "Patio", "Ativo", "Criticidade", "Classificacao", "Descrição Longa", "Data inicial programada", "Status da Operação", "Data/Hora Realizado", "Concluído por", "Geolocalização de Baixa"]
 
         for c in colunas_ordem:
             if c not in df_lista.columns: df_lista[c] = ""
@@ -2639,14 +2612,13 @@ with tab2:
             st.markdown("---")
             st.markdown("#### ✅ Apontamento e Conclusão de OS")
             
-            # 1. Múltipla Seleção de OS
+            # 1. Múltipla Seleção (Fica FORA do formulário para poder gerar os campos dinamicamente)
             os_selecionadas = st.multiselect(
                 "1. Selecione as OSs que deseja baixar:",
                 df_recomendado["Ordem servico"].astype(str).tolist()
             )
 
             if os_selecionadas:
-                # 2. Busca lista de usuários cadastrados para montar a equipe
                 conn = get_connection()
                 df_users_equipe = pd.read_sql_query("SELECT username FROM usuarios", conn)
                 release_connection(conn)
@@ -2654,13 +2626,70 @@ with tab2:
                 
                 usr_logado = st.session_state.get("username", "")
                 if usr_logado in lista_equipe_disp:
-                    lista_equipe_disp.remove(usr_logado) # Remove o próprio técnico da lista de convidados
+                    lista_equipe_disp.remove(usr_logado)
+                
+                # --- INÍCIO DO FORMULÁRIO (Trava os "Piscões" de Rerun) ---
+                with st.form("form_apontamento_os"):
+                    equipe_selecionada = st.multiselect(
+                        "2. Selecione a sua equipe (Co-executantes presentes):", 
+                        lista_equipe_disp, help="Deixe em branco se estiver trabalhando sozinho."
+                    )
+
+                    st.markdown("---")
+                    st.markdown("#### ⏳ Apontamento de Tempos Individuais")
                     
-                equipe_selecionada = st.multiselect(
-                    "2. Selecione a sua equipe (Co-executantes presentes):", 
-                    lista_equipe_disp,
-                    help="Deixe em branco se estiver trabalhando sozinho."
-                )
+                    apontamentos = {}
+                    todos_preenchidos = True
+                    
+                    for os_id in os_selecionadas:
+                        st.markdown(f"<b style='color: #3B82F6;'>OS: {os_id}</b>", unsafe_allow_html=True)
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            h_ini = st.time_input(f"Horário Início", key=f"ini_{os_id}", value=None)
+                        with c2:
+                            h_fim = st.time_input(f"Horário Fim", key=f"fim_{os_id}", value=None)
+                            
+                        apontamentos[os_id] = {"inicio": h_ini, "fim": h_fim}
+                        if h_ini is None or h_fim is None:
+                            todos_preenchidos = False
+                        st.markdown("<hr style='margin: 8px 0; border-color: #333D4E;'>", unsafe_allow_html=True)
+
+                    origem = st.session_state.get("origem_tipo", "BASE")
+                    
+                    # Botão de envio DENTRO do formulário (só avalia regras ao clicar)
+                    submit_baixa = st.form_submit_button("🚀 Concluir e Gravar OS(s)", use_container_width=True)
+                    
+                    if submit_baixa:
+                        if origem != "GPS":
+                            st.warning("📍 **Atenção:** A geolocalização é obrigatória. Role para cima e clique em '📍 Minha Localização'.")
+                        elif not todos_preenchidos:
+                            st.warning("⚠️ Preencha os horários de **início e fim** de todas as OSs.")
+                        else:
+                            geo_baixa = f"{st.session_state.get('local_nome', 'Local')} (Lat: {st.session_state.get('lat_partida')}, Lon: {st.session_state.get('lon_partida')})"
+                            equipe_str = ", ".join(equipe_selecionada) if equipe_selecionada else "Sozinho"
+                            data_hoje_br = datetime.now().strftime("%d/%m/%Y")
+                            realizado_dt = agora_dt()
+                            
+                            for os_id in os_selecionadas:
+                                hora_ini_str = apontamentos[os_id]["inicio"].strftime("%H:%M:%S")
+                                hora_fim_str = apontamentos[os_id]["fim"].strftime("%H:%M:%S")
+                                
+                                mask = (st.session_state["df_os"]["Ordem servico"].astype(str) == str(os_id))
+                                dt_prog = st.session_state["df_os"].loc[mask, "Data inicial programada"].iloc[0] if len(st.session_state["df_os"].loc[mask]) > 0 else pd.NaT
+                                coord = st.session_state["df_os"].loc[mask, "Coordenacao"].iloc[0] if len(st.session_state["df_os"].loc[mask]) > 0 else "Campo"
+
+                                novo_status = determinar_status_execucao(pd.to_datetime(dt_prog, errors="coerce"), realizado_dt)
+
+                                upsert_baixa(
+                                    os_id=str(os_id), status=novo_status, realizado_em_str=formatar_dt_br(realizado_dt),
+                                    coordenacao=coord, concluido_por=usr_logado, geolocalizacao_baixa=geo_baixa,
+                                    equipe=equipe_str, data_inicio=data_hoje_br, hora_inicio=hora_ini_str,
+                                    data_fim=data_hoje_br, hora_fim=hora_fim_str
+                                )
+                            
+                            st.success(f"✅ Execução de {len(os_selecionadas)} OS(s) registrada com sucesso!")
+                            time.sleep(2)
+                            st.rerun()
 
                 st.markdown("---")
                 st.markdown("#### ⏳ Apontamento de Tempos Individuais")
