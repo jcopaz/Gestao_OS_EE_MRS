@@ -2198,13 +2198,12 @@ if perfil_usuario in ["Gerente", "Coordenador", "Gerência"]:
         "🗺️ Roteirização e Mapa de Campo",
         "⚖️ Governança Operacional"
     ])
-    exibir_governanca = True
 else:
     tab1, tab2 = st.tabs([
         "📊 Visão Gerencial (Indicadores)", 
         "🗺️ Roteirização e Mapa de Campo"
     ])
-    exibir_governanca = False
+    tab3 = None  # Variável nula para proteger o sistema
 
 #region 8.2: ABA 1 — Visão Gerencial (Indicadores)
 with tab1:
