@@ -2018,7 +2018,7 @@ st.markdown("---")
 perfil_logado = st.session_state.get("perfil", "")
 
 # A aba de Governança só é injetada no DOM se o perfil for gestor E o botão da sidebar estiver ativo
-if perfil_logado in ["Gerente", "Coordenador", "Gerência"] and st.session_state.get("ver_governanca", False):
+if perfil_logado in ["Gerente", "Coordenador", "Gerência", "admin"] and st.session_state.get("ver_governanca", False):
     tab1, tab2, tab3 = st.tabs(["📋 Painel de Controle", "📊 Indicadores Gerenciais", "⚖️ Governança Operacional"])
 else:
     tab1, tab2 = st.tabs(["📋 Painel de Controle", "📊 Indicadores Gerenciais"])
