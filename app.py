@@ -2125,7 +2125,7 @@ if st.session_state.get("tela_atual") == "governanca":
     with col_a:
         st.markdown("#### 🕒 Aderência: Login vs. Primeiro Apontamento")
         # Mesclamos o primeiro login com o primeiro apontamento do técnico
-        df_logs["data"] = pd.to_datetime(df_logs["primeiro_acesso"]).dt.date
+        df_logs["data"] = pd.to_datetime(df_logs["data_hora_login"]).dt.date
         df_baixas_full["data"] = pd.to_datetime(df_baixas_full["data_inicio"], format="%d/%m/%Y").dt.date
         
         # Agrupa o primeiro apontamento
