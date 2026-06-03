@@ -2014,17 +2014,16 @@ st.markdown("---")
 #region SESSÃO 8: Abas e Renderização dos Gráficos
 
 # --- MAPEAMENTO DINÂMICO DE ABAS (PROTEÇÃO ABSOLUTA DE ACESSO) ---
-perfil_logado = st.session_state.get("perfil", "")
+# Declaramos o perfil_seguro AQUI para que sirva para todas as abas
+perfil_seguro = str(st.session_state.get("perfil", "")).strip().lower()
+perfis_autorizados = ["gerente", "coordenador", "gerência", "admin", "administrador"]
 
-# Lista de perfis com permissão para ver a Governança (incluindo Admin)
-perfis_autorizados = ["Gerente", "Coordenador", "Gerência", "Admin", "Administrador"]
-
-# A aba só é injetada se o perfil estiver na lista E o botão da sidebar for clicado
-if perfil_logado in perfis_autorizados and st.session_state.get("ver_governanca", False):
+# Cria as abas de acordo com a autorização e o botão toggle da sidebar
+if perfil_seguro in perfis_autorizados and st.session_state.get("ver_governanca", False):
     tab1, tab2, tab3 = st.tabs(["📋 Painel de Controle", "📊 Indicadores Gerenciais", "⚖️ Governança Operacional"])
 else:
     tab1, tab2 = st.tabs(["📋 Painel de Controle", "📊 Indicadores Gerenciais"])
-    tab3 = None  # Aba de Governança não existe para perfis sem acesso
+    tab3 = None  # Protege o sistema se o usuário não for autorizado
 
 #region 8.2: ABA 1 — Visão Gerencial (Indicadores)
 with tab1:
@@ -2547,11 +2546,8 @@ with tab2:
 
 #region 8.4: ABA 3 — Governança Operacional
 
-#region 8.4: ABA 3 — Governança Operacional
-
 perfil_logado = st.session_state.get("perfil", "")
-
-if perfil_logado in ["Gerente", "Coordenador", "Gerência", "Admin", "Administrador"]:
+if perfil_seguro in perfis_autorizados:
     if "tab3" in locals() and tab3 is not None:
         
         with tab3:
