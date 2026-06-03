@@ -121,15 +121,16 @@ def init_db():
 init_db()
 #endregion
 
-#region SESSÃO 1.5: Barreira de Login com Governança
+#region SESSÃO 1.5: Barreira de Login com Governança e GPS Obrigatório
 if "logged_in" not in st.session_state:
-    st.session_state.update({"logged_in": False, "username": "", "perfil": "", "escopo": "", "governanca": "", "needs_reset": False, "recuperando": False})
+    st.session_state.update({"logged_in": False, "username": "", "perfil": "", "escopo": "", "governanca": "", "needs_reset": False, "validando_gps": False})
 
 if not st.session_state["logged_in"]:
     st.markdown("<h3 style='text-align: center; color: #475569;'>Acesso Restrito</h3>", unsafe_allow_html=True)
     col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
     
     with col_l2:
+        # ETAPA 3: Reset de Senha (se for o primeiro acesso)
         if st.session_state.get("needs_reset"):
             st.warning("⚠️ Configure sua senha e sua palavra de recuperação.")
             with st.form("form_reset"):
@@ -148,6 +149,48 @@ if not st.session_state["logged_in"]:
                         release_connection(conn)
                         st.success("Concluído! Entre com sua nova senha."); st.session_state["needs_reset"] = False; st.rerun()
             if st.button("⬅️ Voltar"): st.session_state["needs_reset"] = False; st.rerun()
+            
+        # ETAPA 2: Barreira de GPS Obrigatória 100% Rígida
+        elif st.session_state.get("validando_gps"):
+            st.info("📍 **Auditoria de Segurança:** Capturando sua localização para liberar o acesso. Por favor, clique em 'Permitir' no aviso do seu navegador.")
+            loc_login = get_geolocation()
+            
+            if loc_login and isinstance(loc_login, dict) and "coords" in loc_login:
+                coords = loc_login.get("coords", {})
+                lat_log = coords.get("latitude")
+                lon_log = coords.get("longitude")
+                
+                if lat_log is not None and lon_log is not None:
+                    # Grava no banco de dados o log de acesso
+                    geo_str = f"Lat: {lat_log}, Lon: {lon_log}"
+                    conn = get_connection()
+                    cur = conn.cursor()
+                    cur.execute("""
+                        INSERT INTO logs_acesso (username, data_hora_login, geolocalizacao_login)
+                        VALUES (%s, CURRENT_TIMESTAMP, %s)
+                    """, (st.session_state["temp_user"], geo_str))
+                    conn.commit()
+                    cur.close()
+                    release_connection(conn)
+                    
+                    # Concede o acesso final
+                    st.session_state.update({
+                        "logged_in": True,
+                        "username": st.session_state["temp_user"],
+                        "perfil": st.session_state["temp_perfil"],
+                        "escopo": st.session_state["temp_escopo"],
+                        "governanca": st.session_state["temp_gov"]
+                    })
+                    st.session_state["validando_gps"] = False
+                    st.rerun()
+                    
+            elif loc_login and isinstance(loc_login, dict) and "error" in loc_login:
+                st.error("🛑 **Acesso Bloqueado:** O sistema exige a leitura do seu GPS para permitir o login. Verifique se o GPS do seu aparelho está ligado e se o seu navegador tem permissão de localização.")
+                if st.button("⬅️ Voltar para o Login"):
+                    st.session_state["validando_gps"] = False
+                    st.rerun()
+                
+        # ETAPA 1: Login Padrão
         else:
             with st.form("form_login"):
                 user_input = st.text_input("Usuário")
@@ -157,7 +200,6 @@ if not st.session_state["logged_in"]:
             if submit:
                 conn = get_connection()
                 cur = conn.cursor()
-                # Adicionado a leitura da coluna governanca
                 cur.execute("SELECT senha_hash, perfil, escopo, reset_obrigatorio, governanca FROM usuarios WHERE username = %s", (user_input.strip(),))
                 row = cur.fetchone()
                 cur.close()
@@ -169,8 +211,11 @@ if not st.session_state["logged_in"]:
                         st.session_state["reset_user"] = user_input.strip()
                         st.rerun()
                     else:
-                        # Salva a governança na sessão do usuário
-                        st.session_state.update({"logged_in": True, "username": user_input.strip(), "perfil": row[1], "escopo": row[2], "governanca": row[4] or "Mapa de Campo"})
+                        st.session_state["temp_user"] = user_input.strip()
+                        st.session_state["temp_perfil"] = row[1]
+                        st.session_state["temp_escopo"] = row[2]
+                        st.session_state["temp_gov"] = row[4] or "Mapa de Campo"
+                        st.session_state["validando_gps"] = True
                         st.rerun()
                 else: st.error("❌ Usuário ou senha incorretos.")
     st.stop()
@@ -991,6 +1036,45 @@ def render_tela_admin():
                     st.error(f"❌ Ocorreu um erro ao processar o arquivo: {e}")
     elif arquivo_upload is not None:
         st.warning("⚠️ Preencha o Mês e a Coordenação antes de processar.")
+# --- SESSÃO DE EXPORTAÇÃO SAP ---
+    if "Exportar SAP" in st.session_state.get("governanca", ""):
+        st.markdown("---")
+        st.subheader("⬇️ Exportação SAP")
+        st.markdown("Gere o arquivo consolidado com os apontamentos de campo para importação no SAP.")
+        
+        with st.spinner("Preparando base de dados para exportação..."):
+            # Puxa a base atualizada para garantir que pegará as últimas baixas
+            df_bruto = carregar_base_sem_overlay(
+                usar_sim=False, qtd_sim=0, seed_sim=0, 
+                escopo_usuario=st.session_state.get("escopo", "Todas"), 
+                etl_version=ETL_VERSION
+            )
+            df_completo = aplicar_overlay_baixas(
+                df_base_bruto=df_bruto,
+                escopo_usuario=st.session_state.get("escopo", "Todas"),
+                baixas_mtime=time.time()
+            )
+            
+            if not df_completo.empty:
+                df_completo["Status_norm"] = df_completo["Status da Operação"].astype(str).str.strip().str.upper()
+                tem_concluida = df_completo["Status_norm"].isin(_status_prazo | _status_atraso).any()
+                
+                if tem_concluida:
+                    arquivo_sap = gerar_excel_sap_bytes(df_completo)
+                    if arquivo_sap:
+                        st.download_button(
+                            label="⬇️ Gerar Arquivo SAP (Massa)",
+                            data=arquivo_sap,
+                            file_name=f"Baixa_Massa_SAP_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=False,
+                            type="primary"
+                        )
+                else:
+                    st.info("⚠️ Nenhuma OS concluída encontrada para exportação no momento.")
+            else:
+                st.warning("A base de dados central está vazia.")
+#endregion
 #endregion
 
 #region SESSÃO 3: Banco de Coordenadas Fixo
@@ -2112,27 +2196,8 @@ with tab1:
                 else:
                     st.info("Sem dados cronológicos.")
 
-# --- INÍCIO DA TABELA E EXPORTAÇÃO ---
-        col_tit_lista, col_btn_sap = st.columns([7, 3])
-        with col_tit_lista:
-            st.subheader("📋 Lista Detalhada de OS")
-            
-        with col_btn_sap:
-            st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
-            tem_concluida = df_visao_base["Status_norm"].isin(_status_prazo | _status_atraso).any()
-            
-            if tem_concluida:
-                arquivo_sap = gerar_excel_sap_bytes(df_visao_base)
-                if arquivo_sap:
-                    st.download_button(
-                        label="⬇️ Gerar Arquivo SAP (Massa)",
-                        data=arquivo_sap,
-                        file_name=f"Baixa_Massa_SAP_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                        type="primary"
-                    )
-
+# --- INÍCIO DA TABELA ---
+        st.subheader("📋 Lista Detalhada de OS")
         df_lista = df_visao_base.copy().rename(columns={"Ordem servico": "OS"})
 
         if "Data inicial programada" in df_lista.columns:
