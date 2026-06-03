@@ -917,7 +917,8 @@ def render_tela_admin():
                     for _, row in df.iterrows():
                         os_num = str(row["Ordem servico"]).strip()
                         if os_num: 
-                            cur.execute(comando_sql, (os_num, mes_ref, coord_upload, json.dumps(row.to_dict())))
+                            # CORREÇÃO: default=str adicionado abaixo para transformar datas em texto!
+                            cur.execute(comando_sql, (os_num, mes_ref, coord_upload, json.dumps(row.to_dict(), default=str)))
                             sucesso_count += 1
                             
                     conn.commit()
