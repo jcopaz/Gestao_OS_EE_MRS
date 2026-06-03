@@ -2197,13 +2197,14 @@ if perfil_usuario in ["Gerente", "Coordenador"]:
         "📊 Visão Gerencial (Indicadores)", 
         "🗺️ Roteirização e Mapa de Campo",
         "⚖️ Governança Operacional"
-    ])
+    ])  # <-- Garanta que estes fechem corretamente aqui!
     exibir_governanca = True
 else:
     tab1, tab2 = st.tabs([
         "📊 Visão Gerencial (Indicadores)", 
         "🗺️ Roteirização e Mapa de Campo"
     ])
+    tab3 = None  # 🛡️ SEGURANÇA: Define como None para evitar NameError em perfis operacionais
     exibir_governanca = False
 
 
@@ -2727,7 +2728,7 @@ with tab2:
 #endregion
 
 #region 8.4: ABA 3 — Governança Operacional
-if exibir_governanca:
+if exibir_governanca and tab3 is not None:
     with tab3:
         st.markdown("<h3 style='color: #0F172A; font-weight: 700;'>⚖️ Motor de Governança Operacional</h3>", unsafe_allow_html=True)
         st.markdown("Análise estatística de eficiência, variabilidade de cronograma e calibração de tempos de manutenção.")
