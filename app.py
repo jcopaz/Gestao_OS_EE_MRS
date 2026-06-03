@@ -85,13 +85,23 @@ def init_db():
             );
         """)
         
-        # --- ATUALIZAÇÕES AUTOMÁTICAS DE ESTRUTURA (UPGRADE V6) ---
+        # --- ATUALIZAÇÕES AUTOMÁTICAS DE ESTRUTURA (UPGRADE V6 E FASE 2) ---
         try:
             cur.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS governanca VARCHAR(255) DEFAULT 'Painel Gerencial,Mapa de Campo';")
         except Exception: conn.rollback()
         
         try:
             cur.execute("ALTER TABLE os_programadas ADD COLUMN IF NOT EXISTS coordenacao VARCHAR(100);")
+        except Exception: conn.rollback()
+
+        # NOVAS COLUNAS PARA A FASE 2 (Apontamentos e GPS)
+        try:
+            cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS geolocalizacao_baixa VARCHAR(255);")
+            cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS equipe TEXT;")
+            cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS data_inicio VARCHAR(50);")
+            cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS hora_inicio VARCHAR(50);")
+            cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS data_fim VARCHAR(50);")
+            cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS hora_fim VARCHAR(50);")
         except Exception: conn.rollback()
         
         # Criar o admin mestre se não existir
@@ -372,17 +382,27 @@ def tentar_gps_uma_vez():
 
 #region SESSÃO 2.2 ===== Persistência (SQLite) =====
 
-def upsert_baixa(os_id: str, status: str, realizado_em_str: str, coordenacao: str, concluido_por: str):
+def upsert_baixa(os_id: str, status: str, realizado_em_str: str, coordenacao: str, concluido_por: str, 
+                 geolocalizacao_baixa: str = "", equipe: str = "", 
+                 data_inicio: str = "", hora_inicio: str = "", 
+                 data_fim: str = "", hora_fim: str = ""):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO baixas (os, status, realizado_em, coordenacao, concluido_por)
-        VALUES (%s, %s, %s, %s, %s)
+        INSERT INTO baixas (os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (os) DO UPDATE SET
             status = EXCLUDED.status,
             realizado_em = EXCLUDED.realizado_em,
-            concluido_por = EXCLUDED.concluido_por;
-    """, (str(os_id), str(status), str(realizado_em_str), str(coordenacao), str(concluido_por)))
+            concluido_por = EXCLUDED.concluido_por,
+            geolocalizacao_baixa = EXCLUDED.geolocalizacao_baixa,
+            equipe = EXCLUDED.equipe,
+            data_inicio = EXCLUDED.data_inicio,
+            hora_inicio = EXCLUDED.hora_inicio,
+            data_fim = EXCLUDED.data_fim,
+            hora_fim = EXCLUDED.hora_fim;
+    """, (str(os_id), str(status), str(realizado_em_str), str(coordenacao), str(concluido_por), 
+          str(geolocalizacao_baixa), str(equipe), str(data_inicio), str(hora_inicio), str(data_fim), str(hora_fim)))
     conn.commit()
     cur.close()
     release_connection(conn)
@@ -2617,44 +2637,94 @@ with tab2:
 
         if not df_recomendado.empty:
             st.markdown("---")
-            st.markdown("#### ✅ Confirmar Execução")
-            os_selecionada = st.selectbox(
-                "Escolha a OS concluída:",
+            st.markdown("#### ✅ Apontamento e Conclusão de OS")
+            
+            # 1. Múltipla Seleção de OS
+            os_selecionadas = st.multiselect(
+                "1. Selecione as OSs que deseja baixar:",
                 df_recomendado["Ordem servico"].astype(str).tolist()
             )
 
-            if st.button("Gravar Baixa no Sistema", use_container_width=True, type="primary"):
-                realizado_dt = agora_dt()
-                usr = str(st.session_state.get("username", "")).strip() or "Técnico"
-
-                mask = (
-                    st.session_state["df_os"]["Ordem servico"].astype(str)
-                    == str(os_selecionada)
+            if os_selecionadas:
+                # 2. Busca lista de usuários cadastrados para montar a equipe
+                conn = get_connection()
+                df_users_equipe = pd.read_sql_query("SELECT username FROM usuarios", conn)
+                release_connection(conn)
+                lista_equipe_disp = df_users_equipe["username"].tolist()
+                
+                usr_logado = st.session_state.get("username", "")
+                if usr_logado in lista_equipe_disp:
+                    lista_equipe_disp.remove(usr_logado) # Remove o próprio técnico da lista de convidados
+                    
+                equipe_selecionada = st.multiselect(
+                    "2. Selecione a sua equipe (Co-executantes presentes):", 
+                    lista_equipe_disp,
+                    help="Deixe em branco se estiver trabalhando sozinho."
                 )
 
-                dt_prog = (
-                    st.session_state["df_os"].loc[mask, "Data inicial programada"].iloc[0]
-                    if len(st.session_state["df_os"].loc[mask]) > 0 else pd.NaT
-                )
-                coord = (
-                    st.session_state["df_os"].loc[mask, "Coordenacao"].iloc[0]
-                    if len(st.session_state["df_os"].loc[mask]) > 0 else "Campo"
-                )
+                st.markdown("---")
+                st.markdown("#### ⏳ Apontamento de Tempos Individuais")
+                
+                apontamentos = {}
+                todos_preenchidos = True
+                
+                # 3. Gerador dinâmico de linhas de tempo
+                with st.container(border=True):
+                    for os_id in os_selecionadas:
+                        st.markdown(f"<b style='color: #3B82F6;'>OS: {os_id}</b>", unsafe_allow_html=True)
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            h_ini = st.time_input(f"Horário Início", key=f"ini_{os_id}", value=None)
+                        with c2:
+                            h_fim = st.time_input(f"Horário Fim", key=f"fim_{os_id}", value=None)
+                            
+                        apontamentos[os_id] = {"inicio": h_ini, "fim": h_fim}
+                        if h_ini is None or h_fim is None:
+                            todos_preenchidos = False
+                        st.markdown("<hr style='margin: 8px 0; border-color: #333D4E;'>", unsafe_allow_html=True)
 
-                novo_status = determinar_status_execucao(
-                    pd.to_datetime(dt_prog, errors="coerce"),
-                    realizado_dt
-                )
+                # 4. Trava de Segurança GPS e Preenchimento
+                origem = st.session_state.get("origem_tipo", "BASE")
+                
+                if origem != "GPS":
+                    st.warning("📍 **Atenção:** Para registrar uma baixa, o sistema exige a captura da sua geolocalização. Role para cima e clique no botão **'📍 Minha Localização'** antes de concluir.")
+                elif not todos_preenchidos:
+                    st.info("⚠️ Preencha os horários de **início e fim** de todas as OSs acima para liberar o botão de conclusão.")
+                else:
+                    if st.button("🚀 Concluir e Gravar OS(s)", use_container_width=True, type="primary"):
+                        
+                        geo_baixa = f"{st.session_state.get('local_nome', 'Local')} (Lat: {st.session_state.get('lat_partida')}, Lon: {st.session_state.get('lon_partida')})"
+                        equipe_str = ", ".join(equipe_selecionada) if equipe_selecionada else "Sozinho"
+                        data_hoje_br = datetime.now().strftime("%d/%m/%Y")
+                        realizado_dt = agora_dt()
+                        
+                        for os_id in os_selecionadas:
+                            hora_ini_str = apontamentos[os_id]["inicio"].strftime("%H:%M:%S")
+                            hora_fim_str = apontamentos[os_id]["fim"].strftime("%H:%M:%S")
+                            
+                            mask = (st.session_state["df_os"]["Ordem servico"].astype(str) == str(os_id))
+                            dt_prog = st.session_state["df_os"].loc[mask, "Data inicial programada"].iloc[0] if len(st.session_state["df_os"].loc[mask]) > 0 else pd.NaT
+                            coord = st.session_state["df_os"].loc[mask, "Coordenacao"].iloc[0] if len(st.session_state["df_os"].loc[mask]) > 0 else "Campo"
 
-                upsert_baixa(
-                    str(os_selecionada),
-                    novo_status,
-                    formatar_dt_br(realizado_dt),
-                    coord,
-                    usr
-                )
-                st.toast(f"OS {os_selecionada} baixada com sucesso!")
-                st.rerun()
+                            novo_status = determinar_status_execucao(pd.to_datetime(dt_prog, errors="coerce"), realizado_dt)
+
+                            upsert_baixa(
+                                os_id=str(os_id),
+                                status=novo_status,
+                                realizado_em_str=formatar_dt_br(realizado_dt),
+                                coordenacao=coord,
+                                concluido_por=usr_logado,
+                                geolocalizacao_baixa=geo_baixa,
+                                equipe=equipe_str,
+                                data_inicio=data_hoje_br,
+                                hora_inicio=hora_ini_str,
+                                data_fim=data_hoje_br,
+                                hora_fim=hora_fim_str
+                            )
+                        
+                        st.success(f"✅ Execução de {len(os_selecionadas)} OS(s) registrada com sucesso!")
+                        time.sleep(2)
+                        st.rerun()
 
     with col_mapa:
         SP_MIN_LAT, SP_MAX_LAT = -25.50, -19.50
