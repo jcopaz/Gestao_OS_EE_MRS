@@ -2309,174 +2309,94 @@ with tab2:
     }}
     """
 
-    # PROPORÇÃO DAS COLUNAS CORRIGIDA PARA DAR ESPAÇO AO GRÁFICO
-    col_calendario, col_cards, col_turno = st.columns([5.8, 2.0, 2.2], gap="large")
+ # === APLICAÇÃO DE PERFORMANCE (LAZY LOADING) SOLICITADA ===
+    with st.expander("📅 Mostrar Agenda Mensal de Demanda por Pátio e Turno", expanded=not is_tecnico):
+        col_calendario, col_cards, col_turno = st.columns([5.8, 2.0, 2.2], gap="large")
 
-    with col_calendario:
-        calendar_state = calendar(
-            events=calendar_events,
-            options=calendar_options,
-            custom_css=calendar_css_dinamico,
-            callbacks=["dateClick", "eventClick"],
-            key=cal_key
+        with col_calendario:
+            # Correção: Removida a key estática que estava travando o render para o técnico
+            calendar_state = calendar(
+                events=calendar_events,
+                options=calendar_options,
+                custom_css=calendar_css_dinamico,
+                callbacks=["dateClick", "eventClick"],
+                key=f"cal_dinamico_geral_{st.session_state.get('cal_ref_mes')}_{st.session_state.get('cal_ref_ano')}"
+            )
+
+        resumo_card = resumir_demanda_calendario(
+            df_base_cal=df_calendario, ano=data_ref_card.year, mes=data_ref_card.month, dia_ref=data_ref_card.day
         )
 
-    resumo_card = resumir_demanda_calendario(
-        df_base_cal=df_calendario, ano=data_ref_card.year, mes=data_ref_card.month, dia_ref=data_ref_card.day
-    )
+        resumo_turno = resumir_conclusoes_por_turno_data(df_base_cal=df_calendario, data_ref=data_ref_card)
 
-    resumo_turno = resumir_conclusoes_por_turno_data(df_base_cal=df_calendario, data_ref=data_ref_card)
+        with col_cards:
+            # Card 1 - Pátios do Dia (Azul) 
+            st.markdown(
+                f"""
+                <div class="kpi-wrapper kpi-card-blue">
+                    <div class="kpi-title-blue">Pátios do Dia</div>
+                    <div class="kpi-val-blue">{resumo_card['qtd_patios']} <span style='font-size: 22px;'>📌</span></div>
+                    <div class="kpi-sub-blue">Referência: {data_ref_card.strftime('%d/%m/%Y')}</div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
 
-    with col_cards:
-        # Card 1 - Pátios do Dia (Azul) 
-        st.markdown(
-            f"""
-            <div class="kpi-wrapper kpi-card-blue">
-                <div class="kpi-title-blue">Pátios do Dia</div>
-                <div class="kpi-val-blue">{resumo_card['qtd_patios']} <span style='font-size: 22px;'>📌</span></div>
-                <div class="kpi-sub-blue">Referência: {data_ref_card.strftime('%d/%m/%Y')}</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
+            # Lógica de Variação para o Card 2 (Delta)
+            dia_idx = data_ref_card.day - 1
+            serie_mes = resumo_card["serie_total_os_mes"]
+            hoje_total = serie_mes[dia_idx] if dia_idx < len(serie_mes) else 0
+            ontem_total = serie_mes[dia_idx - 1] if dia_idx > 0 else hoje_total
 
-        # Lógica de Variação para o Card 2 (Delta)
-        dia_idx = data_ref_card.day - 1
-        serie_mes = resumo_card["serie_total_os_mes"]
-        hoje_total = serie_mes[dia_idx] if dia_idx < len(serie_mes) else 0
-        ontem_total = serie_mes[dia_idx - 1] if dia_idx > 0 else hoje_total
+            if ontem_total > 0: delta_pct = ((hoje_total - ontem_total) / ontem_total) * 100
+            else: delta_pct = 0.0
 
-        if ontem_total > 0:
-            delta_pct = ((hoje_total - ontem_total) / ontem_total) * 100
-        else:
-            delta_pct = 0.0
+            if delta_pct > 0: seta, cor_badge, bg_badge, sinal = "↑", "#065F46", "#A7F3D0", "+"
+            elif delta_pct < 0: seta, cor_badge, bg_badge, sinal = "↓", "#991B1B", "#FECACA", ""
+            else: seta, cor_badge, bg_badge, sinal = "→", "#475569", "#E2E8F0", ""
 
-        if delta_pct > 0:
-            seta, cor_badge, bg_badge, sinal = "↑", "#065F46", "#A7F3D0", "+"
-        elif delta_pct < 0:
-            seta, cor_badge, bg_badge, sinal = "↓", "#991B1B", "#FECACA", ""
-        else:
-            seta, cor_badge, bg_badge, sinal = "→", "#475569", "#E2E8F0", ""
+            # Card 2 - Total de OS do Dia (Verde)
+            total_os_options = {
+                "backgroundColor": "transparent", "animation": False,
+                "graphic": [
+                    {"type": "rect", "left": 0, "top": 0, "shape": {"x": 0, "y": 0, "width": 320, "height": 140, "r": 18}, "style": {"fill": "#F0FDF4"}},
+                    {"type": "rect", "left": 0, "top": 0, "shape": {"x": 0, "y": 0, "width": 5, "height": 140, "r": [18, 0, 0, 18]}, "style": {"fill": "#10B981"}},
+                    {"type": "text", "left": "6%", "top": "16%", "style": {"text": "TOTAL DE OS DO DIA", "fill": "#064E3B", "font": "700 14px 'Source Sans Pro', sans-serif"}},
+                    {"type": "text", "left": "6%", "top": "40%", "style": {"text": f"{hoje_total} 🎯", "fill": "#065F46", "font": "400 32px 'Source Sans Pro', sans-serif"}},
+                    {"type": "text", "left": "6%", "top": "72%", "style": {"text": f"{seta} {sinal}{delta_pct:.1f}% vs ontem", "fill": "#10B981", "font": "400 12px 'Source Sans Pro', sans-serif"}}
+                ]
+            }
+            st_echarts(options=total_os_options, height="140px", key="card_total_os_dia")
+            st.markdown("<div style='margin-bottom: 16px;'></div>", unsafe_allow_html=True)
 
-        # Card 2 - Total de OS do Dia (Verde sem gráfico embaixo e com borda arredondada)
-        total_os_options = {
-            "backgroundColor": "transparent",
-            "animation": False,
-            "graphic": [
-                {
-                    "type": "rect",
-                    "left": 0,
-                    "top": 0,
-                    "shape": {
-                        "x": 0,
-                        "y": 0,
-                        "width": 320,
-                        "height": 140,
-                        "r": 18
-                    },
-                    "style": {
-                        "fill": "#F0FDF4"
-                    }
-                },
-                {
-                    "type": "rect",
-                    "left": 0,
-                    "top": 0,
-                    "shape": {
-                        "x": 0,
-                        "y": 0,
-                        "width": 5,
-                        "height": 140,
-                        "r": [18, 0, 0, 18]
-                    },
-                    "style": {
-                        "fill": "#10B981"
-                    }
-                },
-                {
-                    "type": "text",
-                    "left": "6%",
-                    "top": "16%",
-                    "style": {
-                        "text": "TOTAL DE OS DO DIA",
-                        "fill": "#064E3B",
-                        "font": "700 14px 'Source Sans Pro', sans-serif"
-                    }
-                },
-                {
-                    "type": "text",
-                    "left": "6%",
-                    "top": "40%",
-                    "style": {
-                        "text": f"{hoje_total} 🎯",
-                        "fill": "#065F46",
-                        "font": "400 32px 'Source Sans Pro', sans-serif"
-                    }
-                },
-                {
-                    "type": "text",
-                    "left": "6%",
-                    "top": "72%",
-                    "style": {
-                        "text": f"{seta} {sinal}{delta_pct:.1f}% vs ontem",
-                        "fill": "#10B981",
-                        "font": "400 12px 'Source Sans Pro', sans-serif"
-                    }
-                }
+            # Card 3 - Pátio Prioritário (Vermelho)
+            st.markdown(
+                f"""
+                <div class="kpi-wrapper kpi-card-red">
+                    <div class="kpi-title-red">Pátio Prioritário</div>
+                    <div class="kpi-val-red">{resumo_card['patio_prioritario']}</div>
+                    <div class="kpi-sub-red">Critério: backlog + prioridade</div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+        with col_turno:
+            _cor_turno_aba2 = { "00h-07h": "#4F46E5", "07h-16h": "#3B82F6", "16h-00h": "#06B6D4" }
+            dados_formatados_turno = [
+                {"value": val, "itemStyle": { "color": _cor_turno_aba2.get(lbl, "#3B82F6"), "borderRadius": [0, 6, 6, 0] }}
+                for lbl, val in zip(resumo_turno["labels"], resumo_turno["valores"])
             ]
-        }
-
-        st_echarts(options=total_os_options, height="140px", key="card_total_os_dia")
-        st.markdown("<div style='margin-bottom: 16px;'></div>", unsafe_allow_html=True)
-
-        # Card 3 - Pátio Prioritário (Vermelho)
-        st.markdown(
-            f"""
-            <div class="kpi-wrapper kpi-card-red">
-                <div class="kpi-title-red">Pátio Prioritário</div>
-                <div class="kpi-val-red">{resumo_card['patio_prioritario']}</div>
-                <div class="kpi-sub-red">Critério: backlog + prioridade</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-    with col_turno:
-        _cor_turno_aba2 = { "00h-07h": "#4F46E5", "07h-16h": "#3B82F6", "16h-00h": "#06B6D4" }
-        
-        dados_formatados_turno = [
-            {
-                "value": val, 
-                "itemStyle": { "color": _cor_turno_aba2.get(lbl, "#3B82F6"), "borderRadius": [0, 6, 6, 0] }
-            }
-            for lbl, val in zip(resumo_turno["labels"], resumo_turno["valores"])
-        ]
-
-        with st.container(border=True):
-            concl_turno_options = {
-                "title": {
-                    "text": resumo_turno["titulo"],
-                    "subtext": resumo_turno["subtitulo"],
-                    "left": "center",
-                    "top": "5%",
-                    "textStyle": { "fontSize": 14, "fontWeight": "bold", "color": "#1E293B", "fontFamily": '"Source Sans Pro", sans-serif' },
-                    "subtextStyle": { "fontSize": 12, "color": "#64748B", "fontFamily": '"Source Sans Pro", sans-serif' }
-                },
-                "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
-                "grid": { "left": "18%", "right": "10%", "bottom": "12%", "top": "24%", "containLabel": True },
-                "xAxis": { "type": "value", "minInterval": 1, "splitLine": { "lineStyle": { "type": "dashed", "color": "#E2E8F0" } } },
-                "yAxis": { 
-                    "type": "category", 
-                    "data": resumo_turno["labels"], 
-                    "axisLabel": { "fontSize": 12, "fontWeight": "600", "color": "#475569", "fontFamily": '"Source Sans Pro", sans-serif' },
-                    "axisLine": { "show": False }, "axisTick": { "show": False }
-                },
-                "series": [{
-                    "name": "OS Concluídas", "type": "bar", "data": dados_formatados_turno, "barWidth": "42%",
-                    "label": { "show": True, "position": "right", "color": "#1E293B", "fontWeight": "bold", "fontSize": 13, "fontFamily": '"Source Sans Pro", sans-serif' }
-                }]
-            }
-            st_echarts(options=concl_turno_options, height="435px", theme="streamlit", key="chart_conclusoes_turno_data")
+            with st.container(border=True):
+                concl_turno_options = {
+                    "title": {"text": resumo_turno["titulo"], "subtext": resumo_turno["subtitulo"], "left": "center", "top": "5%", "textStyle": { "fontSize": 14, "fontWeight": "bold", "color": "#1E293B", "fontFamily": '"Source Sans Pro", sans-serif' }, "subtextStyle": { "fontSize": 12, "color": "#64748B", "fontFamily": '"Source Sans Pro", sans-serif' }},
+                    "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
+                    "grid": { "left": "18%", "right": "10%", "bottom": "12%", "top": "24%", "containLabel": True },
+                    "xAxis": { "type": "value", "minInterval": 1, "splitLine": { "lineStyle": { "type": "dashed", "color": "#E2E8F0" } } },
+                    "yAxis": { "type": "category", "data": resumo_turno["labels"], "axisLabel": { "fontSize": 12, "fontWeight": "600", "color": "#475569", "fontFamily": '"Source Sans Pro", sans-serif' }, "axisLine": { "show": False }, "axisTick": { "show": False }},
+                    "series": [{"name": "OS Concluídas", "type": "bar", "data": dados_formatados_turno, "barWidth": "42%", "label": { "show": True, "position": "right", "color": "#1E293B", "fontWeight": "bold", "fontSize": 13, "fontFamily": '"Source Sans Pro", sans-serif' }}]
+                }
+                st_echarts(options=concl_turno_options, height="435px", theme="streamlit", key="chart_conclusoes_turno_data")
 
     st.markdown("---")
 
@@ -2697,68 +2617,6 @@ with tab2:
                             st.rerun()
 
                 st.markdown("---")
-                st.markdown("#### ⏳ Apontamento de Tempos Individuais")
-                
-                apontamentos = {}
-                todos_preenchidos = True
-                
-                # 3. Gerador dinâmico de linhas de tempo
-                with st.container(border=True):
-                    for os_id in os_selecionadas:
-                        st.markdown(f"<b style='color: #3B82F6;'>OS: {os_id}</b>", unsafe_allow_html=True)
-                        c1, c2 = st.columns(2)
-                        with c1:
-                            h_ini = st.time_input(f"Horário Início", key=f"ini_{os_id}", value=None)
-                        with c2:
-                            h_fim = st.time_input(f"Horário Fim", key=f"fim_{os_id}", value=None)
-                            
-                        apontamentos[os_id] = {"inicio": h_ini, "fim": h_fim}
-                        if h_ini is None or h_fim is None:
-                            todos_preenchidos = False
-                        st.markdown("<hr style='margin: 8px 0; border-color: #333D4E;'>", unsafe_allow_html=True)
-
-                # 4. Trava de Segurança GPS e Preenchimento
-                origem = st.session_state.get("origem_tipo", "BASE")
-                
-                if origem != "GPS":
-                    st.warning("📍 **Atenção:** Para registrar uma baixa, o sistema exige a captura da sua geolocalização. Role para cima e clique no botão **'📍 Minha Localização'** antes de concluir.")
-                elif not todos_preenchidos:
-                    st.info("⚠️ Preencha os horários de **início e fim** de todas as OSs acima para liberar o botão de conclusão.")
-                else:
-                    if st.button("🚀 Concluir e Gravar OS(s)", use_container_width=True, type="primary"):
-                        
-                        geo_baixa = f"{st.session_state.get('local_nome', 'Local')} (Lat: {st.session_state.get('lat_partida')}, Lon: {st.session_state.get('lon_partida')})"
-                        equipe_str = ", ".join(equipe_selecionada) if equipe_selecionada else "Sozinho"
-                        data_hoje_br = datetime.now().strftime("%d/%m/%Y")
-                        realizado_dt = agora_dt()
-                        
-                        for os_id in os_selecionadas:
-                            hora_ini_str = apontamentos[os_id]["inicio"].strftime("%H:%M:%S")
-                            hora_fim_str = apontamentos[os_id]["fim"].strftime("%H:%M:%S")
-                            
-                            mask = (st.session_state["df_os"]["Ordem servico"].astype(str) == str(os_id))
-                            dt_prog = st.session_state["df_os"].loc[mask, "Data inicial programada"].iloc[0] if len(st.session_state["df_os"].loc[mask]) > 0 else pd.NaT
-                            coord = st.session_state["df_os"].loc[mask, "Coordenacao"].iloc[0] if len(st.session_state["df_os"].loc[mask]) > 0 else "Campo"
-
-                            novo_status = determinar_status_execucao(pd.to_datetime(dt_prog, errors="coerce"), realizado_dt)
-
-                            upsert_baixa(
-                                os_id=str(os_id),
-                                status=novo_status,
-                                realizado_em_str=formatar_dt_br(realizado_dt),
-                                coordenacao=coord,
-                                concluido_por=usr_logado,
-                                geolocalizacao_baixa=geo_baixa,
-                                equipe=equipe_str,
-                                data_inicio=data_hoje_br,
-                                hora_inicio=hora_ini_str,
-                                data_fim=data_hoje_br,
-                                hora_fim=hora_fim_str
-                            )
-                        
-                        st.success(f"✅ Execução de {len(os_selecionadas)} OS(s) registrada com sucesso!")
-                        time.sleep(2)
-                        st.rerun()
 
     with col_mapa:
         SP_MIN_LAT, SP_MAX_LAT = -25.50, -19.50
