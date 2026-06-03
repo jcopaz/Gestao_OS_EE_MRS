@@ -1666,9 +1666,17 @@ if st.session_state.get("tela_atual") == "admin":
     render_tela_admin()
     st.stop()
     
-# O render da tela de Governança será chamado logo abaixo, na nova Sessão 9
-if st.session_state.get("tela_atual") == "governanca":
-    pass # Segue o fluxo para a Sessão 9
+# --- DEFINIÇÃO DO FILTRO DE VISÃO (CORREÇÃO DO ERRO) ---
+if "Painel Gerencial" in gov_usuario:
+    visao_selecionada = st.sidebar.radio(
+        "Selecione a Visão:", ["Gerência", "Paranapiacaba", "Piaçaguera"], 
+        label_visibility="collapsed", key="radio_visao_gerencial"
+    )
+    filtro_visao = "Todas" if visao_selecionada == "Gerência" else visao_selecionada
+else:
+    filtro_visao = st.session_state["escopo"]
+    st.sidebar.info(f"Visão Restrita: {filtro_visao}")
+# -------------------------------------------------------
 
 #region SESSÃO 5.2: Carregamento da base operacional
 usar_sim = st.session_state.get("chk_sim", False)
