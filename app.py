@@ -1894,11 +1894,11 @@ if "Gestão de Usuários" in st.session_state.get("governanca", ""):
                     st.session_state["msg_sucesso_user"] = f"Usuário {usr_sel} excluído."; st.rerun()
 #endregion
 
-#region SESSÃO 9: Painel de Governança Operacional (Consolidado e Ajustado)
+#region SESSÃO 9: Painel de Governança Operacional (Padrão Echarts MRS)
 if st.session_state.get("tela_atual") == "governanca":
     st.title("🛡️ Governança Operacional e Auditoria")
 
-    # 1. Extração e Tratamento
+    # 1. Extração e Tratamento (Mantendo lógica original)
     with st.spinner("Compilando painéis..."):
         conn = get_connection()
         df_baixas = pd.read_sql_query("SELECT * FROM baixas", conn)
@@ -1913,56 +1913,54 @@ if st.session_state.get("tela_atual") == "governanca":
     c_f1, c_f2 = st.columns(2)
     tecs = sorted(df_gov["concluido_por"].dropna().unique().tolist())
     tec_sel = c_f1.multiselect("👤 Colaborador:", tecs, default=tecs)
-    df_gov_f = df_gov[df_gov["concluido_por"].isin(tec_sel)].sort_values("Data_Real").copy()
+    df_gov_f = df_gov[df_gov["concluido_por"].isin(tec_sel)].copy()
 
-    # 3. Gráficos de Produtividade (Diária + Acumulada)
-    st.markdown("#### 📈 Produtividade: Diária vs Acumulada")
-    data_prod = df_gov_f.groupby("Data_Real").size()
-    data_acum = data_prod.cumsum()
-    st_echarts({
-        "tooltip": {"trigger": "axis"},
-        "xAxis": {"type": "category", "data": [d.strftime("%d/%m") for d in data_prod.index]},
-        "yAxis": [{"type": "value", "name": "Diário"}, {"type": "value", "name": "Acumulado"}],
-        "series": [
-            {"name": "Diário", "type": "bar", "data": data_prod.values.tolist(), "itemStyle": {"color": "#3B82F6"}},
-            {"name": "Acumulado", "type": "line", "yAxisIndex": 1, "data": data_acum.values.tolist(), "smooth": True}
-        ]
-    }, height=300)
-
-    # 4. Esforço e Aderência
+    # 3. Gráficos com identidade Echarts (Padrão Gerencial)
     col1, col2 = st.columns(2)
+    
     with col1:
+        st.markdown("#### 📈 Produtividade Acumulada")
+        data_prod = df_gov_f.groupby("Data_Real").size()
+        st_echarts({
+            "xAxis": {"type": "category", "data": [d.strftime("%d/%m") for d in data_prod.index]},
+            "yAxis": {"type": "value"},
+            "series": [{"data": data_prod.values.tolist(), "type": "bar", "itemStyle": {"color": "#3B82F6"}}]
+        }, height=300)
+
+    with col2:
         st.markdown("#### ⏱️ Esforço Médio por Classificação")
         data_esf = df_gov_f.groupby("Classificacao")["Tempo_Minutos"].mean()
         st_echarts({
+            "dataset": {"source": [["Class", "Min"]] + [[c, round(v,1)] for c, v in data_esf.items()]},
             "xAxis": {"type": "value"},
-            "yAxis": {"type": "category", "data": data_esf.index.tolist()},
-            "series": [{"type": "bar", "data": data_esf.values.round(1).tolist()}]
-        }, height=300)
-    
-    with col2:
-        st.markdown("#### 🕒 Aderência: Login vs. Início")
-        # Ajuste: garantindo que as listas tenham o mesmo tamanho para o scatter
-        plot_data = [[str(l), str(i)] for l, i in zip(df_logs["data_hora_login"], df_gov_f["hora_inicio"].head(len(df_logs)))]
-        st_echarts({
-            "xAxis": {"type": "category"},
             "yAxis": {"type": "category"},
-            "series": [{"type": "scatter", "data": plot_data}]
+            "series": [{"type": "bar", "encode": {"x": "Min", "y": "Class"}}]
         }, height=300)
 
-    # 5. Pátios e Auditoria
+    # 4. Novos Gráficos Echarts
+    st.markdown("---")
     col3, col4 = st.columns(2)
+    
     with col3:
-        st.markdown("#### 🔝 Produtividade por Pátio")
-        data_patio = df_gov_f.groupby("Patio").size()
+        st.markdown("#### 🕒 Aderência: Login vs. Primeiro Apontamento")
+        # Scatter chart formato Echarts
         st_echarts({
-            "series": [{"type": "pie", "radius": ["40%", "70%"], "data": [{"value": v, "name": n} for n, v in data_patio.items()]}]
+            "xAxis": {"type": "time"},
+            "yAxis": {"type": "time"},
+            "series": [{"type": "scatter", "data": [[l, i] for l, i in zip(df_logs["data_hora_login"], df_gov_f["hora_inicio"])]}]
         }, height=300)
 
     with col4:
-        st.markdown("### 📍 Tabela de Auditoria")
-        st.dataframe(df_gov_f[["os", "concluido_por", "Patio", "geolocalizacao_baixa"]], use_container_width=True, height=250)
+        st.markdown("#### 🔝 Produtividade por Pátio")
+        data_patio = df_gov_f.groupby("Patio").size()
+        st_echarts({
+            "tooltip": {"trigger": "item"},
+            "series": [{"type": "pie", "radius": ["40%", "70%"], "data": [{"value": v, "name": n} for n, v in data_patio.items()]}]
+        }, height=300)
 
+    # 5. Auditoria
+    st.markdown("### 📍 Tabela de Auditoria")
+    st.dataframe(df_gov_f[["os", "concluido_por", "Patio", "geolocalizacao_baixa"]], use_container_width=True)
     st.stop()
 #endregion
 #endregion
