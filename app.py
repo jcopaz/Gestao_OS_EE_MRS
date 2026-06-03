@@ -1894,87 +1894,87 @@ if "Gestão de Usuários" in st.session_state.get("governanca", ""):
                     st.session_state["msg_sucesso_user"] = f"Usuário {usr_sel} excluído."; st.rerun()
 #endregion
 
-#region SESSÃO 9: Painel de Governança Operacional e Auditoria
-# ==========================================
+#region SESSÃO 9: Painel de Governança Operacional e Auditoria (Consolidado)
+# =========================================================================
 if st.session_state.get("tela_atual") == "governanca":
     
     st.title("🛡️ Governança Operacional e Auditoria de Campo")
-    st.markdown("Monitoramento de produtividade, rastreabilidade de apontamentos e análise de retrabalho por colaborador.")
     
-    # 1. Extração de Dados e Cálculos (Performance Otimizada)
-    with st.spinner("Compilando logs de auditoria..."):
+    # 1. Extração Única de Dados (Logins + Baixas)
+    with st.spinner("Compilando logs de auditoria e telemetria..."):
         conn = get_connection()
-        df_baixas = pd.read_sql_query("SELECT * FROM baixas", conn)
-        df_logs = pd.read_sql_query("""
-            SELECT username, MIN(data_hora_login) as primeiro_acesso, DATE(data_hora_login) as data 
-            FROM logs_acesso GROUP BY username, DATE(data_hora_login)
-        """, conn)
+        df_baixas_full = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim FROM baixas", conn)
+        # Novo: Extração de logs para o gráfico de Aderência
+        df_logs = pd.read_sql_query("SELECT username, data_hora_login FROM logs_acesso", conn)
         release_connection(conn)
         
-        df_base = st.session_state.get("df_os", pd.DataFrame())
+        df_os_base = st.session_state.get("df_os", pd.DataFrame())
         
-        # Merge de Auditoria
-        df_gov = df_baixas.merge(df_base[["Ordem servico", "Patio", "Ativo", "Classificacao", "Criticidade_rank"]], left_on="os", right_on="Ordem servico", how="inner")
-        df_gov["Data_Real"] = pd.to_datetime(df_gov["data_inicio"], format="%d/%m/%Y", errors="coerce").dt.date
+        if df_baixas_full.empty or df_os_base.empty:
+            st.warning("Não há dados de execução suficientes.")
+            st.stop()
+            
+        # Cruzamento Mestre
+        df_gov = df_baixas_full.merge(df_os_base[["Ordem servico", "Patio", "Ativo", "Classificacao", "Criticidade_rank"]], left_on="os", right_on="Ordem servico", how="inner")
+        df_gov = df_gov[df_gov["status"].str.upper().isin(["REALIZADO", "REALIZADO FORA DA DATA DE PROGRAMAÇÃO", "REALIZADO FORA DO PRAZO"])]
+        
+        # Cálculos Base
         df_gov["Tempo_Minutos"] = df_gov.apply(lambda row: (pd.to_datetime(row['hora_fim'], format='%H:%M:%S') - pd.to_datetime(row['hora_inicio'], format='%H:%M:%S')).total_seconds()/60, axis=1)
+        df_gov["Data_Real"] = pd.to_datetime(df_gov["data_inicio"], format="%d/%m/%Y", errors="coerce").dt.date
         df_gov["Via_GPS"] = df_gov["geolocalizacao_baixa"].apply(lambda x: 0 if "Base" in str(x) or "Sede" in str(x) else 1)
-        
-        # Mobilização
-        df_gov["dt_hora_ini"] = pd.to_datetime(df_gov["data_inicio"] + " " + df_gov["hora_inicio"], format="%d/%m/%Y %H:%M:%S", errors="coerce")
-        df_gov = df_gov.merge(df_logs, left_on=["concluido_por", "Data_Real"], right_on=["username", "data"], how="left")
-        df_gov["Tempo_Mobilizacao"] = (df_gov["dt_hora_ini"] - pd.to_datetime(df_gov["primeiro_acesso"])).dt.total_seconds() / 3600.0
 
     # 2. Filtros
     st.markdown("---")
-    col_f1, col_f2, col_f3 = st.columns(3)
-    tecnicos_disp = sorted(df_gov["concluido_por"].dropna().unique().tolist())
-    tec_sel = col_f1.multiselect("👤 Filtrar Colaborador(es):", tecnicos_disp, default=tecnicos_disp)
-    patios_gov = sorted(df_gov["Patio"].dropna().unique().tolist())
-    patio_sel = col_f2.multiselect("📍 Filtrar Pátio(s):", patios_gov, default=patios_gov)
-    data_gov = col_f3.date_input("📅 Período:", value=(df_gov["Data_Real"].min(), df_gov["Data_Real"].max()), format="DD/MM/YYYY")
+    c_f1, c_f2, c_f3 = st.columns(3)
+    tecs = sorted(df_gov["concluido_por"].dropna().unique().tolist())
+    tec_sel = c_f1.multiselect("👤 Colaborador:", tecs, default=tecs)
+    patios = sorted(df_gov["Patio"].dropna().unique().tolist())
+    patio_sel = c_f2.multiselect("📍 Pátio:", patios, default=patios)
+    data_range = c_f3.date_input("📅 Período:", value=(df_gov["Data_Real"].min(), df_gov["Data_Real"].max()))
+    
+    df_gov_f = df_gov[(df_gov["concluido_por"].isin(tec_sel)) & (df_gov["Patio"].isin(patio_sel)) & (df_gov["Data_Real"] >= data_range[0]) & (df_gov["Data_Real"] <= data_range[1])].copy()
 
-    # Aplicação de Filtros
-    d_inicio, d_fim = (data_gov[0], data_gov[1]) if isinstance(data_gov, tuple) else (data_gov, data_gov)
-    df_gov_f = df_gov[(df_gov["concluido_por"].isin(tec_sel)) & (df_gov["Patio"].isin(patio_sel)) & (df_gov["Data_Real"] >= d_inicio) & (df_gov["Data_Real"] <= d_fim)].copy()
+    # 3. KPIs Originais
+    c_k1, c_k2, c_k3, c_k4 = st.columns(4)
+    c_k1.metric("🔧 Volume", f"{len(df_gov_f)} OS")
+    c_k2.metric("⏱️ Tempo Médio", f"{df_gov_f['Tempo_Minutos'].mean()/60:.1f}h")
+    c_k3.metric("📍 Integridade GPS", f"{(df_gov_f['Via_GPS'].sum()/len(df_gov_f))*100:.1f}%")
+    c_k4.metric("🔄 Ativos Reincidentes", len(df_gov_f.groupby("Ativo").filter(lambda x: len(x) > 1)["Ativo"].unique()))
 
-    if df_gov_f.empty: st.info("Nenhum dado encontrado para os filtros."); st.stop()
-
-    # 3. KPIs
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("🔧 Volume", f"{len(df_gov_f)} OS")
-    c2.metric("⏱️ TME Médio", f"{df_gov_f['Tempo_Minutos'].mean()/60:.1f}h")
-    c3.metric("🚗 Mobilização", f"{df_gov_f['Tempo_Mobilizacao'].mean():.2f}h")
-    c4.metric("📍 Integridade GPS", f"{(df_gov_f['Via_GPS'].sum()/len(df_gov_f))*100:.1f}%")
-
-    # 4. Gráficos de Produtividade e Aderência
-    st.markdown("---")
+    # 4. Gráficos Originais (Produtividade e Esforço)
     col_g1, col_g2 = st.columns(2)
     with col_g1:
         st.markdown("#### 📈 Produtividade Acumulada")
-        st.bar_chart(df_gov_f.groupby("Data_Real").size())
+        st_echarts({"xAxis": {"type": "category", "data": [d.strftime("%d/%m") for d in df_gov_f.groupby("Data_Real").size().index]}, "series": [{"type": "bar", "data": df_gov_f.groupby("Data_Real").size().values.tolist()}]}, height=300)
     with col_g2:
-        st.markdown("#### 🕒 Aderência: Login vs. Início OS")
-        df_aderencia = df_logs.merge(df_gov_f.groupby(["concluido_por", "Data_Real"])["hora_inicio"].min().reset_index(), left_on=["username", "data"], right_on=["concluido_por", "Data_Real"])
-        st.scatter_chart(df_aderencia, x="primeiro_acesso", y="hora_inicio", color="concluido_por")
+        st.markdown("#### ⏱️ Esforço x Classificação")
+        st_echarts({"xAxis": {"type": "value"}, "yAxis": {"type": "category", "data": df_gov_f.groupby("Classificacao")["Tempo_Minutos"].mean().index.tolist()}, "series": [{"type": "bar", "data": df_gov_f.groupby("Classificacao")["Tempo_Minutos"].mean().values.round(1).tolist()}]}, height=300)
 
-    # 5. Análise de Retrabalho e Esforço
-    col_g3, col_g4 = st.columns(2)
-    with col_g3:
-        st.markdown("#### 🔄 Reincidência de Ativos (Gargalos)")
-        df_reinc = df_gov_f.groupby(["Ativo", "Patio"]).size().reset_index(name="Vezes").sort_values("Vezes", ascending=False)
-        st.dataframe(df_reinc[df_reinc["Vezes"] > 1], use_container_width=True, height=200)
-    with col_g4:
-        st.markdown("#### ⏱️ Variabilidade de Execução (Minutos)")
-        df_var = df_gov_f.groupby("concluido_por")["Tempo_Minutos"].agg(['mean', 'std']).reset_index()
-        st.bar_chart(df_var.set_index("concluido_por")[["mean"]])
+    # 5. Novos Gráficos Analíticos
+    st.markdown("---")
+    st.markdown("### 🚀 Radar de Desempenho e Aderência")
+    col_a, col_b, col_c = st.columns(3)
+    
+    with col_a:
+        st.markdown("#### 🕒 Aderência: Login vs. Início")
+        df_logs["data"] = pd.to_datetime(df_logs["data_hora_login"]).dt.date
+        df_aderencia = df_logs.merge(df_gov_f.groupby(["concluido_por", "Data_Real"])["hora_inicio"].min().reset_index(), left_on=["username", "data"], right_on=["concluido_por", "Data_Real"])
+        st.scatter_chart(df_aderencia, x="data_hora_login", y="hora_inicio", color="concluido_por")
+    
+    with col_b:
+        st.markdown("#### 🔝 Top Técnicos: OS/Pátio")
+        st.bar_chart(df_gov_f.groupby(["concluido_por", "Patio"]).size().unstack().fillna(0), stack="user")
+        
+    with col_c:
+        st.markdown("#### 📊 Variabilidade de Tempo")
+        st.bar_chart(df_gov_f.groupby("concluido_por")["Tempo_Minutos"].mean())
 
     # 6. Tabela de Auditoria Final
-    st.markdown("### 📍 Tabela de Auditoria Detalhada")
+    st.markdown("---")
+    st.markdown("#### 📍 Tabela de Auditoria")
     df_auditoria = df_gov_f[["os", "concluido_por", "Data_Real", "hora_fim", "geolocalizacao_baixa", "Tempo_Minutos"]].rename(columns={"os": "OS", "concluido_por": "Técnico", "Tempo_Minutos": "Minutos"})
-    st.dataframe(
-        df_auditoria.style.map(lambda val: 'background-color: #FEE2E2; color: #991B1B; font-weight: bold;' if 'Base' in str(val) or 'Sede' in str(val) else 'color: #065F46;', subset=["geolocalizacao_baixa"]), 
-        use_container_width=True, hide_index=True
-    )
+    st.dataframe(df_auditoria.style.map(lambda val: 'background-color: #FEE2E2; color: #991B1B; font-weight: bold;' if 'Base' in str(val) or 'Sede' in str(val) else 'color: #065F46;', subset=["geolocalizacao_baixa"]), use_container_width=True, hide_index=True)
+    
     st.stop()
 #endregion
 #endregion
