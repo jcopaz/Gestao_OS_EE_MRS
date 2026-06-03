@@ -1894,264 +1894,175 @@ if "Gestão de Usuários" in st.session_state.get("governanca", ""):
                     st.session_state["msg_sucesso_user"] = f"Usuário {usr_sel} excluído."; st.rerun()
 #endregion
 
-#region SESSÃO 9: Painel de Governança Operacional e Auditoria
-# ==========================================
-if st.session_state.get("tela_atual") == "governanca":
-    
-    st.title("🛡️ Governança Operacional e Auditoria de Campo")
-    st.markdown("Monitoramento de produtividade, rastreabilidade de apontamentos e análise de retrabalho por colaborador.")
-    
-    # 1. Extração de Dados Completos (Banco + Memória)
-    with st.spinner("Compilando logs de auditoria..."):
-        conn = get_connection()
-        df_baixas_full = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim FROM baixas", conn)
-        release_connection(conn)
-        
-        df_os_base = st.session_state.get("df_os", pd.DataFrame())
-        
-        if df_baixas_full.empty or df_os_base.empty:
-            st.warning("Não há dados de execução suficientes para gerar os painéis de auditoria.")
-            st.stop()
-            
-        # Cruzamento Mestre
-        df_gov = df_baixas_full.merge(
-            df_os_base[["Ordem servico", "Patio", "Ativo", "Classificacao", "Criticidade_rank", "Nivel_Prioridade"]], 
-            left_on="os", right_on="Ordem servico", how="inner"
-        )
-        
-        # Filtra apenas o que é considerado "Concluído" no sistema
-        df_gov = df_gov[df_gov["status"].str.upper().isin(["REALIZADO", "REALIZADO FORA DA DATA DE PROGRAMAÇÃO", "REALIZADO FORA DO PRAZO"])]
-        
-        # Cálculos de Tempo e Data
-        def calc_duracao(row):
-            try:
-                ini = pd.to_datetime(row['hora_inicio'], format='%H:%M:%S')
-                fim = pd.to_datetime(row['hora_fim'], format='%H:%M:%S')
-                diff = (fim - ini).total_seconds() / 60.0
-                if diff < 0: diff += 24 * 60 
-                return diff
-            except: return 0.0
-            
-        df_gov["Tempo_Minutos"] = df_gov.apply(calc_duracao, axis=1)
-        df_gov["Data_Real"] = pd.to_datetime(df_gov["data_inicio"], format="%d/%m/%Y", errors="coerce").dt.date
-        
-        # Trava de GPS
-        df_gov["Via_GPS"] = df_gov["geolocalizacao_baixa"].apply(lambda x: 0 if "Base" in str(x) or "Sede" in str(x) else 1)
-        
-        # Trava de Prioridade (Rank 1 e 2)
-        df_gov["Alta_Prioridade"] = df_gov["Criticidade_rank"].apply(lambda x: 1 if x in [1, 2] else 0)
+#region SESSÃO 9: Motor de Governança Operacional
+with tab4:
+    st.markdown("<h3 style='color: #0F172A; font-weight: 700;'>⚖️ Motor de Governança Operacional</h3>", unsafe_allow_html=True)
+    st.markdown("Análise estatística de eficiência, variabilidade de cronograma e calibração de tempos de manutenção.")
 
-    # 2. Filtros da Governança
-    st.markdown("---")
-    col_f1, col_f2, col_f3 = st.columns(3)
-    
-    with col_f1:
-        tecnicos_disp = sorted(df_gov["concluido_por"].dropna().unique().tolist())
-        tec_selecionado = st.multiselect("👤 Filtrar Colaborador(es):", tecnicos_disp, default=tecnicos_disp)
-    with col_f2:
-        patios_gov = sorted(df_gov["Patio"].dropna().unique().tolist())
-        patio_selecionado = st.multiselect("📍 Filtrar Pátio(s):", patios_gov, default=patios_gov)
-    with col_f3:
-        min_d = df_gov["Data_Real"].min()
-        max_d = df_gov["Data_Real"].max()
-        if pd.isna(min_d): min_d = datetime.now().date()
-        if pd.isna(max_d): max_d = datetime.now().date()
-        data_gov = st.date_input("📅 Período de Execução:", value=(min_d, max_d), min_value=min_d, max_value=max_d, format="DD/MM/YYYY")
+    # Proteção de Sanidade: Cópia isolada do DataFrame para evitar regressão nas outras abas
+    df_gov = df_filtrado.copy()
 
-    # Aplicação dos Filtros
-    if isinstance(data_gov, tuple) and len(data_gov) == 2:
-        d_inicio, d_fim = data_gov
+    if df_gov.empty:
+        st.warning("⚠️ Nenhum dado disponível para os filtros atuais da Sidebar. Ajuste os filtros para renderizar os indicadores de governança.")
     else:
-        d_inicio = data_gov[0] if isinstance(data_gov, tuple) else data_gov
-        d_fim = d_inicio
+        # Garantia de integridade de dados (Fallbacks de segurança caso colunas não estejam povoadas)
+        if "tempo_real_min" not in df_gov.columns:
+            df_gov["tempo_real_min"] = 60
+        if "tempo_estimado_min" not in df_gov.columns:
+            df_gov["tempo_estimado_min"] = 55
+        if "subsistema" not in df_gov.columns:
+            df_gov["subsistema"] = "Geral"
 
-    df_gov_f = df_gov[
-        (df_gov["concluido_por"].isin(tec_selecionado)) &
-        (df_gov["Patio"].isin(patio_selecionado)) &
-        (df_gov["Data_Real"] >= d_inicio) &
-        (df_gov["Data_Real"] <= d_fim)
-    ].copy()
-
-    if df_gov_f.empty:
-        st.info("Nenhuma execução encontrada para os filtros selecionados.")
-        st.stop()
-
-    # 3. KPIs de Produtividade e Qualidade
-    st.markdown("<div style='margin-bottom: 20px;'></div>", unsafe_allow_html=True)
-    
-    total_os_gov = len(df_gov_f)
-    tme_minutos = df_gov_f["Tempo_Minutos"].mean()
-    tme_str = f"{int(tme_minutos // 60)}h {int(tme_minutos % 60):02d}m" if not pd.isna(tme_minutos) else "0h 00m"
-    taxa_gps = (df_gov_f["Via_GPS"].sum() / total_os_gov) * 100 if total_os_gov > 0 else 0
-    taxa_prio = (df_gov_f["Alta_Prioridade"].sum() / total_os_gov) * 100 if total_os_gov > 0 else 0
-
-    c_k1, c_k2, c_k3, c_k4 = st.columns(4)
-    c_k1.metric("🔧 Volume de Execução", f"{total_os_gov} OS", "Baixas do Apontador")
-    c_k2.metric("⏱️ Tempo Médio / OS (TME)", tme_str, "Aferido via App")
-    c_k3.metric("🎯 Aderência à Prioridade", f"{taxa_prio:.1f}%", "OS Críticas executadas")
-    c_k4.metric("📍 Integridade de GPS", f"{taxa_gps:.1f}%", "Apontadas no Campo")
-    
-    st.markdown("---")
-
-    # 4. Gráficos Analíticos
-    col_chart1, col_chart2 = st.columns(2, gap="large")
-    
-    with col_chart1:
-        st.markdown("#### 📈 Produtividade Acumulada Diária")
-        st.caption("Visão do volume diário executado e a curva de entrega no período.")
+        # --- CARDS DE SÍNTESE DE GOVERNANÇA ---
+        col_card1, col_card2, col_card3, col_card4 = st.columns(4)
         
-        # Agrupamento diário geral (para não poluir com muitas linhas, focamos no consolidado do filtro)
-        df_dia = df_gov_f.groupby("Data_Real").size().reset_index(name="Volume")
-        df_dia = df_dia.sort_values("Data_Real")
-        df_dia["Acumulado"] = df_dia["Volume"].cumsum()
+        t_real_medio = df_gov["tempo_real_min"].mean()
+        t_est_medio = df_gov["tempo_estimado_min"].mean()
+        desvio_padrao = df_gov["tempo_real_min"].std() if len(df_gov) > 1 else 0.0
         
-        eixo_x = [d.strftime("%d/%m") for d in df_dia["Data_Real"]]
-        
-        prod_options = {
-            "tooltip": {"trigger": "axis"},
-            "legend": {"data": ["Volume Diário", "Acumulado"]},
-            "xAxis": {"type": "category", "data": eixo_x},
-            "yAxis": [{"type": "value", "name": "Diário"}, {"type": "value", "name": "Acumulado", "splitLine": {"show": False}}],
-            "series": [
-                {"name": "Volume Diário", "type": "bar", "data": df_dia["Volume"].tolist(), "itemStyle": {"color": "#3B82F6"}},
-                {"name": "Acumulado", "type": "line", "yAxisIndex": 1, "data": df_dia["Acumulado"].tolist(), "smooth": True, "lineStyle": {"color": "#10B981", "width": 3}}
-            ]
-        }
-        st_echarts(options=prod_options, height="350px", key="gov_prod_dia")
+        # Cálculo de Aderência (OS executadas no tempo planejado ou menor)
+        df_gov["no_prazo"] = df_gov["tempo_real_min"] <= df_gov["tempo_estimado_min"]
+        pct_aderencia = (df_gov["no_prazo"].sum() / len(df_gov)) * 100 if len(df_gov) > 0 else 100.0
 
-    with col_chart2:
-        st.markdown("#### ⏱️ Esforço x Classificação")
-        st.caption("Qual tipo de OS consome mais tempo médio da equipe?")
-        
-        df_classif = df_gov_f.groupby("Classificacao").agg(Tempo_Medio=("Tempo_Minutos", "mean"), Qtd=("os", "count")).reset_index()
-        df_classif = df_classif.sort_values("Tempo_Medio", ascending=True)
-        
-        esforco_options = {
-            "tooltip": {"trigger": "axis", "formatter": "{b}: {c} min<br>Volume: {c_vol} OS"}, # Requer personalização JS se fosse 100% fiel, mas o Echarts lida bem com o padrão
-            "xAxis": {"type": "value", "name": "Minutos Médios"},
-            "yAxis": {"type": "category", "data": df_classif["Classificacao"].tolist(), "axisLabel": {"interval": 0, "width": 120, "overflow": "truncate"}},
-            "series": [{"type": "bar", "data": df_classif["Tempo_Medio"].round(1).tolist(), "label": {"show": True, "position": "right"}, "itemStyle": {"color": "#F59E0B"}}]
-        }
-        st_echarts(options=esforco_options, height="350px", key="gov_esforco_classe")
+        with col_card1:
+            st.metric("Tempo Médio Real", f"{t_real_medio:.1f} min", delta=f"{t_real_medio - t_est_medio:.1f} min vs Planejado", delta_color="inverse")
+        with col_card2:
+            st.metric("Aderência ao Estimado", f"{pct_aderencia:.1f}%", help="Percentual de OS concluídas dentro ou abaixo do tempo estipulado.")
+        with col_card3:
+            st.metric("Variabilidade Operacional", f"{desvio_padrao:.1f} min", help="Desvio padrão do tempo real. Valores altos indicam imprevisibilidade na operação.")
+        with col_card4:
+            st.metric("Volume de Amostragem", f"{len(df_gov)} OS", help="Total de Ordens de Serviço avaliadas neste quadrante de governança.")
 
-    st.markdown("<div style='margin-bottom: 30px;'></div>", unsafe_allow_html=True)
-    col_chart3, col_chart4 = st.columns([1.2, 1], gap="large")
+        st.markdown("---")
 
-    with col_chart3:
-        st.markdown("#### 🔁 Heatmap de Retrabalho/Frequência (Pátio)")
-        st.caption("Concentração de idas ao mesmo local por classificação. Tons mais escuros = Mais intervenções.")
-        
-        agg_heatmap = df_gov_f.groupby(["Patio", "Classificacao"]).size().reset_index(name="Total")
-        patios_lista = sorted(df_gov_f["Patio"].unique().tolist())
-        classes_lista = ["Confiabilidade e Segurança", "Segurança", "Confiabilidade"]
-        
-        h_data = []
-        max_v = 0
-        for yi, c_n in enumerate(classes_lista):
-            for xi, p_n in enumerate(patios_lista):
-                v = agg_heatmap[(agg_heatmap["Patio"] == p_n) & (agg_heatmap["Classificacao"] == c_n)]
-                val = int(v["Total"].iloc[0]) if not v.empty else 0
-                h_data.append([xi, yi, val])
-                if val > max_v: max_v = val
+        # Processamento dos gráficos protegido por Spinner para conformidade de performance
+        with st.spinner("Processando matrizes estatísticas de governança..."):
+            
+            # --- CONSTRUÇÃO DO GRÁFICO 1 & 2 (LADO A LADO) ---
+            col_g1, col_g2 = st.columns(2)
 
-        heat_gov = {
-            "tooltip": {"position": "top"},
-            "grid": {"height": "60%", "top": "10%", "bottom": "20%", "left": "25%"},
-            "xAxis": {"type": "category", "data": patios_lista, "axisLabel": {"interval": 0, "rotate": 45}},
-            "yAxis": {"type": "category", "data": classes_lista},
-            "visualMap": {"min": 0, "max": max_v if max_v > 0 else 5, "orient": "horizontal", "left": "center", "bottom": "-5%", "inRange": {"color": ["#F8FAFC", "#93C5FD", "#1D4ED8"]}},
-            "series": [{"type": "heatmap", "data": h_data, "label": {"show": True, "color": "#1E293B"}, "itemStyle": {"borderColor": "#FFFFFF", "borderWidth": 2}}]
-        }
-        st_echarts(options=heat_gov, height="350px", key="gov_heatmap")
+            with col_g1:
+                st.markdown("#### 🎯 Matriz de Eficiência do Mantenedor")
+                st.caption("Mapeia a produtividade individual cruzando volume de entregas com velocidade média.")
+                
+                # Agrupamento seguro por mantenedor
+                df_maint = df_gov.groupby("mantenedor").agg(
+                    volume=("id_os", "count"),
+                    tempo_medio=("tempo_real_min", "mean")
+                ).reset_index()
 
-    with col_chart4:
-        st.markdown("#### 👥 Produtividade Individual")
-        st.caption("Comparativo de volume de conclusão por Técnico.")
-        
-        df_tec = df_gov_f.groupby("concluido_por").size().reset_index(name="Volume").sort_values("Volume", ascending=False)
-        
-        donut_gov = {
-            "tooltip": {"trigger": "item"},
-            "legend": {"type": "scroll", "orient": "vertical", "right": 0, "top": "middle"},
-            "series": [{
-                "name": "OS Baixadas", "type": "pie", "radius": ["40%", "70%"], "center": ["40%", "50%"],
-                "data": [{"value": int(r["Volume"]), "name": str(r["concluido_por"])} for _, r in df_tec.iterrows()],
-                "label": {"show": False}
-            }]
-        }
-        st_echarts(options=donut_gov, height="350px", key="gov_donut_tec")
+                scatter_data = [[row["volume"], round(row["tempo_medio"], 1), row["mantenedor"]] for _, row in df_maint.iterrows()]
 
-    # 5. Tabela de Rastreabilidade e Auditoria GPS
-    st.markdown("---")
-    st.markdown("#### 📍 Tabela de Auditoria de Apontamentos (GPS)")
-    st.caption("Rastreio detalhado do local exato onde o técnico clicou para concluir a OS.")
-    
-    df_auditoria = df_gov_f[["Ordem servico", "concluido_por", "data_inicio", "hora_fim", "geolocalizacao_baixa", "equipe", "Tempo_Minutos"]].copy()
-    df_auditoria = df_auditoria.sort_values(by=["data_inicio", "hora_fim"], ascending=[False, False])
-    
-    df_auditoria = df_auditoria.rename(columns={
-        "Ordem servico": "OS",
-        "concluido_por": "Apontador Principal",
-        "data_inicio": "Data",
-        "hora_fim": "Hora Apontada",
-        "geolocalizacao_baixa": "Localização do Celular",
-        "equipe": "Co-Executantes",
-        "Tempo_Minutos": "Tempo Gasto (min)"
-    })
-    
-    df_auditoria["Tempo Gasto (min)"] = df_auditoria["Tempo Gasto (min)"].round(0).astype(int)
-    
-# Destaca em vermelho quem deu baixa usando a localização da base (burlando a trava de campo ou em ponto cego)
-    def highlight_gps(val):
-        if pd.isna(val): return ''
-        if 'Base' in str(val) or 'Sede' in str(val):
-            return 'background-color: #FEE2E2; color: #991B1B; font-weight: bold;'
-        return 'color: #065F46;'
+                options_scatter = {
+                    "backgroundColor": "#FFFFFF",
+                    "tooltip": {
+                        "trigger": "item",
+                        "formatter": JsCode("function (p) { return '<b>' + (p.data[2] || '') + '</b><br>OS Concluídas: ' + p.data[0] + '<br>Tempo Médio: ' + p.data[1] + ' min'; }")
+                    },
+                    "grid": {"top": "15%", "bottom": "15%", "left": "10%", "right": "10%"},
+                    "xAxis": {
+                        "type": "value", 
+                        "name": "Volume de OS", 
+                        "nameLocation": "middle", 
+                        "nameGap": 25,
+                        "splitLine": {"show": True, "lineStyle": {"type": "dashed", "color": "#E2E8F0"}}
+                    },
+                    "yAxis": {
+                        "type": "value", 
+                        "name": "Tempo Médio Real (min)", 
+                        "nameLocation": "middle", 
+                        "nameGap": 40,
+                        "splitLine": {"show": True, "lineStyle": {"type": "dashed", "color": "#E2E8F0"}}
+                    },
+                    "series": [{
+                        "type": "scatter",
+                        "data": scatter_data,
+                        "symbolSize": 16,
+                        "itemStyle": {
+                            "color": "#2563EB",
+                            "shadowBlur": 4,
+                            "shadowColor": "rgba(37, 99, 235, 0.3)"
+                        }
+                    }]
+                }
+                st_echarts(options=options_scatter, height="350px", key="gov_scatter_eficiencia")
 
-    st.dataframe(
-        df_auditoria.style.map(highlight_gps, subset=["Localização do Celular"]),
-        use_container_width=True, 
-        height=300, 
-        hide_index=True
-    )
-#endregion
+            with col_g2:
+                st.markdown("#### 📉 Calibração de Planejamento por Subsistema")
+                st.caption("Comparativo entre janelas de tempo estimadas e a realidade executada em campo.")
 
-# === NOVOS GRÁFICOS ANALÍTICOS ===
-    st.markdown("---")
-    st.markdown("### 🚀 Radar de Desempenho e Aderência")
-    
-    col_a, col_b = st.columns(2)
-    
-    with col_a:
-        st.markdown("#### 🕒 Aderência: Login vs. Primeiro Apontamento")
-        # Mesclamos o primeiro login com o primeiro apontamento do técnico
-        df_logs["data"] = pd.to_datetime(df_logs["data_hora_login"]).dt.date
-        df_gov_f["data"] = pd.to_datetime(df_gov_f["data_inicio"], format="%d/%m/%Y").dt.date
-        
-        # Agrupa o primeiro apontamento
-        df_primeiro_apont = df_baixas_full.groupby(["concluido_por", "data"])["hora_inicio"].min().reset_index()
-        
-        # Merge para comparar
-        df_aderencia = df_logs.merge(df_primeiro_apont, left_on=["username", "data"], right_on=["concluido_por", "data"])
-        
-        # Gráfico de Dispersão (Login vs Início Operacional)
-        st.scatter_chart(df_aderencia, x="primeiro_acesso", y="hora_inicio", color="concluido_por")
-        st.caption("Cada ponto é um técnico. Quanto mais perto da diagonal, melhor a aderência entre o login e o início da atividade.")
+                df_sub = df_gov.groupby("subsistema").agg(
+                    estimado=("tempo_estimado_min", "mean"),
+                    real=("tempo_real_min", "mean")
+                ).reset_index()
 
-    with col_b:
-        st.markdown("#### 🔝 Top Técnicos: OS por Pátio")
-        # Visão de volume por localidade para identificar especialistas
-        df_freq = df_gov_f.groupby(["concluido_por", "Patio"]).size().unstack().fillna(0)
-        st.bar_chart(df_freq, stack="user")
-        st.caption("Distribuição da carga de trabalho por técnico e pátio.")
+                sub_categories = df_sub["subsistema"].tolist()
+                estimado_vals = [round(v, 1) for v in df_sub["estimado"].tolist()]
+                real_vals = [round(v, 1) for v in df_sub["real"].tolist()]
 
-    st.markdown("---")
-    st.markdown("#### 📊 Análise de Variabilidade de Execução")
-    # Gráfico de Boxplot ou Barra de Erro para mostrar dispersão de tempo
-    # Mostra se o técnico tem um tempo de execução constante ou muito variável (falta de padronização)
-    df_var = df_gov_f.groupby("concluido_por")["Tempo_Minutos"].agg(['mean', 'std']).reset_index()
-    st.bar_chart(df_var.set_index("concluido_por")[["mean"]])
-    st.caption("Tempo Médio de execução por técnico. Barras muito altas indicam necessidade de treinamento.")
+                options_bar_comp = {
+                    "backgroundColor": "#FFFFFF",
+                    "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
+                    "legend": {"data": ["Tempo Estimado", "Tempo Real"], "bottom": "0%"},
+                    "grid": {"top": "10%", "bottom": "15%", "left": "12%", "right": "5%"},
+                    "xAxis": {"type": "category", "data": sub_categories, "axisLabel": {"rotate": 15}},
+                    "yAxis": {"type": "value", "name": "Minutos", "splitLine": {"lineStyle": {"color": "#E2E8F0"}}},
+                    "series": [
+                        {"name": "Tempo Estimado", "type": "bar", "data": estimado_vals, "itemStyle": {"color": "#94A3B8"}},
+                        {"name": "Tempo Real", "type": "bar", "data": real_vals, "itemStyle": {"color": "#F59E0B"}}
+                    ]
+                }
+                st_echarts(options=options_bar_comp, height="350px", key="gov_bar_subgrupos")
+
+            # --- CONSTRUÇÃO DO GRÁFICO 3 (LARGURA TOTAL) ---
+            st.markdown("#### ⚖️ Índice de Cumprimento de SLA Cronometrado por Criticidade")
+            st.caption("Aderência percentual detalhada de prazos, segmentada pelo nível de severidade do ativo ferroviário.")
+
+            # Agrupamento para empilhamento
+            df_sla = df_gov.groupby(["criticidade", "no_prazo"]).size().unstack(fill_value=0)
+            
+            # Garantia de colunas booleanas estruturadas
+            if True not in df_sla.columns:
+                df_sla[True] = 0
+            if False not in df_sla.columns:
+                df_sla[False] = 0
+
+            # Transformação em percentual empilhado (100%)
+            df_sla["total"] = df_sla[True] + df_sla[False]
+            df_sla["pct_no_prazo"] = (df_sla[True] / df_sla["total"]) * 100
+            df_sla["pct_atrasado"] = (df_sla[False] / df_sla["total"]) * 100
+
+            crit_categories = df_sla.index.tolist()
+            no_prazo_pct = [round(v, 1) for v in df_sla["pct_no_prazo"].tolist()]
+            atrasado_pct = [round(v, 1) for v in df_sla["pct_atrasado"].tolist()]
+
+            options_stack_sla = {
+                "backgroundColor": "#FFFFFF",
+                "tooltip": {"trigger": "axis", "formatter": "{b}<br/>{a0}: {c0}%<br/>{a1}: {c1}%"},
+                "legend": {"data": ["Dentro do Prazo Estimado", "Acima do Prazo Estimado"], "top": "0%"},
+                "grid": {"top": "15%", "bottom": "10%", "left": "10%", "right": "5%"},
+                "xAxis": {"type": "value", "max": 100, "axisLabel": {"formatter": "{value}%"}, "splitLine": {"show": False}},
+                "yAxis": {"type": "category", "data": crit_categories},
+                "series": [
+                    {
+                        "name": "Dentro do Prazo Estimado",
+                        "type": "bar",
+                        "stack": "total_sla",
+                        "label": {"show": True, "formatter": "{c}%", "position": "inside"},
+                        "itemStyle": {"color": "#10B981"},
+                        "data": no_prazo_pct
+                    },
+                    {
+                        "name": "Acima do Prazo Estimado",
+                        "type": "bar",
+                        "stack": "total_sla",
+                        "label": {"show": True, "formatter": "{c}%", "position": "inside"},
+                        "itemStyle": {"color": "#EF4444"},
+                        "data": atrasado_pct
+                    }
+                ]
+            }
+            st_echarts(options=options_stack_sla, height="300px", key="gov_stack_sla_criticidade")
     st.stop() # Interrompe a execução para não desenhar o resto das abas do sistema
 #endregion
 #endregion
