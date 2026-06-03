@@ -150,9 +150,9 @@ if not st.session_state["logged_in"]:
                         st.success("Concluído! Entre com sua nova senha."); st.session_state["needs_reset"] = False; st.rerun()
             if st.button("⬅️ Voltar"): st.session_state["needs_reset"] = False; st.rerun()
             
-        # ETAPA 2: Barreira de GPS Obrigatória 100% Rígida
+        # ETAPA 2: Barreira de GPS Obrigatória (Apenas Técnico)
         elif st.session_state.get("validando_gps"):
-            st.info("📍 **Auditoria de Segurança:** Capturando sua localização para liberar o acesso. Por favor, clique em 'Permitir' no aviso do seu navegador.")
+            st.info("📍 **Para acessar o conteúdo é necessário a ativação do GPS.** Por favor, clique em 'Permitir' no aviso do seu navegador.")
             loc_login = get_geolocation()
             
             if loc_login and isinstance(loc_login, dict) and "coords" in loc_login:
@@ -215,8 +215,20 @@ if not st.session_state["logged_in"]:
                         st.session_state["temp_perfil"] = row[1]
                         st.session_state["temp_escopo"] = row[2]
                         st.session_state["temp_gov"] = row[4] or "Mapa de Campo"
-                        st.session_state["validando_gps"] = True
+                        
+                        # --- FILTRO INTELIGENTE DE GPS ---
+                        if row[1] == "Técnico":
+                            st.session_state["validando_gps"] = True
+                        else:
+                            st.session_state.update({
+                                "logged_in": True,
+                                "username": st.session_state["temp_user"],
+                                "perfil": st.session_state["temp_perfil"],
+                                "escopo": st.session_state["temp_escopo"],
+                                "governanca": st.session_state["temp_gov"]
+                            })
                         st.rerun()
+                        # ---------------------------------
                 else: st.error("❌ Usuário ou senha incorretos.")
     st.stop()
 #endregion
