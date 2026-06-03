@@ -2726,7 +2726,7 @@ with tab2:
 #endregion
 
 #region 8.4: ABA 3 — Governança Operacional
-if exibir_governanca and tab3 is not None:
+if exibir_governanca:
     with tab3:
         st.markdown("<h3 style='color: #0F172A; font-weight: 700;'>⚖️ Motor de Governança Operacional</h3>", unsafe_allow_html=True)
         st.markdown("Análise estatística de eficiência, variabilidade de cronograma e calibração de tempos de manutenção.")
