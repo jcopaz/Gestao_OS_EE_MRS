@@ -1670,11 +1670,13 @@ with col_nav1:
     if "Painel Gerencial" in gov_usuario or "Mapa de Campo" in gov_usuario:
         if st.button("📊 Painel", width="stretch"): 
             st.session_state["tela_atual"] = "dashboard"
+            st.session_state["gov_auth_ok"] = False # Trava a governança ao sair
             st.rerun()
 with col_nav2:
     if "Upload de Dados" in gov_usuario:
         if st.button("⚙️ Dados", width="stretch"): 
             st.session_state["tela_atual"] = "admin"
+            st.session_state["gov_auth_ok"] = False # Trava a governança ao sair
             st.rerun()
 
 # Botão exclusivo para liderança - NAVEGAÇÃO DIRETA DE 1 CLIQUE
@@ -1687,17 +1689,6 @@ if "Gestão de Usuários" in gov_usuario or "Exportar SAP" in gov_usuario:
 if st.session_state.get("tela_atual") == "admin":
     render_tela_admin()
     st.stop()
-
-# Trava de renderização para a tela de Governança
-# Se o usuário clicar no botão, este bloco intercepta e impede que as abas normais apareçam
-if st.session_state.get("tela_atual") == "governanca":
-    st.markdown("<h3 style='color: #0F172A; font-weight: 700;'>⚖️ Motor de Governança Operacional e Auditoria</h3>", unsafe_allow_html=True)
-    st.markdown("Análise estatística de eficiência, variabilidade de cronograma, aderência de login e rastreabilidade de campo.")
-    st.info("⚖️ Esta seção é exclusiva para perfis de liderança. Aqui você pode auditar ações, gerenciar usuários e acessar dados sensíveis relacionados à governança do sistema.")
-    
-    # Executa a função que desenha a tela de governança (Certifique-se de que o nome está correto)
-    render_tela_governanca() 
-    st.stop() # Interrompe aqui para não misturar com o painel principal
     
 # --- DEFINIÇÃO DO FILTRO DE VISÃO ---
 if "Painel Gerencial" in gov_usuario:
@@ -2041,17 +2032,7 @@ st.markdown("---")
 
 #region SESSÃO 8: Abas e Renderização dos Gráficos
 
-#region # --- MAPEAMENTO DINÂMICO DE ABAS (NAVEGAÇÃO DIRETA) ---
-perfil_seguro = str(st.session_state.get("perfil", "")).strip().lower()
-perfis_autorizados = ["gerente", "coordenador", "gerência", "admin", "administrador"]
-
-# Se o usuário for autorizado E clicou para ir para a página de Governança
-if perfil_seguro in perfis_autorizados and st.session_state.get("pagina_atual") == "Governança":
-    tab1, tab2, tab3 = st.tabs(["📋 Painel de Controle", "📊 Indicadores Gerenciais", "⚖️ Governança Operacional"])
-else:
-    tab1, tab2 = st.tabs(["📋 Painel de Controle", "📊 Indicadores Gerenciais"])
-    tab3 = None
-#endregion
+tab1, tab2 = st.tabs(["📋 Painel de Controle", "📊 Indicadores Gerenciais"])
 
 #region 8.2: ABA 1 — Visão Gerencial (Indicadores)
 with tab1:
@@ -2572,237 +2553,239 @@ with tab2:
     st.markdown("---")
 #endregion
 
-#region 8.4: ABA 3 — Governança Operacional
+#region SESSÃO 9: Motor de Governança Operacional e Auditoria
+if st.session_state.get("tela_atual") == "governanca":
 
-perfil_logado = st.session_state.get("perfil", "")
-if perfil_seguro in perfis_autorizados and st.session_state.get("pagina_atual") == "Governança":
-    if "tab3" in locals() and tab3 is not None:
-        with tab3:
-            st.markdown("<h3 style='color: #0F172A; font-weight: 700;'>⚖️ Motor de Governança Operacional e Auditoria</h3>", unsafe_allow_html=True)
-            st.markdown("Análise estatística de eficiência, variabilidade de cronograma, aderência de login e rastreabilidade de campo.")
-            
-            df_gov = df_filtrado.copy()
+    st.markdown("<h3 style='color: #0F172A; font-weight: 700;'>⚖️ Motor de Governança Operacional e Auditoria</h3>", unsafe_allow_html=True)
+    
+    # --- CAMADA DE SEGURANÇA OBRIGATÓRIA ---
+    if not st.session_state.get("gov_auth_ok", False):
+        st.warning("🔒 **Área Sensível:** Confirme sua senha de usuário para acessar os dados de auditoria de campo e desempenho.")
+        with st.form("form_auth_gov"):
+            senha_confirm = st.text_input("Senha de Acesso", type="password")
+            if st.form_submit_button("Desbloquear Painel"):
+                conn = get_connection()
+                cur = conn.cursor()
+                cur.execute("SELECT senha_hash FROM usuarios WHERE username = %s", (st.session_state.get("username"),))
+                row = cur.fetchone()
+                cur.close()
+                release_connection(conn)
 
-            if df_gov.empty:
-                st.warning("⚠️ Nenhum dado disponível para os filtros atuais da Sidebar.")
+                if row and row[0] == hash_senha(senha_confirm):
+                    st.session_state["gov_auth_ok"] = True
+                    st.rerun()
+                else:
+                    st.error("❌ Senha incorreta. Acesso negado.")
+        st.stop() # 🛑 Bloqueia a execução do resto do código até a senha estar certa!
+
+    # --- SE A SENHA ESTIVER CORRETA, RENDERIZA O PAINEL ---
+    st.markdown("Análise estatística de eficiência, variabilidade de cronograma, aderência de login e rastreabilidade de campo.")
+    df_gov = df_filtrado.copy()
+
+    if df_gov.empty:
+        st.warning("⚠️ Nenhum dado disponível para os filtros atuais da Sidebar.")
+    else:
+        # =========================================================
+        # TRATAMENTO DE DADOS CORRETOS (CONFORME REGRAS SOLICITADAS)
+        # =========================================================
+        if "Hxh Plano" in df_gov.columns:
+            df_gov["tempo_estimado_min"] = pd.to_numeric(df_gov["Hxh Plano"], errors="coerce").fillna(0)
+        else:
+            df_gov["tempo_estimado_min"] = 60
+
+        col_fim = next((c for c in df_gov.columns if c.lower() in ["hora real fim", "hora_real_fim", "horarealfim"]), None)
+        col_inicio = next((c for c in df_gov.columns if c.lower() in ["hora real inicio", "hora_real_inicio", "hora real início"]), None)
+        
+        if col_fim and col_inicio:
+            t_fim = pd.to_datetime(df_gov[col_fim], errors="coerce")
+            t_ini = pd.to_datetime(df_gov[col_inicio], errors="coerce")
+            df_gov["tempo_real_min"] = (t_fim - t_ini).dt.total_seconds() / 60.0
+            df_gov["tempo_real_min"] = df_gov["tempo_real_min"].fillna(0).apply(lambda x: max(0, x))
+        else:
+            if "tempo_real_min" not in df_gov.columns:
+                df_gov["tempo_real_min"] = 60
+
+        df_gov["no_prazo"] = df_gov["tempo_real_min"] <= df_gov["tempo_estimado_min"]
+
+        # =========================================================
+        # SEÇÃO DE FILTROS INDIVIDUALIZADOS DA GOVERNANÇA
+        # =========================================================
+        st.markdown("##### 🔍 Filtros de Auditoria")
+        col_f1, col_f2 = st.columns([2, 2])
+        
+        with col_f1:
+            col_user = "mantenedor" if "mantenedor" in df_gov.columns else ("concluido_por" if "concluido_por" in df_gov.columns else None)
+            if col_user:
+                lista_usuarios = ["Todos"] + sorted(df_gov[col_user].dropna().unique().tolist())
+                usuario_sel = st.selectbox("👤 Filtrar por Colaborador Individual:", lista_usuarios, key="gov_user_filter")
+                if usuario_sel != "Todos":
+                    df_gov = df_gov[df_gov[col_user] == usuario_sel]
             else:
-                # =========================================================
-                # TRATAMENTO DE DADOS CORRETOS (CONFORME REGRAS SOLICITADAS)
-                # =========================================================
+                st.caption("Coluna de usuário não mapeada.")
+
+        st.markdown("---")
+
+        # =========================================================
+        # INDICADORES E MATRIZ DE ATENÇÃO
+        # =========================================================
+        st.markdown("#### 🚨 Alertas de Governança: Colaboradores sob Atenção")
+        st.caption("Métrica baseada no desvio médio em minutos (Tempo Executado Real vs Hxh Planejado) e taxa de cumprimento.")
+        
+        if col_user and not df_gov.empty:
+            df_metric_atencao = df_gov.groupby(col_user).agg(
+                total_os=("id_os" if "id_os" in df_gov.columns else df_gov.columns[0], "count"),
+                real_med=("tempo_real_min", "mean"),
+                plan_med=("tempo_estimado_min", "mean")
+            ).reset_index()
+            
+            df_metric_atencao["Desvio Médio (Min)"] = (df_metric_atencao["real_med"] - df_metric_atencao["plan_med"]).round(1)
+            
+            p_aderencia = []
+            for user_m in df_metric_atencao[col_user]:
+                sub_df = df_gov[df_gov[col_user] == user_m]
+                pct = (sub_df["no_prazo"].sum() / len(sub_df)) * 100 if len(sub_df) > 0 else 100
+                p_aderencia.append(f"{pct:.1f}%")
+            df_metric_atencao["Aderência"] = p_aderencia
+            
+            def classificar_risco(row):
+                if row["Desvio Médio (Min)"] > 20: return "🔴 Crítico (Estouro Constante)"
+                if row["Desvio Médio (Min)"] > 5: return "🟡 Alerta (Gargalo Operacional)"
+                return "🟢 Eficiente (No Ritmo do Plano)"
                 
-                # 1. Planejado: Usa a coluna 'Hxh Plano' como minutos planejados
-                if "Hxh Plano" in df_gov.columns:
-                    df_gov["tempo_estimado_min"] = pd.to_numeric(df_gov["Hxh Plano"], errors="coerce").fillna(0)
-                else:
-                    df_gov["tempo_estimado_min"] = 60 # Fallback caso a coluna falhe
+            df_metric_atencao["Avaliação de Risco"] = df_metric_atencao.apply(classificar_risco, axis=1)
+            df_metric_atencao = df_metric_atencao.sort_values(by="Desvio Médio (Min)", ascending=False)
+            
+            df_metric_atencao.columns = ["Colaborador", "Volume OS", "Média Real (min)", "Média Plano (min)", "Desvio Médio (min)", "Taxa Aderência", "Avaliação de Risco"]
+            st.dataframe(df_metric_atencao[["Colaborador", "Volume OS", "Desvio Médio (min)", "Taxa Aderência", "Avaliação de Risco"]], width="stretch", hide_index=True)
 
-                # 2. Realizado: Calculado estritamente por (Hora Real Fim - Hora Real Inicio)
-                col_fim = next((c for c in df_gov.columns if c.lower() in ["hora real fim", "hora_real_fim", "horarealfim"]), None)
-                col_inicio = next((c for c in df_gov.columns if c.lower() in ["hora real inicio", "hora_real_inicio", "hora real início"]), None)
-                
-                if col_fim and col_inicio:
-                    t_fim = pd.to_datetime(df_gov[col_fim], errors="coerce")
-                    t_ini = pd.to_datetime(df_gov[col_inicio], errors="coerce")
-                    df_gov["tempo_real_min"] = (t_fim - t_ini).dt.total_seconds() / 60.0
-                    df_gov["tempo_real_min"] = df_gov["tempo_real_min"].fillna(0).apply(lambda x: max(0, x))
-                else:
-                    if "tempo_real_min" not in df_gov.columns:
-                        df_gov["tempo_real_min"] = 60
+        st.markdown("---")
+        
+        # --- CARDS DE SÍNTESE DE GOVERNANÇA ---
+        col_card1, col_card2, col_card3, col_card4 = st.columns(4)
+        t_real_medio = df_gov["tempo_real_min"].mean() if not df_gov.empty else 0
+        t_est_medio = df_gov["tempo_estimado_min"].mean() if not df_gov.empty else 0
+        desvio_padrao = df_gov["tempo_real_min"].std() if len(df_gov) > 1 else 0.0
+        pct_aderencia = (df_gov["no_prazo"].sum() / len(df_gov)) * 100 if len(df_gov) > 0 else 100.0
 
-                # Definição de prazo baseada nas novas colunas tratadas
-                df_gov["no_prazo"] = df_gov["tempo_real_min"] <= df_gov["tempo_estimado_min"]
+        with col_card1: st.metric("Tempo Médio Real", f"{t_real_medio:.1f} min", delta=f"{t_real_medio - t_est_medio:.1f} min vs Plano", delta_color="inverse")
+        with col_card2: st.metric("Aderência ao Estimado", f"{pct_aderencia:.1f}%")
+        with col_card3: st.metric("Variabilidade Operacional", f"{desvio_padrao:.1f} min")
+        with col_card4: st.metric("Volume Analisado", f"{len(df_gov)} OS")
 
-                # =========================================================
-                # SEÇÃO DE FILTROS INDIVIDUALIZADOS DA GOVERNANÇA
-                # =========================================================
-                st.markdown("##### 🔍 Filtros de Auditoria")
-                col_f1, col_f2 = st.columns([2, 2])
-                
-                with col_f1:
-                    col_user = "mantenedor" if "mantenedor" in df_gov.columns else ("concluido_por" if "concluido_por" in df_gov.columns else None)
-                    if col_user:
-                        lista_usuarios = ["Todos"] + sorted(df_gov[col_user].dropna().unique().tolist())
-                        usuario_sel = st.selectbox("👤 Filtrar por Colaborador Individual:", lista_usuarios, key="gov_user_filter")
-                        if usuario_sel != "Todos":
-                            df_gov = df_gov[df_gov[col_user] == usuario_sel]
-                    else:
-                        st.caption("Coluna de usuário não mapeada.")
+        st.markdown("---")
 
-                st.markdown("---")
+        with st.spinner("Processando painéis estatísticos..."):
+            col_g1, col_g2 = st.columns(2)
 
-                # =========================================================
-                # 💡 IDEIA DE MÉTRICA DE ATENÇÃO: ÍNDICE DE DESVIO DE CRONOGRAMA (IDC)
-                # =========================================================
-                st.markdown("#### 🚨 Alertas de Governança: Colaboradores sob Atenção")
-                st.caption("Métrica baseada no desvio médio em minutos (Tempo Executado Real vs Hxh Planejado) e taxa de cumprimento.")
-                
+            with col_g1:
+                st.markdown("#### 🎯 Matriz de Eficiência do Mantenedor")
                 if col_user and not df_gov.empty:
-                    df_metric_atencao = df_gov.groupby(col_user).agg(
-                        total_os=("id_os" if "id_os" in df_gov.columns else df_gov.columns[0], "count"),
-                        real_med=("tempo_real_min", "mean"),
-                        plan_med=("tempo_estimado_min", "mean")
-                    ).reset_index()
-                    
-                    df_metric_atencao["Desvio Médio (Min)"] = (df_metric_atencao["real_med"] - df_metric_atencao["plan_med"]).round(1)
-                    
-                    # Calcular aderência percentual individual
-                    p_aderencia = []
-                    for user_m in df_metric_atencao[col_user]:
-                        sub_df = df_gov[df_gov[col_user] == user_m]
-                        pct = (sub_df["no_prazo"].sum() / len(sub_df)) * 100 if len(sub_df) > 0 else 100
-                        p_aderencia.append(f"{pct:.1f}%")
-                    df_metric_atencao["Aderência"] = p_aderencia
-                    
-                    # Definição do farol de atenção
-                    def classificar_risco(row):
-                        if row["Desvio Médio (Min)"] > 20: return "🔴 Crítico (Estouro Constante)"
-                        if row["Desvio Médio (Min)"] > 5: return "🟡 Alerta (Gargalo Operacional)"
-                        return "🟢 Eficiente (No Ritmo do Plano)"
-                        
-                    df_metric_atencao["Avaliação de Risco"] = df_metric_atencao.apply(classificar_risco, axis=1)
-                    df_metric_atencao = df_metric_atencao.sort_values(by="Desvio Médio (Min)", ascending=False)
-                    
-                    df_metric_atencao.columns = ["Colaborador", "Volume OS", "Média Real (min)", "Média Plano (min)", "Desvio Médio (min)", "Taxa Aderência", "Avaliação de Risco"]
-                    st.dataframe(df_metric_atencao[["Colaborador", "Volume OS", "Desvio Médio (min)", "Taxa Aderência", "Avaliação de Risco"]], width="stretch", hide_index=True)
+                    df_maint = df_gov.groupby(col_user).agg(volume=("tempo_real_min", "count"), tempo_medio=("tempo_real_min", "mean")).reset_index()
+                    scatter_data = [[row["volume"], round(row["tempo_medio"], 1), row[col_user]] for _, row in df_maint.iterrows()]
                 else:
-                    st.info("Amostragem insuficiente para gerar matriz de atenção.")
+                    scatter_data = []
 
-                st.markdown("---")
+                options_scatter = {
+                    "backgroundColor": "#FFFFFF",
+                    "tooltip": {"trigger": "item", "formatter": JsCode("function (p) { return '<b>' + (p.data[2] || '') + '</b><br>OS Concluídas: ' + p.data[0] + '<br>Tempo Médio: ' + p.data[1] + ' min'; }")},
+                    "grid": {"top": "15%", "bottom": "15%", "left": "10%", "right": "10%"},
+                    "xAxis": {"type": "value", "name": "Volume de OS", "nameLocation": "middle", "nameGap": 25, "splitLine": {"lineStyle": {"type": "dashed"}}},
+                    "yAxis": {"type": "value", "name": "Tempo Médio (min)", "nameLocation": "middle", "nameGap": 35, "splitLine": {"lineStyle": {"type": "dashed"}}},
+                    "series": [{"type": "scatter", "data": scatter_data, "symbolSize": 14, "itemStyle": {"color": "#2563EB"}}]
+                }
+                st_echarts(options=options_scatter, height="320px", key="gov_scatter_eficiencia")
 
-                # --- CARDS DE SÍNTESE DE GOVERNANÇA ---
-                col_card1, col_card2, col_card3, col_card4 = st.columns(4)
-                t_real_medio = df_gov["tempo_real_min"].mean() if not df_gov.empty else 0
-                t_est_medio = df_gov["tempo_estimado_min"].mean() if not df_gov.empty else 0
-                desvio_padrao = df_gov["tempo_real_min"].std() if len(df_gov) > 1 else 0.0
-                pct_aderencia = (df_gov["no_prazo"].sum() / len(df_gov)) * 100 if len(df_gov) > 0 else 100.0
+            with col_g2:
+                st.markdown("#### 📈 Produtividade Acumulada (Tracking)")
+                col_data = "dia_realizado" if "dia_realizado" in df_gov.columns else ("Data/Hora Realizado" if "Data/Hora Realizado" in df_gov.columns else None)
+                if col_data and not df_gov.empty:
+                    df_gov["data_formatada"] = pd.to_datetime(df_gov[col_data], errors="coerce").dt.strftime("%d/%m")
+                    df_prod = df_gov.groupby("data_formatada").size().cumsum().reset_index(name="acumulado")
+                    options_area = {
+                        "backgroundColor": "#FFFFFF",
+                        "tooltip": {"trigger": "axis"},
+                        "grid": {"top": "15%", "bottom": "15%", "left": "10%", "right": "5%"},
+                        "xAxis": {"type": "category", "data": df_prod["data_formatada"].tolist(), "boundaryGap": False},
+                        "yAxis": {"type": "value"},
+                        "series": [{"name": "OS Acumuladas", "data": df_prod["acumulado"].tolist(), "type": "line", "areaStyle": {"color": "rgba(16, 185, 129, 0.2)"}, "itemStyle": {"color": "#10B981"}, "smooth": True}]
+                    }
+                    st_echarts(options=options_area, height="320px", key="gov_area_produtividade")
+                else:
+                    st.info("Aguardando dados temporais válidos.")
 
-                with col_card1:
-                    st.metric("Tempo Médio Real", f"{t_real_medio:.1f} min", delta=f"{t_real_medio - t_est_medio:.1f} min vs Plano", delta_color="inverse")
-                with col_card2:
-                    st.metric("Aderência ao Estimado", f"{pct_aderencia:.1f}%")
-                with col_card3:
-                    st.metric("Variabilidade Operacional", f"{desvio_padrao:.1f} min")
-                with col_card4:
-                    st.metric("Volume Analisado", f"{len(df_gov)} OS")
+            col_g3, col_g4 = st.columns(2)
 
-                st.markdown("---")
+            with col_g3:
+                st.markdown("#### 📉 Calibração de Planejamento (Subsistema)")
+                if "subsistema" in df_gov.columns and not df_gov.empty:
+                    df_sub = df_gov.groupby("subsistema").agg(est=("tempo_estimado_min", "mean"), real=("tempo_real_min", "mean")).reset_index()
+                    options_bar_comp = {
+                        "backgroundColor": "#FFFFFF",
+                        "tooltip": {"trigger": "axis"},
+                        "legend": {"data": ["Tempo Estimado", "Tempo Real"], "bottom": "0%"},
+                        "grid": {"top": "10%", "bottom": "15%", "left": "12%", "right": "5%"},
+                        "xAxis": {"type": "category", "data": df_sub["subsistema"].tolist()},
+                        "yAxis": {"type": "value"},
+                        "series": [
+                            {"name": "Tempo Estimado", "type": "bar", "data": [round(v,1) for v in df_sub["est"]], "itemStyle": {"color": "#94A3B8"}},
+                            {"name": "Tempo Real", "type": "bar", "data": [round(v,1) for v in df_sub["real"]], "itemStyle": {"color": "#F59E0B"}}
+                        ]
+                    }
+                    st_echarts(options=options_bar_comp, height="320px", key="gov_bar_subsistema")
+                else:
+                    st.info("Coluna subsistema ausente.")
 
-                with st.spinner("Processando painéis estatísticos..."):
-                    
-                    # --- LINHA 1 DE GRÁFICOS ---
-                    col_g1, col_g2 = st.columns(2)
+            with col_g4:
+                st.markdown("#### ⏱️ Aderência: Login vs Início de Atividade")
+                st.caption("Gap de tempo entre o Primeiro Login no App e a abertura da 1ª OS.")
+                cat_gap = ["< 15 min (Ideal)", "15-30 min", "30-60 min", "> 60 min (Alerta)"]
+                total_g = len(df_gov)
+                options_gap = {
+                    "backgroundColor": "#FFFFFF",
+                    "tooltip": {"trigger": "axis"},
+                    "grid": {"top": "15%", "bottom": "15%", "left": "15%", "right": "5%"},
+                    "xAxis": {"type": "value"},
+                    "yAxis": {"type": "category", "data": cat_gap[::-1]},
+                    "series": [{"name": "Qtd", "type": "bar", "data": [int(total_g*0.1), int(total_g*0.15), int(total_g*0.3), int(total_g*0.45)], "itemStyle": {"color": "#8B5CF6"}, "label": {"show": True, "position": "right"}}]
+                }
+                st_echarts(options=options_gap, height="320px", key="gov_bar_login_gap")
 
-                    with col_g1:
-                        st.markdown("#### 🎯 Matriz de Eficiência do Mantenedor")
-                        if col_user and not df_gov.empty:
-                            df_maint = df_gov.groupby(col_user).agg(volume=("tempo_real_min", "count"), tempo_medio=("tempo_real_min", "mean")).reset_index()
-                            scatter_data = [[row["volume"], round(row["tempo_medio"], 1), row[col_user]] for _, row in df_maint.iterrows()]
-                        else:
-                            scatter_data = []
+            # =========================================================
+            # PLANILHA DE AUDITORIA FILTRADA (APENAS OS CONCLUÍDAS)
+            # =========================================================
+            st.markdown("---")
+            st.markdown("#### 📋 Planilha de Auditoria e Rastreabilidade de Logs (GPS)")
+            st.caption("Exibindo de forma transparente apenas as ordens de serviço concluídas (No prazo e em atraso).")
+            
+            status_col = next((c for c in df_gov.columns if c.lower() in ["status", "status da operação", "status_os"]), None)
+            if status_col:
+                df_concluidas = df_gov[df_gov[status_col].astype(str).str.lower().isin(["concluída", "concluida", "baixada", "finalizada", "encerrada", "realizado", "realizado fora da data de programação"])]
+            else:
+                df_concluidas = df_gov[df_gov["tempo_real_min"] > 0] 
+            
+            if df_concluidas.empty:
+                st.info("💡 Nenhuma OS Concluída encontrada para os filtros aplicados.")
+            else:
+                df_exibir = pd.DataFrame()
+                
+                def buscar_col(termos, dataframe):
+                    return next((col for col in dataframe.columns if col.lower() in termos), None)
 
-                        options_scatter = {
-                            "backgroundColor": "#FFFFFF",
-                            "tooltip": {"trigger": "item", "formatter": JsCode("function (p) { return '<b>' + (p.data[2] || '') + '</b><br>OS Concluídas: ' + p.data[0] + '<br>Tempo Médio: ' + p.data[1] + ' min'; }")},
-                            "grid": {"top": "15%", "bottom": "15%", "left": "10%", "right": "10%"},
-                            "xAxis": {"type": "value", "name": "Volume de OS", "nameLocation": "middle", "nameGap": 25, "splitLine": {"lineStyle": {"type": "dashed"}}},
-                            "yAxis": {"type": "value", "name": "Tempo Médio (min)", "nameLocation": "middle", "nameGap": 35, "splitLine": {"lineStyle": {"type": "dashed"}}},
-                            "series": [{"type": "scatter", "data": scatter_data, "symbolSize": 14, "itemStyle": {"color": "#2563EB"}}]
-                        }
-                        st_echarts(options=options_scatter, height="320px", key="gov_scatter_eficiencia")
+                c_os = buscar_col(["os", "id_os", "ordem servico"], df_concluidas)
+                c_ativo = buscar_col(["ativo", "tag", "equipamento", "local_instalacao"], df_concluidas)
+                c_dataprog = buscar_col(["data inicial programada", "dt_programada", "data_programada", "data_prog"], df_concluidas)
+                c_desc = buscar_col(["descrição longa", "descricao_longa", "desc_longa", "descricao"], df_concluidas)
+                c_concluido = buscar_col(["data/hora realizado", "hora real fim", "hora_real_fim", "data/hora concluido a os", "realizado_em"], df_concluidas)
 
-                    with col_g2:
-                        st.markdown("#### 📈 Produtividade Acumulada (Tracking)")
-                        col_data = "dia_realizado" if "dia_realizado" in df_gov.columns else ("Data/Hora Realizado" if "Data/Hora Realizado" in df_gov.columns else None)
-                        if col_data and not df_gov.empty:
-                            df_gov["data_formatada"] = pd.to_datetime(df_gov[col_data], errors="coerce").dt.strftime("%d/%m")
-                            df_prod = df_gov.groupby("data_formatada").size().cumsum().reset_index(name="acumulado")
-                            options_area = {
-                                "backgroundColor": "#FFFFFF",
-                                "tooltip": {"trigger": "axis"},
-                                "grid": {"top": "15%", "bottom": "15%", "left": "10%", "right": "5%"},
-                                "xAxis": {"type": "category", "data": df_prod["data_formatada"].tolist(), "boundaryGap": False},
-                                "yAxis": {"type": "value"},
-                                "series": [{"name": "OS Acumuladas", "data": df_prod["acumulado"].tolist(), "type": "line", "areaStyle": {"color": "rgba(16, 185, 129, 0.2)"}, "itemStyle": {"color": "#10B981"}, "smooth": True}]
-                            }
-                            st_echarts(options=options_area, height="320px", key="gov_area_produtividade")
-                        else:
-                            st.info("Aguardando dados temporais válidos.")
+                df_exibir["OS"] = df_concluidas[c_os] if c_os else df_concluidas.index
+                df_exibir["Ativo"] = df_concluidas[c_ativo] if c_ativo else "Não Mapeado"
+                df_exibir["Data Programada"] = df_concluidas[c_dataprog].dt.strftime("%d/%m/%Y") if c_dataprog and pd.api.types.is_datetime64_any_dtype(df_concluidas[c_dataprog]) else df_concluidas[c_dataprog] if c_dataprog else "---"
+                df_exibir["Descrição Longa"] = df_concluidas[c_desc] if c_desc else "---"
+                df_exibir["Tempo Realizado"] = df_concluidas["tempo_real_min"].round(1).astype(str) + " min"
+                df_exibir["Data/Hora Concluído"] = df_concluidas[c_concluido] if c_concluido else "---"
 
-                    # --- LINHA 2 DE GRÁFICOS ---
-                    col_g3, col_g4 = st.columns(2)
-
-                    with col_g3:
-                        st.markdown("#### 📉 Calibração de Planejamento (Subsistema)")
-                        if "subsistema" in df_gov.columns and not df_gov.empty:
-                            df_sub = df_gov.groupby("subsistema").agg(est=("tempo_estimado_min", "mean"), real=("tempo_real_min", "mean")).reset_index()
-                            options_bar_comp = {
-                                "backgroundColor": "#FFFFFF",
-                                "tooltip": {"trigger": "axis"},
-                                "legend": {"data": ["Tempo Estimado", "Tempo Real"], "bottom": "0%"},
-                                "grid": {"top": "10%", "bottom": "15%", "left": "12%", "right": "5%"},
-                                "xAxis": {"type": "category", "data": df_sub["subsistema"].tolist()},
-                                "yAxis": {"type": "value"},
-                                "series": [
-                                    {"name": "Tempo Estimado", "type": "bar", "data": [round(v,1) for v in df_sub["est"]], "itemStyle": {"color": "#94A3B8"}},
-                                    {"name": "Tempo Real", "type": "bar", "data": [round(v,1) for v in df_sub["real"]], "itemStyle": {"color": "#F59E0B"}}
-                                ]
-                            }
-                            st_echarts(options=options_bar_comp, height="320px", key="gov_bar_subsistema")
-                        else:
-                            st.info("Coluna subsistema ausente.")
-
-                    with col_g4:
-                        st.markdown("#### ⏱️ Aderência: Login vs Início de Atividade")
-                        st.caption("Gap de tempo entre o Primeiro Login no App e a abertura da 1ª OS.")
-                        cat_gap = ["< 15 min (Ideal)", "15-30 min", "30-60 min", "> 60 min (Alerta)"]
-                        total_g = len(df_gov)
-                        options_gap = {
-                            "backgroundColor": "#FFFFFF",
-                            "tooltip": {"trigger": "axis"},
-                            "grid": {"top": "15%", "bottom": "15%", "left": "15%", "right": "5%"},
-                            "xAxis": {"type": "value"},
-                            "yAxis": {"type": "category", "data": cat_gap[::-1]},
-                            "series": [{"name": "Qtd", "type": "bar", "data": [int(total_g*0.1), int(total_g*0.15), int(total_g*0.3), int(total_g*0.45)], "itemStyle": {"color": "#8B5CF6"}, "label": {"show": True, "position": "right"}}]
-                        }
-                        st_echarts(options=options_gap, height="320px", key="gov_bar_login_gap")
-
-                    # =========================================================
-                    # PLANILHA DE AUDITORIA FILTRADA (APENAS OS CONCLUÍDAS)
-                    # =========================================================
-                    st.markdown("---")
-                    st.markdown("#### 📋 Planilha de Auditoria e Rastreabilidade de Logs (GPS)")
-                    st.caption("Exibindo de forma transparente apenas as ordens de serviço concluídas (No prazo e em atraso).")
-                    
-                    # Filtragem estrita por status concluído/baixado
-                    status_col = next((c for c in df_gov.columns if c.lower() in ["status", "status da operação", "status_os"]), None)
-                    if status_col:
-                        df_concluidas = df_gov[df_gov[status_col].astype(str).str.lower().isin(["concluída", "concluida", "baixada", "finalizada", "encerrada"])]
-                    else:
-                        df_concluidas = df_gov[df_gov["tempo_real_min"] > 0] # Fallback de segurança se não houver a coluna status
-                    
-                    if df_concluidas.empty:
-                        st.info("💡 Nenhuma OS Concluída encontrada para os filtros aplicados.")
-                    else:
-                        # Mapeamento exato das colunas solicitadas
-                        df_exibir = pd.DataFrame()
-                        
-                        def buscar_col(termos, dataframe):
-                            return next((col for col in dataframe.columns if col.lower() in termos), None)
-
-                        c_os = buscar_col(["os", "id_os"], df_concluidas)
-                        c_ativo = buscar_col(["ativo", "tag", "equipamento", "local_instalacao"], df_concluidas)
-                        c_dataprog = buscar_col(["data programada", "dt_programada", "data_programada", "data_prog"], df_concluidas)
-                        c_desc = buscar_col(["descrição longa", "descricao_longa", "desc_longa", "descricao"], df_concluidas)
-                        c_concluido = buscar_col(["hora real fim", "hora_real_fim", "data/hora concluido a os", "realizado_em"], df_concluidas)
-
-                        df_exibir["OS"] = df_concluidas[c_os] if c_os else df_concluidas.index
-                        df_exibir["Ativo"] = df_concluidas[c_ativo] if c_ativo else "Não Mapeado"
-                        df_exibir["Data Programada"] = df_concluidas[c_dataprog] if c_dataprog else "---"
-                        df_exibir["Descrição Longa"] = df_concluidas[c_desc] if c_desc else "---"
-                        df_exibir["Tempo Realizado"] = df_concluidas["tempo_real_min"].round(1).astype(str) + " min"
-                        df_exibir["Data/Hora Concluido a OS"] = df_concluidas[c_concluido] if c_concluido else "---"
-
-                        st.dataframe(df_exibir, width="stretch", height=350, hide_index=True)
-#endregion
+                st.dataframe(df_exibir, width="stretch", height=350, hide_index=True)
+                
+    st.stop() # 🛑 Impede que o Dashboard normal e o Mapa sejam desenhados embaixo da Governança!
 #endregion
 #endregion
