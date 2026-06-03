@@ -1895,7 +1895,7 @@ if "Gestão de Usuários" in st.session_state.get("governanca", ""):
 #endregion
 
 #region SESSÃO 9: Motor de Governança Operacional
-with tab4:
+with tab3:
     st.markdown("<h3 style='color: #0F172A; font-weight: 700;'>⚖️ Motor de Governança Operacional</h3>", unsafe_allow_html=True)
     st.markdown("Análise estatística de eficiência, variabilidade de cronograma e calibração de tempos de manutenção.")
 
@@ -1946,10 +1946,13 @@ with tab4:
                 st.caption("Mapeia a produtividade individual cruzando volume de entregas com velocidade média.")
                 
                 # Agrupamento seguro por mantenedor
-                df_maint = df_gov.groupby("mantenedor").agg(
-                    volume=("id_os", "count"),
-                    tempo_medio=("tempo_real_min", "mean")
-                ).reset_index()
+                if "mantenedor" in df_gov.columns:
+                    df_maint = df_gov.groupby("mantenedor").agg(
+                        volume=("id_os", "count"),
+                        tempo_medio=("tempo_real_min", "mean")
+                    ).reset_index()
+                else:
+                    df_maint = pd.DataFrame(columns=["mantenedor", "volume", "tempo_medio"])
 
                 scatter_data = [[row["volume"], round(row["tempo_medio"], 1), row["mantenedor"]] for _, row in df_maint.iterrows()]
 
@@ -2018,23 +2021,23 @@ with tab4:
             st.markdown("#### ⚖️ Índice de Cumprimento de SLA Cronometrado por Criticidade")
             st.caption("Aderência percentual detalhada de prazos, segmentada pelo nível de severidade do ativo ferroviário.")
 
-            # Agrupamento para empilhamento
-            df_sla = df_gov.groupby(["criticidade", "no_prazo"]).size().unstack(fill_value=0)
-            
-            # Garantia de colunas booleanas estruturadas
-            if True not in df_sla.columns:
-                df_sla[True] = 0
-            if False not in df_sla.columns:
-                df_sla[False] = 0
+            if "criticidade" in df_gov.columns:
+                df_sla = df_gov.groupby(["criticidade", "no_prazo"]).size().unstack(fill_value=0)
+                
+                if True not in df_sla.columns:
+                    df_sla[True] = 0
+                if False not in df_sla.columns:
+                    df_sla[False] = 0
 
-            # Transformação em percentual empilhado (100%)
-            df_sla["total"] = df_sla[True] + df_sla[False]
-            df_sla["pct_no_prazo"] = (df_sla[True] / df_sla["total"]) * 100
-            df_sla["pct_atrasado"] = (df_sla[False] / df_sla["total"]) * 100
+                df_sla["total"] = df_sla[True] + df_sla[False]
+                df_sla["pct_no_prazo"] = (df_sla[True] / df_sla["total"]) * 100
+                df_sla["pct_atrasado"] = (df_sla[False] / df_sla["total"]) * 100
 
-            crit_categories = df_sla.index.tolist()
-            no_prazo_pct = [round(v, 1) for v in df_sla["pct_no_prazo"].tolist()]
-            atrasado_pct = [round(v, 1) for v in df_sla["pct_atrasado"].tolist()]
+                crit_categories = df_sla.index.tolist()
+                no_prazo_pct = [round(v, 1) for v in df_sla["pct_no_prazo"].tolist()]
+                atrasado_pct = [round(v, 1) for v in df_sla["pct_atrasado"].tolist()]
+            else:
+                crit_categories, no_prazo_pct, atrasado_pct = [], [], []
 
             options_stack_sla = {
                 "backgroundColor": "#FFFFFF",
@@ -2063,7 +2066,6 @@ with tab4:
                 ]
             }
             st_echarts(options=options_stack_sla, height="300px", key="gov_stack_sla_criticidade")
-    st.stop() # Interrompe a execução para não desenhar o resto das abas do sistema
 #endregion
 #endregion
 
