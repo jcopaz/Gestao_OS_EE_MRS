@@ -2551,7 +2551,7 @@ with tab2:
 
 perfil_logado = st.session_state.get("perfil", "")
 
-if perfil_logado in ["Gerente", "Coordenador", "Gerência"]:
+if perfil_logado in ["Gerente", "Coordenador", "Gerência", "Admin", "Administrador"]:
     if "tab3" in locals() and tab3 is not None:
         
         with tab3:
