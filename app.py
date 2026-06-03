@@ -2612,10 +2612,13 @@ with tab2:
             st.markdown("---")
             st.markdown("#### ✅ Apontamento e Conclusão de OS")
             
+            # CORREÇÃO: Adicionado .unique() para garantir que não haja OS duplicadas na lista do filtro
+            lista_os_unicas = df_recomendado["Ordem servico"].astype(str).unique().tolist()
+            
             # 1. Múltipla Seleção (Fica FORA do formulário para poder gerar os campos dinamicamente)
             os_selecionadas = st.multiselect(
                 "1. Selecione as OSs que deseja baixar:",
-                df_recomendado["Ordem servico"].astype(str).tolist()
+                lista_os_unicas
             )
 
             if os_selecionadas:
@@ -2641,13 +2644,15 @@ with tab2:
                     apontamentos = {}
                     todos_preenchidos = True
                     
-                    for os_id in os_selecionadas:
+                    # CORREÇÃO: set() garante que o loop não repita a mesma OS acidentalmente
+                    for os_id in set(os_selecionadas):
                         st.markdown(f"<b style='color: #3B82F6;'>OS: {os_id}</b>", unsafe_allow_html=True)
                         c1, c2 = st.columns(2)
                         with c1:
-                            h_ini = st.time_input(f"Horário Início", key=f"ini_{os_id}", value=None)
+                            # CORREÇÃO: Chaves renomeadas para máxima segurança
+                            h_ini = st.time_input(f"Horário Início", key=f"time_ini_{os_id}", value=None)
                         with c2:
-                            h_fim = st.time_input(f"Horário Fim", key=f"fim_{os_id}", value=None)
+                            h_fim = st.time_input(f"Horário Fim", key=f"time_fim_{os_id}", value=None)
                             
                         apontamentos[os_id] = {"inicio": h_ini, "fim": h_fim}
                         if h_ini is None or h_fim is None:
@@ -2670,7 +2675,7 @@ with tab2:
                             data_hoje_br = datetime.now().strftime("%d/%m/%Y")
                             realizado_dt = agora_dt()
                             
-                            for os_id in os_selecionadas:
+                            for os_id in set(os_selecionadas):
                                 hora_ini_str = apontamentos[os_id]["inicio"].strftime("%H:%M:%S")
                                 hora_fim_str = apontamentos[os_id]["fim"].strftime("%H:%M:%S")
                                 
@@ -2687,7 +2692,7 @@ with tab2:
                                     data_fim=data_hoje_br, hora_fim=hora_fim_str
                                 )
                             
-                            st.success(f"✅ Execução de {len(os_selecionadas)} OS(s) registrada com sucesso!")
+                            st.success(f"✅ Execução de {len(set(os_selecionadas))} OS(s) registrada com sucesso!")
                             time.sleep(2)
                             st.rerun()
 
