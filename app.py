@@ -2367,7 +2367,7 @@ with tab2:
         data_ref_card = dia_ref_default
 
 # === APLICAÇÃO DE PERFORMANCE (VERDADEIRO LAZY LOADING) ===
-    mostrar_calendario = st.toggle("📅 Mostrar Agenda Mensal de Demanda por Pátio e Turno", value=not is_tecnico)
+    mostrar_calendario = st.toggle("📅 Mostrar Agenda Mensal de Demanda por Pátio e Turno", value=False)
 
     if mostrar_calendario:
         with st.spinner("Carregando agenda..."):
@@ -2835,7 +2835,7 @@ with tab2:
                     )
                 ).add_to(mapa)
 
-        st_folium(mapa, height=650, use_container_width=True, key="mapa_final_limpo")
+        st_folium(mapa, height=650, use_container_width=True, returned_objects=[], key="mapa_final_limpo")
 
     st.markdown("---")
 
