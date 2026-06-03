@@ -1677,15 +1677,27 @@ with col_nav2:
             st.session_state["tela_atual"] = "admin"
             st.rerun()
 
-# Botão exclusivo para liderança (CORRIGIDO PARA A SIDEBAR)
+# Botão exclusivo para liderança - NAVEGAÇÃO DIRETA DE 1 CLIQUE
 if "Gestão de Usuários" in gov_usuario or "Exportar SAP" in gov_usuario:
-    if st.sidebar.button("🛡️ Governança (Auditoria)", width="stretch"): 
+    if st.sidebar.button("⚖️ Governança (Auditoria)", width="stretch"): 
         st.session_state["tela_atual"] = "governanca"
         st.rerun()
 
+# Trava de renderização para a tela de Upload de Dados
 if st.session_state.get("tela_atual") == "admin":
     render_tela_admin()
     st.stop()
+
+# Trava de renderização para a tela de Governança
+# Se o usuário clicar no botão, este bloco intercepta e impede que as abas normais apareçam
+if st.session_state.get("tela_atual") == "governanca":
+    st.markdown("<h3 style='color: #0F172A; font-weight: 700;'>⚖️ Motor de Governança Operacional e Auditoria</h3>", unsafe_allow_html=True)
+    st.markdown("Análise estatística de eficiência, variabilidade de cronograma, aderência de login e rastreabilidade de campo.")
+    st.info("⚖️ Esta seção é exclusiva para perfis de liderança. Aqui você pode auditar ações, gerenciar usuários e acessar dados sensíveis relacionados à governança do sistema.")
+    
+    # Executa a função que desenha a tela de governança (Certifique-se de que o nome está correto)
+    render_tela_governanca() 
+    st.stop() # Interrompe aqui para não misturar com o painel principal
     
 # --- DEFINIÇÃO DO FILTRO DE VISÃO ---
 if "Painel Gerencial" in gov_usuario:
@@ -2029,17 +2041,17 @@ st.markdown("---")
 
 #region SESSÃO 8: Abas e Renderização dos Gráficos
 
-# --- MAPEAMENTO DINÂMICO DE ABAS (PROTEÇÃO ABSOLUTA DE ACESSO) ---
-# Declaramos o perfil_seguro AQUI para que sirva para todas as abas
+#region # --- MAPEAMENTO DINÂMICO DE ABAS (NAVEGAÇÃO DIRETA) ---
 perfil_seguro = str(st.session_state.get("perfil", "")).strip().lower()
 perfis_autorizados = ["gerente", "coordenador", "gerência", "admin", "administrador"]
 
-# Cria as abas de acordo com a autorização e o botão toggle da sidebar
-if perfil_seguro in perfis_autorizados and st.session_state.get("ver_governanca", False):
+# Se o usuário for autorizado E clicou para ir para a página de Governança
+if perfil_seguro in perfis_autorizados and st.session_state.get("pagina_atual") == "Governança":
     tab1, tab2, tab3 = st.tabs(["📋 Painel de Controle", "📊 Indicadores Gerenciais", "⚖️ Governança Operacional"])
 else:
     tab1, tab2 = st.tabs(["📋 Painel de Controle", "📊 Indicadores Gerenciais"])
-    tab3 = None  # Protege o sistema se o usuário não for autorizado
+    tab3 = None
+#endregion
 
 #region 8.2: ABA 1 — Visão Gerencial (Indicadores)
 with tab1:
@@ -2563,14 +2575,12 @@ with tab2:
 #region 8.4: ABA 3 — Governança Operacional
 
 perfil_logado = st.session_state.get("perfil", "")
-if perfil_seguro in perfis_autorizados:
+if perfil_seguro in perfis_autorizados and st.session_state.get("pagina_atual") == "Governança":
     if "tab3" in locals() and tab3 is not None:
-        
         with tab3:
             st.markdown("<h3 style='color: #0F172A; font-weight: 700;'>⚖️ Motor de Governança Operacional e Auditoria</h3>", unsafe_allow_html=True)
             st.markdown("Análise estatística de eficiência, variabilidade de cronograma, aderência de login e rastreabilidade de campo.")
-
-            # Proteção de Sanidade: Cópia isolada do DataFrame original
+            
             df_gov = df_filtrado.copy()
 
             if df_gov.empty:
