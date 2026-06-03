@@ -1653,20 +1653,26 @@ gov_usuario = st.session_state.get("governanca", "")
 col_nav1, col_nav2 = st.sidebar.columns(2)
 with col_nav1:
     if "Painel Gerencial" in gov_usuario or "Mapa de Campo" in gov_usuario:
-        if st.button("📊 Painel", use_container_width=True): st.session_state["tela_atual"] = "dashboard"
+        if st.button("📊 Painel", use_container_width=True): 
+            st.session_state["tela_atual"] = "dashboard"
+            st.rerun()
 with col_nav2:
     if "Upload de Dados" in gov_usuario:
-        if st.button("⚙️ Dados", use_container_width=True): st.session_state["tela_atual"] = "admin"
+        if st.button("⚙️ Dados", use_container_width=True): 
+            st.session_state["tela_atual"] = "admin"
+            st.rerun()
 
-# Botão exclusivo para liderança
+# Botão exclusivo para liderança (CORRIGIDO PARA A SIDEBAR)
 if "Gestão de Usuários" in gov_usuario or "Exportar SAP" in gov_usuario:
-    if st.button("🛡️ Governança (Auditoria)", use_container_width=True): st.session_state["tela_atual"] = "governanca"
+    if st.sidebar.button("🛡️ Governança (Auditoria)", use_container_width=True): 
+        st.session_state["tela_atual"] = "governanca"
+        st.rerun()
 
 if st.session_state.get("tela_atual") == "admin":
     render_tela_admin()
     st.stop()
     
-# --- DEFINIÇÃO DO FILTRO DE VISÃO (CORREÇÃO DO ERRO) ---
+# --- DEFINIÇÃO DO FILTRO DE VISÃO ---
 if "Painel Gerencial" in gov_usuario:
     visao_selecionada = st.sidebar.radio(
         "Selecione a Visão:", ["Gerência", "Paranapiacaba", "Piaçaguera"], 
@@ -1674,7 +1680,7 @@ if "Painel Gerencial" in gov_usuario:
     )
     filtro_visao = "Todas" if visao_selecionada == "Gerência" else visao_selecionada
 else:
-    filtro_visao = st.session_state["escopo"]
+    filtro_visao = st.session_state.get("escopo", "Todas")
     st.sidebar.info(f"Visão Restrita: {filtro_visao}")
 # -------------------------------------------------------
 
@@ -1886,6 +1892,237 @@ if "Gestão de Usuários" in st.session_state.get("governanca", ""):
                     cur.execute("DELETE FROM usuarios WHERE username = %s", (usr_sel,))
                     conn.commit(); cur.close(); release_connection(conn)
                     st.session_state["msg_sucesso_user"] = f"Usuário {usr_sel} excluído."; st.rerun()
+#endregion
+
+#region SESSÃO 9: Painel de Governança Operacional e Auditoria
+# ==========================================
+if st.session_state.get("tela_atual") == "governanca":
+    
+    st.title("🛡️ Governança Operacional e Auditoria de Campo")
+    st.markdown("Monitoramento de produtividade, rastreabilidade de apontamentos e análise de retrabalho por colaborador.")
+    
+    # 1. Extração de Dados Completos (Banco + Memória)
+    with st.spinner("Compilando logs de auditoria..."):
+        conn = get_connection()
+        df_baixas_full = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim FROM baixas", conn)
+        release_connection(conn)
+        
+        df_os_base = st.session_state.get("df_os", pd.DataFrame())
+        
+        if df_baixas_full.empty or df_os_base.empty:
+            st.warning("Não há dados de execução suficientes para gerar os painéis de auditoria.")
+            st.stop()
+            
+        # Cruzamento Mestre
+        df_gov = df_baixas_full.merge(
+            df_os_base[["Ordem servico", "Patio", "Ativo", "Classificacao", "Criticidade_rank", "Nivel_Prioridade"]], 
+            left_on="os", right_on="Ordem servico", how="inner"
+        )
+        
+        # Filtra apenas o que é considerado "Concluído" no sistema
+        df_gov = df_gov[df_gov["status"].str.upper().isin(["REALIZADO", "REALIZADO FORA DA DATA DE PROGRAMAÇÃO", "REALIZADO FORA DO PRAZO"])]
+        
+        # Cálculos de Tempo e Data
+        def calc_duracao(row):
+            try:
+                ini = pd.to_datetime(row['hora_inicio'], format='%H:%M:%S')
+                fim = pd.to_datetime(row['hora_fim'], format='%H:%M:%S')
+                diff = (fim - ini).total_seconds() / 60.0
+                if diff < 0: diff += 24 * 60 
+                return diff
+            except: return 0.0
+            
+        df_gov["Tempo_Minutos"] = df_gov.apply(calc_duracao, axis=1)
+        df_gov["Data_Real"] = pd.to_datetime(df_gov["data_inicio"], format="%d/%m/%Y", errors="coerce").dt.date
+        
+        # Trava de GPS
+        df_gov["Via_GPS"] = df_gov["geolocalizacao_baixa"].apply(lambda x: 0 if "Base" in str(x) or "Sede" in str(x) else 1)
+        
+        # Trava de Prioridade (Rank 1 e 2)
+        df_gov["Alta_Prioridade"] = df_gov["Criticidade_rank"].apply(lambda x: 1 if x in [1, 2] else 0)
+
+    # 2. Filtros da Governança
+    st.markdown("---")
+    col_f1, col_f2, col_f3 = st.columns(3)
+    
+    with col_f1:
+        tecnicos_disp = sorted(df_gov["concluido_por"].dropna().unique().tolist())
+        tec_selecionado = st.multiselect("👤 Filtrar Colaborador(es):", tecnicos_disp, default=tecnicos_disp)
+    with col_f2:
+        patios_gov = sorted(df_gov["Patio"].dropna().unique().tolist())
+        patio_selecionado = st.multiselect("📍 Filtrar Pátio(s):", patios_gov, default=patios_gov)
+    with col_f3:
+        min_d = df_gov["Data_Real"].min()
+        max_d = df_gov["Data_Real"].max()
+        if pd.isna(min_d): min_d = datetime.now().date()
+        if pd.isna(max_d): max_d = datetime.now().date()
+        data_gov = st.date_input("📅 Período de Execução:", value=(min_d, max_d), min_value=min_d, max_value=max_d, format="DD/MM/YYYY")
+
+    # Aplicação dos Filtros
+    if isinstance(data_gov, tuple) and len(data_gov) == 2:
+        d_inicio, d_fim = data_gov
+    else:
+        d_inicio = data_gov[0] if isinstance(data_gov, tuple) else data_gov
+        d_fim = d_inicio
+
+    df_gov_f = df_gov[
+        (df_gov["concluido_por"].isin(tec_selecionado)) &
+        (df_gov["Patio"].isin(patio_selecionado)) &
+        (df_gov["Data_Real"] >= d_inicio) &
+        (df_gov["Data_Real"] <= d_fim)
+    ].copy()
+
+    if df_gov_f.empty:
+        st.info("Nenhuma execução encontrada para os filtros selecionados.")
+        st.stop()
+
+    # 3. KPIs de Produtividade e Qualidade
+    st.markdown("<div style='margin-bottom: 20px;'></div>", unsafe_allow_html=True)
+    
+    total_os_gov = len(df_gov_f)
+    tme_minutos = df_gov_f["Tempo_Minutos"].mean()
+    tme_str = f"{int(tme_minutos // 60)}h {int(tme_minutos % 60):02d}m" if not pd.isna(tme_minutos) else "0h 00m"
+    taxa_gps = (df_gov_f["Via_GPS"].sum() / total_os_gov) * 100 if total_os_gov > 0 else 0
+    taxa_prio = (df_gov_f["Alta_Prioridade"].sum() / total_os_gov) * 100 if total_os_gov > 0 else 0
+
+    c_k1, c_k2, c_k3, c_k4 = st.columns(4)
+    c_k1.metric("🔧 Volume de Execução", f"{total_os_gov} OS", "Baixas do Apontador")
+    c_k2.metric("⏱️ Tempo Médio / OS (TME)", tme_str, "Aferido via App")
+    c_k3.metric("🎯 Aderência à Prioridade", f"{taxa_prio:.1f}%", "OS Críticas executadas")
+    c_k4.metric("📍 Integridade de GPS", f"{taxa_gps:.1f}%", "Apontadas no Campo")
+    
+    st.markdown("---")
+
+    # 4. Gráficos Analíticos
+    col_chart1, col_chart2 = st.columns(2, gap="large")
+    
+    with col_chart1:
+        st.markdown("#### 📈 Produtividade Acumulada Diária")
+        st.caption("Visão do volume diário executado e a curva de entrega no período.")
+        
+        # Agrupamento diário geral (para não poluir com muitas linhas, focamos no consolidado do filtro)
+        df_dia = df_gov_f.groupby("Data_Real").size().reset_index(name="Volume")
+        df_dia = df_dia.sort_values("Data_Real")
+        df_dia["Acumulado"] = df_dia["Volume"].cumsum()
+        
+        eixo_x = [d.strftime("%d/%m") for d in df_dia["Data_Real"]]
+        
+        prod_options = {
+            "tooltip": {"trigger": "axis"},
+            "legend": {"data": ["Volume Diário", "Acumulado"]},
+            "xAxis": {"type": "category", "data": eixo_x},
+            "yAxis": [{"type": "value", "name": "Diário"}, {"type": "value", "name": "Acumulado", "splitLine": {"show": False}}],
+            "series": [
+                {"name": "Volume Diário", "type": "bar", "data": df_dia["Volume"].tolist(), "itemStyle": {"color": "#3B82F6"}},
+                {"name": "Acumulado", "type": "line", "yAxisIndex": 1, "data": df_dia["Acumulado"].tolist(), "smooth": True, "lineStyle": {"color": "#10B981", "width": 3}}
+            ]
+        }
+        st_echarts(options=prod_options, height="350px", key="gov_prod_dia")
+
+    with col_chart2:
+        st.markdown("#### ⏱️ Esforço x Classificação")
+        st.caption("Qual tipo de OS consome mais tempo médio da equipe?")
+        
+        df_classif = df_gov_f.groupby("Classificacao").agg(Tempo_Medio=("Tempo_Minutos", "mean"), Qtd=("os", "count")).reset_index()
+        df_classif = df_classif.sort_values("Tempo_Medio", ascending=True)
+        
+        esforco_options = {
+            "tooltip": {"trigger": "axis", "formatter": "{b}: {c} min<br>Volume: {c_vol} OS"}, # Requer personalização JS se fosse 100% fiel, mas o Echarts lida bem com o padrão
+            "xAxis": {"type": "value", "name": "Minutos Médios"},
+            "yAxis": {"type": "category", "data": df_classif["Classificacao"].tolist(), "axisLabel": {"interval": 0, "width": 120, "overflow": "truncate"}},
+            "series": [{"type": "bar", "data": df_classif["Tempo_Medio"].round(1).tolist(), "label": {"show": True, "position": "right"}, "itemStyle": {"color": "#F59E0B"}}]
+        }
+        st_echarts(options=esforco_options, height="350px", key="gov_esforco_classe")
+
+    st.markdown("<div style='margin-bottom: 30px;'></div>", unsafe_allow_html=True)
+    col_chart3, col_chart4 = st.columns([1.2, 1], gap="large")
+
+    with col_chart3:
+        st.markdown("#### 🔁 Heatmap de Retrabalho/Frequência (Pátio)")
+        st.caption("Concentração de idas ao mesmo local por classificação. Tons mais escuros = Mais intervenções.")
+        
+        agg_heatmap = df_gov_f.groupby(["Patio", "Classificacao"]).size().reset_index(name="Total")
+        patios_lista = sorted(df_gov_f["Patio"].unique().tolist())
+        classes_lista = ["Confiabilidade e Segurança", "Segurança", "Confiabilidade"]
+        
+        h_data = []
+        max_v = 0
+        for yi, c_n in enumerate(classes_lista):
+            for xi, p_n in enumerate(patios_lista):
+                v = agg_heatmap[(agg_heatmap["Patio"] == p_n) & (agg_heatmap["Classificacao"] == c_n)]
+                val = int(v["Total"].iloc[0]) if not v.empty else 0
+                h_data.append([xi, yi, val])
+                if val > max_v: max_v = val
+
+        heat_gov = {
+            "tooltip": {"position": "top"},
+            "grid": {"height": "60%", "top": "10%", "bottom": "20%", "left": "25%"},
+            "xAxis": {"type": "category", "data": patios_lista, "axisLabel": {"interval": 0, "rotate": 45}},
+            "yAxis": {"type": "category", "data": classes_lista},
+            "visualMap": {"min": 0, "max": max_v if max_v > 0 else 5, "orient": "horizontal", "left": "center", "bottom": "-5%", "inRange": {"color": ["#F8FAFC", "#93C5FD", "#1D4ED8"]}},
+            "series": [{"type": "heatmap", "data": h_data, "label": {"show": True, "color": "#1E293B"}, "itemStyle": {"borderColor": "#FFFFFF", "borderWidth": 2}}]
+        }
+        st_echarts(options=heat_gov, height="350px", key="gov_heatmap")
+
+    with col_chart4:
+        st.markdown("#### 👥 Produtividade Individual")
+        st.caption("Comparativo de volume de conclusão por Técnico.")
+        
+        df_tec = df_gov_f.groupby("concluido_por").size().reset_index(name="Volume").sort_values("Volume", ascending=False)
+        
+        donut_gov = {
+            "tooltip": {"trigger": "item"},
+            "legend": {"type": "scroll", "orient": "vertical", "right": 0, "top": "middle"},
+            "series": [{
+                "name": "OS Baixadas", "type": "pie", "radius": ["40%", "70%"], "center": ["40%", "50%"],
+                "data": [{"value": int(r["Volume"]), "name": str(r["concluido_por"])} for _, r in df_tec.iterrows()],
+                "label": {"show": False}
+            }]
+        }
+        st_echarts(options=donut_gov, height="350px", key="gov_donut_tec")
+
+    # 5. Tabela de Rastreabilidade e Auditoria GPS
+    st.markdown("---")
+    st.markdown("#### 📍 Tabela de Auditoria de Apontamentos (GPS)")
+    st.caption("Rastreio detalhado do local exato onde o técnico clicou para concluir a OS.")
+    
+    df_auditoria = df_gov_f[["Ordem servico", "concluido_por", "data_inicio", "hora_fim", "geolocalizacao_baixa", "equipe", "Tempo_Minutos"]].copy()
+    df_auditoria = df_auditoria.sort_values(by=["data_inicio", "hora_fim"], ascending=[False, False])
+    
+    df_auditoria = df_auditoria.rename(columns={
+        "Ordem servico": "OS",
+        "concluido_por": "Apontador Principal",
+        "data_inicio": "Data",
+        "hora_fim": "Hora Apontada",
+        "geolocalizacao_baixa": "Localização do Celular",
+        "equipe": "Co-Executantes",
+        "Tempo_Minutos": "Tempo Gasto (min)"
+    })
+    
+    df_auditoria["Tempo Gasto (min)"] = df_auditoria["Tempo Gasto (min)"].round(0).astype(int)
+    
+    # Destaca em vermelho quem deu baixa usando a localização da base (burlando a trava de campo ou em ponto cego)
+    def highlight_gps(val):
+        if pd.isna(val): return ''
+        if 'Base' in str(val) or 'Sede' in str(val):
+            return 'background-color: #FEE2E2; color: #991B1B; font-weight: bold;'
+        return 'color: #065F46;'
+
+    st.dataframe(
+        df_auditoria.style.applymap(highlight_gps, subset=["Localização do Celular"]),
+        use_container_width=True, 
+        height=300, 
+        hide_index=True
+    )
+
+    st.stop() # Interrompe a execução para não desenhar o resto das abas do sistema
+    st.dataframe(
+            df_auditoria.style.applymap(highlight_gps, subset=["Localização do Celular"]),
+            use_container_width=True, 
+            height=300, 
+            hide_index=True
+        )
+    st.stop()
 #endregion
 
 #region SESSÃO 7: DASHBOARD HEADER E KPI METRICS
@@ -3027,226 +3264,3 @@ with tab2:
 #endregion
 #endregion
 
-#region SESSÃO 9: Painel de Governança Operacional e Auditoria
-# ==========================================
-if st.session_state.get("tela_atual") == "governanca":
-    
-    st.title("🛡️ Governança Operacional e Auditoria de Campo")
-    st.markdown("Monitoramento de produtividade, rastreabilidade de apontamentos e análise de retrabalho por colaborador.")
-    
-    # 1. Extração de Dados Completos (Banco + Memória)
-    with st.spinner("Compilando logs de auditoria..."):
-        conn = get_connection()
-        df_baixas_full = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim FROM baixas", conn)
-        release_connection(conn)
-        
-        df_os_base = st.session_state.get("df_os", pd.DataFrame())
-        
-        if df_baixas_full.empty or df_os_base.empty:
-            st.warning("Não há dados de execução suficientes para gerar os painéis de auditoria.")
-            st.stop()
-            
-        # Cruzamento Mestre
-        df_gov = df_baixas_full.merge(
-            df_os_base[["Ordem servico", "Patio", "Ativo", "Classificacao", "Criticidade_rank", "Nivel_Prioridade"]], 
-            left_on="os", right_on="Ordem servico", how="inner"
-        )
-        
-        # Filtra apenas o que é considerado "Concluído" no sistema
-        df_gov = df_gov[df_gov["status"].str.upper().isin(["REALIZADO", "REALIZADO FORA DA DATA DE PROGRAMAÇÃO", "REALIZADO FORA DO PRAZO"])]
-        
-        # Cálculos de Tempo e Data
-        def calc_duracao(row):
-            try:
-                ini = pd.to_datetime(row['hora_inicio'], format='%H:%M:%S')
-                fim = pd.to_datetime(row['hora_fim'], format='%H:%M:%S')
-                diff = (fim - ini).total_seconds() / 60.0
-                if diff < 0: diff += 24 * 60 
-                return diff
-            except: return 0.0
-            
-        df_gov["Tempo_Minutos"] = df_gov.apply(calc_duracao, axis=1)
-        df_gov["Data_Real"] = pd.to_datetime(df_gov["data_inicio"], format="%d/%m/%Y", errors="coerce").dt.date
-        
-        # Trava de GPS
-        df_gov["Via_GPS"] = df_gov["geolocalizacao_baixa"].apply(lambda x: 0 if "Base" in str(x) or "Sede" in str(x) else 1)
-        
-        # Trava de Prioridade (Rank 1 e 2)
-        df_gov["Alta_Prioridade"] = df_gov["Criticidade_rank"].apply(lambda x: 1 if x in [1, 2] else 0)
-
-    # 2. Filtros da Governança
-    st.markdown("---")
-    col_f1, col_f2, col_f3 = st.columns(3)
-    
-    with col_f1:
-        tecnicos_disp = sorted(df_gov["concluido_por"].dropna().unique().tolist())
-        tec_selecionado = st.multiselect("👤 Filtrar Colaborador(es):", tecnicos_disp, default=tecnicos_disp)
-    with col_f2:
-        patios_gov = sorted(df_gov["Patio"].dropna().unique().tolist())
-        patio_selecionado = st.multiselect("📍 Filtrar Pátio(s):", patios_gov, default=patios_gov)
-    with col_f3:
-        min_d = df_gov["Data_Real"].min()
-        max_d = df_gov["Data_Real"].max()
-        if pd.isna(min_d): min_d = datetime.now().date()
-        if pd.isna(max_d): max_d = datetime.now().date()
-        data_gov = st.date_input("📅 Período de Execução:", value=(min_d, max_d), min_value=min_d, max_value=max_d, format="DD/MM/YYYY")
-
-    # Aplicação dos Filtros
-    if isinstance(data_gov, tuple) and len(data_gov) == 2:
-        d_inicio, d_fim = data_gov
-    else:
-        d_inicio = data_gov[0] if isinstance(data_gov, tuple) else data_gov
-        d_fim = d_inicio
-
-    df_gov_f = df_gov[
-        (df_gov["concluido_por"].isin(tec_selecionado)) &
-        (df_gov["Patio"].isin(patio_selecionado)) &
-        (df_gov["Data_Real"] >= d_inicio) &
-        (df_gov["Data_Real"] <= d_fim)
-    ].copy()
-
-    if df_gov_f.empty:
-        st.info("Nenhuma execução encontrada para os filtros selecionados.")
-        st.stop()
-
-    # 3. KPIs de Produtividade e Qualidade
-    st.markdown("<div style='margin-bottom: 20px;'></div>", unsafe_allow_html=True)
-    
-    total_os_gov = len(df_gov_f)
-    tme_minutos = df_gov_f["Tempo_Minutos"].mean()
-    tme_str = f"{int(tme_minutos // 60)}h {int(tme_minutos % 60):02d}m" if not pd.isna(tme_minutos) else "0h 00m"
-    taxa_gps = (df_gov_f["Via_GPS"].sum() / total_os_gov) * 100 if total_os_gov > 0 else 0
-    taxa_prio = (df_gov_f["Alta_Prioridade"].sum() / total_os_gov) * 100 if total_os_gov > 0 else 0
-
-    c_k1, c_k2, c_k3, c_k4 = st.columns(4)
-    c_k1.metric("🔧 Volume de Execução", f"{total_os_gov} OS", "Baixas do Apontador")
-    c_k2.metric("⏱️ Tempo Médio / OS (TME)", tme_str, "Aferido via App")
-    c_k3.metric("🎯 Aderência à Prioridade", f"{taxa_prio:.1f}%", "OS Críticas executadas")
-    c_k4.metric("📍 Integridade de GPS", f"{taxa_gps:.1f}%", "Apontadas no Campo")
-    
-    st.markdown("---")
-
-    # 4. Gráficos Analíticos
-    col_chart1, col_chart2 = st.columns(2, gap="large")
-    
-    with col_chart1:
-        st.markdown("#### 📈 Produtividade Acumulada Diária")
-        st.caption("Visão do volume diário executado e a curva de entrega no período.")
-        
-        # Agrupamento diário geral (para não poluir com muitas linhas, focamos no consolidado do filtro)
-        df_dia = df_gov_f.groupby("Data_Real").size().reset_index(name="Volume")
-        df_dia = df_dia.sort_values("Data_Real")
-        df_dia["Acumulado"] = df_dia["Volume"].cumsum()
-        
-        eixo_x = [d.strftime("%d/%m") for d in df_dia["Data_Real"]]
-        
-        prod_options = {
-            "tooltip": {"trigger": "axis"},
-            "legend": {"data": ["Volume Diário", "Acumulado"]},
-            "xAxis": {"type": "category", "data": eixo_x},
-            "yAxis": [{"type": "value", "name": "Diário"}, {"type": "value", "name": "Acumulado", "splitLine": {"show": False}}],
-            "series": [
-                {"name": "Volume Diário", "type": "bar", "data": df_dia["Volume"].tolist(), "itemStyle": {"color": "#3B82F6"}},
-                {"name": "Acumulado", "type": "line", "yAxisIndex": 1, "data": df_dia["Acumulado"].tolist(), "smooth": True, "lineStyle": {"color": "#10B981", "width": 3}}
-            ]
-        }
-        st_echarts(options=prod_options, height="350px", key="gov_prod_dia")
-
-    with col_chart2:
-        st.markdown("#### ⏱️ Esforço x Classificação")
-        st.caption("Qual tipo de OS consome mais tempo médio da equipe?")
-        
-        df_classif = df_gov_f.groupby("Classificacao").agg(Tempo_Medio=("Tempo_Minutos", "mean"), Qtd=("os", "count")).reset_index()
-        df_classif = df_classif.sort_values("Tempo_Medio", ascending=True)
-        
-        esforco_options = {
-            "tooltip": {"trigger": "axis", "formatter": "{b}: {c} min<br>Volume: {c_vol} OS"}, # Requer personalização JS se fosse 100% fiel, mas o Echarts lida bem com o padrão
-            "xAxis": {"type": "value", "name": "Minutos Médios"},
-            "yAxis": {"type": "category", "data": df_classif["Classificacao"].tolist(), "axisLabel": {"interval": 0, "width": 120, "overflow": "truncate"}},
-            "series": [{"type": "bar", "data": df_classif["Tempo_Medio"].round(1).tolist(), "label": {"show": True, "position": "right"}, "itemStyle": {"color": "#F59E0B"}}]
-        }
-        st_echarts(options=esforco_options, height="350px", key="gov_esforco_classe")
-
-    st.markdown("<div style='margin-bottom: 30px;'></div>", unsafe_allow_html=True)
-    col_chart3, col_chart4 = st.columns([1.2, 1], gap="large")
-
-    with col_chart3:
-        st.markdown("#### 🔁 Heatmap de Retrabalho/Frequência (Pátio)")
-        st.caption("Concentração de idas ao mesmo local por classificação. Tons mais escuros = Mais intervenções.")
-        
-        agg_heatmap = df_gov_f.groupby(["Patio", "Classificacao"]).size().reset_index(name="Total")
-        patios_lista = sorted(df_gov_f["Patio"].unique().tolist())
-        classes_lista = ["Confiabilidade e Segurança", "Segurança", "Confiabilidade"]
-        
-        h_data = []
-        max_v = 0
-        for yi, c_n in enumerate(classes_lista):
-            for xi, p_n in enumerate(patios_lista):
-                v = agg_heatmap[(agg_heatmap["Patio"] == p_n) & (agg_heatmap["Classificacao"] == c_n)]
-                val = int(v["Total"].iloc[0]) if not v.empty else 0
-                h_data.append([xi, yi, val])
-                if val > max_v: max_v = val
-
-        heat_gov = {
-            "tooltip": {"position": "top"},
-            "grid": {"height": "60%", "top": "10%", "bottom": "20%", "left": "25%"},
-            "xAxis": {"type": "category", "data": patios_lista, "axisLabel": {"interval": 0, "rotate": 45}},
-            "yAxis": {"type": "category", "data": classes_lista},
-            "visualMap": {"min": 0, "max": max_v if max_v > 0 else 5, "orient": "horizontal", "left": "center", "bottom": "-5%", "inRange": {"color": ["#F8FAFC", "#93C5FD", "#1D4ED8"]}},
-            "series": [{"type": "heatmap", "data": h_data, "label": {"show": True, "color": "#1E293B"}, "itemStyle": {"borderColor": "#FFFFFF", "borderWidth": 2}}]
-        }
-        st_echarts(options=heat_gov, height="350px", key="gov_heatmap")
-
-    with col_chart4:
-        st.markdown("#### 👥 Produtividade Individual")
-        st.caption("Comparativo de volume de conclusão por Técnico.")
-        
-        df_tec = df_gov_f.groupby("concluido_por").size().reset_index(name="Volume").sort_values("Volume", ascending=False)
-        
-        donut_gov = {
-            "tooltip": {"trigger": "item"},
-            "legend": {"type": "scroll", "orient": "vertical", "right": 0, "top": "middle"},
-            "series": [{
-                "name": "OS Baixadas", "type": "pie", "radius": ["40%", "70%"], "center": ["40%", "50%"],
-                "data": [{"value": int(r["Volume"]), "name": str(r["concluido_por"])} for _, r in df_tec.iterrows()],
-                "label": {"show": False}
-            }]
-        }
-        st_echarts(options=donut_gov, height="350px", key="gov_donut_tec")
-
-    # 5. Tabela de Rastreabilidade e Auditoria GPS
-    st.markdown("---")
-    st.markdown("#### 📍 Tabela de Auditoria de Apontamentos (GPS)")
-    st.caption("Rastreio detalhado do local exato onde o técnico clicou para concluir a OS.")
-    
-    df_auditoria = df_gov_f[["Ordem servico", "concluido_por", "data_inicio", "hora_fim", "geolocalizacao_baixa", "equipe", "Tempo_Minutos"]].copy()
-    df_auditoria = df_auditoria.sort_values(by=["data_inicio", "hora_fim"], ascending=[False, False])
-    
-    df_auditoria = df_auditoria.rename(columns={
-        "Ordem servico": "OS",
-        "concluido_por": "Apontador Principal",
-        "data_inicio": "Data",
-        "hora_fim": "Hora Apontada",
-        "geolocalizacao_baixa": "Localização do Celular",
-        "equipe": "Co-Executantes",
-        "Tempo_Minutos": "Tempo Gasto (min)"
-    })
-    
-    df_auditoria["Tempo Gasto (min)"] = df_auditoria["Tempo Gasto (min)"].round(0).astype(int)
-    
-    # Destaca em vermelho quem deu baixa usando a localização da base (burlando a trava de campo ou em ponto cego)
-    def highlight_gps(val):
-        if pd.isna(val): return ''
-        if 'Base' in str(val) or 'Sede' in str(val):
-            return 'background-color: #FEE2E2; color: #991B1B; font-weight: bold;'
-        return 'color: #065F46;'
-
-    st.dataframe(
-        df_auditoria.style.applymap(highlight_gps, subset=["Localização do Celular"]),
-        use_container_width=True, 
-        height=300, 
-        hide_index=True
-    )
-
-    st.stop() # Interrompe a execução para não desenhar o resto das abas do sistema
-#endregion
