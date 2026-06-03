@@ -420,102 +420,49 @@ def carregar_baixas_df() -> pd.DataFrame:
 #endregion
 
 #region SESSÃO 2.3 ===== Export/Salvar Excel (MASTER) =====
-def gerar_excel_bytes(df_export: pd.DataFrame) -> bytes:
-    output = io.BytesIO()
-    df_to_save = df_export.copy()
-
-    # Data programada como dd/mm/aaaa
-    if "Data inicial programada" in df_to_save.columns:
-        df_to_save["Data inicial programada"] = pd.to_datetime(
-            df_to_save["Data inicial programada"], errors="coerce"
-        ).dt.strftime("%d/%m/%Y")
-
-    # Data/Hora Realizado já é texto dd/mm/aaaa hh:mm
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df_to_save.to_excel(writer, index=False, sheet_name="OS")
-
-    output.seek(0)
-    return output.read()
-
-def _acquire_lock(lock_path: str, timeout_sec: int = 15):
-    start = time.time()
-    while True:
-        try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, str(os.getpid()).encode("utf-8"))
-            os.close(fd)
-            return True
-        except FileExistsError:
-            if time.time() - start > timeout_sec:
-                return False
-            time.sleep(0.5)
-
-def _release_lock(lock_path: str):
-    try:
-        os.remove(lock_path)
-    except Exception:
-        pass
-
-def salvar_excel_com_backup_bytes(excel_bytes: bytes, destino: Path, max_tentativas: int = 5):
-    destino = Path(destino)
-    destino.parent.mkdir(parents=True, exist_ok=True)
-
-    lock_path = str(destino) + ".lock"
-    if not _acquire_lock(lock_path, timeout_sec=20):
-        raise RuntimeError("Não foi possível obter lock do arquivo. Talvez outro usuário esteja salvando agora.")
-
-    try:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_path = destino.with_name(f"{destino.stem}_backup_{ts}{destino.suffix}")
-        tmp_path = destino.with_suffix(destino.suffix + f".tmp_{ts}")
-
-        # Backup do arquivo atual (se existir)
-        if destino.exists():
-            shutil.copy2(destino, backup_path)
-
-        # Escrita segura em arquivo temporário + replace atômico
-        tentativa = 0
-        while True:
-            try:
-                with open(tmp_path, "wb") as f:
-                    f.write(excel_bytes)
-                    f.flush()
-                    os.fsync(f.fileno())
-
-                os.replace(tmp_path, destino)  # substitui de forma atômica
-                return str(backup_path)
-            except PermissionError:
-                tentativa += 1
-                if tentativa >= max_tentativas:
-                    raise
-                time.sleep(1.0)
-            finally:
-                try:
-                    if tmp_path.exists():
-                        tmp_path.unlink()
-                except Exception:
-                    pass
-    finally:
-        _release_lock(lock_path)
-
 def gerar_excel_sap_bytes(df_filtrado_atual: pd.DataFrame) -> bytes:
     # 1. Filtra apenas o que já foi executado
     df_concluidas = df_filtrado_atual[df_filtrado_atual["Status_norm"].isin(_status_prazo | _status_atraso)].copy()
     if df_concluidas.empty:
         return b""
 
-    # 2. Busca no banco os horários reais exatos de cada OS
+    # 2. Busca no banco os horários reais e a EQUIPE
     lista_os = tuple(df_concluidas["Ordem servico"].astype(str).tolist())
     conn = get_connection()
     if len(lista_os) == 1:
-        query = f"SELECT os, data_inicio, hora_inicio, data_fim, hora_fim, concluido_por, coordenacao FROM baixas WHERE os = '{lista_os[0]}'"
+        # Adicionado a coluna "equipe" na query
+        query = f"SELECT os, data_inicio, hora_inicio, data_fim, hora_fim, concluido_por, equipe, coordenacao FROM baixas WHERE os = '{lista_os[0]}'"
     else:
-        query = f"SELECT os, data_inicio, hora_inicio, data_fim, hora_fim, concluido_por, coordenacao FROM baixas WHERE os IN {lista_os}"
+        query = f"SELECT os, data_inicio, hora_inicio, data_fim, hora_fim, concluido_por, equipe, coordenacao FROM baixas WHERE os IN {lista_os}"
     df_detalhes = pd.read_sql_query(query, conn)
     release_connection(conn)
 
-    # 3. Junta os dados do filtro com os horários do banco
+    # 3. Junta os dados do filtro com os dados do banco
     df_sap = df_concluidas.merge(df_detalhes, left_on="Ordem servico", right_on="os", how="inner")
+
+    # --- A MÁGICA DA MULTIPLICAÇÃO (EXPLODE) DE EQUIPE ---
+    linhas_explodidas = []
+    for _, row in df_sap.iterrows():
+        # O técnico principal que fez a baixa
+        usuarios_os = [str(row["concluido_por"]).strip()]
+        
+        # Os co-executantes
+        eqp = str(row["equipe"]).strip()
+        if eqp and eqp.upper() != "SOZINHO" and eqp.upper() != "NAN":
+            co_executantes = [u.strip() for u in eqp.split(",") if u.strip()]
+            usuarios_os.extend(co_executantes)
+        
+        # Remove duplicidades (caso o técnico tenha se colocado na equipe por engano)
+        usuarios_os = list(dict.fromkeys(usuarios_os))
+        
+        # Duplica a linha da OS para cada membro da equipe
+        for usr in usuarios_os:
+            nova_linha = row.to_dict()
+            nova_linha["matricula_final"] = usr
+            linhas_explodidas.append(nova_linha)
+            
+    df_sap_explodido = pd.DataFrame(linhas_explodidas)
+    # -----------------------------------------------------
 
     def calc_trab_real(h_ini, h_fim):
         try:
@@ -539,36 +486,36 @@ def gerar_excel_sap_bytes(df_filtrado_atual: pd.DataFrame) -> bytes:
         if 'IPG' in c or 'PIAÇAGUERA' in c or 'PIACAGUERA' in c: return 'CIPG'
         return 'CIPA'
 
-    # 4. Construção da Tabela Padrão SAP
+    # 4. Construção da Tabela Padrão SAP usando o DataFrame Explodido
     sap_out = pd.DataFrame()
-    sap_out['A'] = [""] * len(df_sap)
-    sap_out['Ordem'] = df_sap['Ordem servico']
-    sap_out['Operação'] = ["10"] * len(df_sap)
-    sap_out['D'] = [""] * len(df_sap)
-    sap_out['E'] = [""] * len(df_sap)
-    sap_out['F'] = [""] * len(df_sap)
-    sap_out['Trab. real'] = df_sap.apply(lambda r: calc_trab_real(r['hora_inicio'], r['hora_fim']), axis=1)
-    sap_out['UN Medida 1'] = ["MIN"] * len(df_sap)
-    sap_out['I'] = [""] * len(df_sap)
-    sap_out['J'] = [""] * len(df_sap)
-    sap_out['K'] = [""] * len(df_sap)
-    sap_out['Centro de Trabalho'] = df_sap['coordenacao'].apply(get_centro_trab)
-    sap_out['Centro'] = df_sap['coordenacao'].apply(get_centro)
-    sap_out['N'] = [""] * len(df_sap)
-    sap_out['O'] = [""] * len(df_sap)
-    sap_out['P'] = [""] * len(df_sap)
-    sap_out['Matrícula'] = df_sap['concluido_por']
-    sap_out['R'] = [""] * len(df_sap)
-    sap_out['S'] = [""] * len(df_sap)
-    sap_out['UN Medida 2'] = ["MIN"] * len(df_sap)
-    sap_out['U'] = [""] * len(df_sap)
-    sap_out['V'] = [""] * len(df_sap)
-    sap_out['W'] = [""] * len(df_sap)
-    sap_out['X'] = [""] * len(df_sap)
-    sap_out['Data Inicio Real'] = df_sap['data_inicio'].astype(str).str.replace('/', '.')
-    sap_out['Hora Inicio Real'] = df_sap['hora_inicio']
-    sap_out['Data Fim Real'] = df_sap['data_fim'].astype(str).str.replace('/', '.')
-    sap_out['Hora Fim Real'] = df_sap['hora_fim']
+    sap_out['A'] = [""] * len(df_sap_explodido)
+    sap_out['Ordem'] = df_sap_explodido['Ordem servico']
+    sap_out['Operação'] = ["10"] * len(df_sap_explodido)
+    sap_out['D'] = [""] * len(df_sap_explodido)
+    sap_out['E'] = [""] * len(df_sap_explodido)
+    sap_out['F'] = [""] * len(df_sap_explodido)
+    sap_out['Trab. real'] = df_sap_explodido.apply(lambda r: calc_trab_real(r['hora_inicio'], r['hora_fim']), axis=1)
+    sap_out['UN Medida 1'] = ["MIN"] * len(df_sap_explodido)
+    sap_out['I'] = [""] * len(df_sap_explodido)
+    sap_out['J'] = [""] * len(df_sap_explodido)
+    sap_out['K'] = [""] * len(df_sap_explodido)
+    sap_out['Centro de Trabalho'] = df_sap_explodido['coordenacao'].apply(get_centro_trab)
+    sap_out['Centro'] = df_sap_explodido['coordenacao'].apply(get_centro)
+    sap_out['N'] = [""] * len(df_sap_explodido)
+    sap_out['O'] = [""] * len(df_sap_explodido)
+    sap_out['P'] = [""] * len(df_sap_explodido)
+    sap_out['Matrícula'] = df_sap_explodido['matricula_final'] # <--- Usa a matrícula explodida
+    sap_out['R'] = [""] * len(df_sap_explodido)
+    sap_out['S'] = [""] * len(df_sap_explodido)
+    sap_out['UN Medida 2'] = ["MIN"] * len(df_sap_explodido)
+    sap_out['U'] = [""] * len(df_sap_explodido)
+    sap_out['V'] = [""] * len(df_sap_explodido)
+    sap_out['W'] = [""] * len(df_sap_explodido)
+    sap_out['X'] = [""] * len(df_sap_explodido)
+    sap_out['Data Inicio Real'] = df_sap_explodido['data_inicio'].astype(str).str.replace('/', '.')
+    sap_out['Hora Inicio Real'] = df_sap_explodido['hora_inicio']
+    sap_out['Data Fim Real'] = df_sap_explodido['data_fim'].astype(str).str.replace('/', '.')
+    sap_out['Hora Fim Real'] = df_sap_explodido['hora_fim']
 
     col_names = []
     for i, c in enumerate(sap_out.columns):
@@ -587,8 +534,6 @@ def gerar_excel_sap_bytes(df_filtrado_atual: pd.DataFrame) -> bytes:
     output.seek(0)
     
     return output.read()
-
-#endregion
 
 #region SESSÃO 2.4 ===== Auxiliares: datas/turnos para gráficos gerenciais =====
 def parse_datahora_realizado(valor):
@@ -1767,10 +1712,10 @@ if "Gestão de Usuários" in st.session_state.get("governanca", ""):
             # Define marcações automáticas inteligentes com base no perfil escolhido
             if n_perf == "Técnico": def_gov = ["Mapa de Campo"]
             elif n_perf == "Assistente": def_gov = ["Painel Gerencial", "Upload de Dados"]
-            elif n_perf == "Coordenador": def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados"]
-            else: def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Gestão de Usuários"]
+            elif n_perf == "Coordenador": def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Exportar SAP"]
+            else: def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Gestão de Usuários", "Exportar SAP"]
             
-            opcoes_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Gestão de Usuários"]
+            opcoes_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Gestão de Usuários", "Exportar SAP"]
             n_gov = st.multiselect("Permissões de Acesso:", opcoes_gov, default=def_gov, key="novo_user_gov")
 
             if st.form_submit_button("Salvar Novo Usuário"):
