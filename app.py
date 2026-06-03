@@ -2725,13 +2725,19 @@ with tab2:
 #endregion
 
 #region 8.4: ABA 3 — Governança Operacional
-if exibir_governanca:
-    with tab3:
-        st.markdown("<h3 style='color: #0F172A; font-weight: 700;'>⚖️ Motor de Governança Operacional</h3>", unsafe_allow_html=True)
-        st.markdown("Análise estatística de eficiência, variabilidade de cronograma e calibração de tempos de manutenção.")
+# Checagem blindada direto no state, sem depender de variáveis externas
+perfil_logado = st.session_state.get("perfil", "")
 
-        # Proteção de Sanidade: Cópia isolada do DataFrame para evitar regressão nas outras abas
-        df_gov = df_filtrado.copy()
+if perfil_logado in ["Gerente", "Coordenador", "Gerência"]:
+    # O comando "in locals()" impede o NameError garantindo que tab3 existe
+    if "tab3" in locals() and tab3 is not None:
+        
+        with tab3:
+            st.markdown("<h3 style='color: #0F172A; font-weight: 700;'>⚖️ Motor de Governança Operacional</h3>", unsafe_allow_html=True)
+            st.markdown("Análise estatística de eficiência, variabilidade de cronograma e calibração de tempos de manutenção.")
+
+            # Proteção de Sanidade: Cópia isolada do DataFrame para evitar regressão
+            df_gov = df_filtrado.copy()
 
         if df_gov.empty:
             st.warning("⚠️ Nenhum dado disponível para os filtros atuais da Sidebar. Ajuste os filtros para renderizar os indicadores de governança.")
