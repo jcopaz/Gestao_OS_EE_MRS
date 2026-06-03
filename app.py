@@ -1513,6 +1513,8 @@ def simulacao_sidebar():
 #endregion
 
 #region SESSÃO 5: Sidebar, Navegação, Carga e Filtro
+st.sidebar.write(f"Meu perfil atual é: '{perfil_seguro}'")
+st.sidebar.write(f"Botão ligado? {st.session_state.get('ver_governanca')}")
 
 #region SESSÃO 5.1: Identidade visual, navegação e escopo
 # 5.1.1 CSS / identidade visual
