@@ -2192,21 +2192,19 @@ st.markdown("---")
 # --- CRIAÇÃO DINÂMICA DE ABAS BASEADA NO ACESSO ---
 perfil_usuario = st.session_state.get("perfil", "")
 
-if perfil_usuario in ["Gerente", "Coordenador"]:
+if perfil_usuario in ["Gerente", "Coordenador", "Gerência"]:
     tab1, tab2, tab3 = st.tabs([
         "📊 Visão Gerencial (Indicadores)", 
         "🗺️ Roteirização e Mapa de Campo",
         "⚖️ Governança Operacional"
-    ])  # <-- Garanta que estes fechem corretamente aqui!
+    ])
     exibir_governanca = True
 else:
     tab1, tab2 = st.tabs([
         "📊 Visão Gerencial (Indicadores)", 
         "🗺️ Roteirização e Mapa de Campo"
     ])
-    tab3 = None  # 🛡️ SEGURANÇA: Define como None para evitar NameError em perfis operacionais
     exibir_governanca = False
-
 
 #region 8.2: ABA 1 — Visão Gerencial (Indicadores)
 with tab1:
