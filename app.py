@@ -2635,94 +2635,96 @@ with tab2:
         st.info(f"**{len(df_recomendado)} OS pendentes** encontradas no raio de {raio_busca_km} km.")
 
         if not df_recomendado.empty:
-            st.markdown("---")
-            st.markdown("#### ✅ Apontamento e Conclusão de OS")
             
-            # CORREÇÃO: Adicionado .unique() para garantir que não haja OS duplicadas na lista do filtro
-            lista_os_unicas = df_recomendado["Ordem servico"].astype(str).unique().tolist()
-            
-            # 1. Múltipla Seleção (Fica FORA do formulário para poder gerar os campos dinamicamente)
-            os_selecionadas = st.multiselect(
-                "1. Selecione as OSs que deseja baixar:",
-                lista_os_unicas
-            )
-
-            if os_selecionadas:
-                conn = get_connection()
-                df_users_equipe = pd.read_sql_query("SELECT username FROM usuarios", conn)
-                release_connection(conn)
-                lista_equipe_disp = df_users_equipe["username"].tolist()
-                
-                usr_logado = st.session_state.get("username", "")
-                if usr_logado in lista_equipe_disp:
-                    lista_equipe_disp.remove(usr_logado)
-                
-                # --- INÍCIO DO FORMULÁRIO (Trava os "Piscões" de Rerun) ---
-                with st.form("form_apontamento_os"):
-                    equipe_selecionada = st.multiselect(
-                        "2. Selecione a sua equipe (Co-executantes presentes):", 
-                        lista_equipe_disp, help="Deixe em branco se estiver trabalhando sozinho."
-                    )
-
-                    st.markdown("---")
-                    st.markdown("#### ⏳ Apontamento de Tempos Individuais")
-                    
-                    apontamentos = {}
-                    todos_preenchidos = True
-                    
-                    # CORREÇÃO: set() garante que o loop não repita a mesma OS acidentalmente
-                    for os_id in set(os_selecionadas):
-                        st.markdown(f"<b style='color: #3B82F6;'>OS: {os_id}</b>", unsafe_allow_html=True)
-                        c1, c2 = st.columns(2)
-                        with c1:
-                            # CORREÇÃO: Chaves renomeadas para máxima segurança
-                            h_ini = st.time_input(f"Horário Início", key=f"time_ini_{os_id}", value=None)
-                        with c2:
-                            h_fim = st.time_input(f"Horário Fim", key=f"time_fim_{os_id}", value=None)
-                            
-                        apontamentos[os_id] = {"inicio": h_ini, "fim": h_fim}
-                        if h_ini is None or h_fim is None:
-                            todos_preenchidos = False
-                        st.markdown("<hr style='margin: 8px 0; border-color: #333D4E;'>", unsafe_allow_html=True)
-
-                    origem = st.session_state.get("origem_tipo", "BASE")
-                    
-                    # Botão de envio DENTRO do formulário (só avalia regras ao clicar)
-                    submit_baixa = st.form_submit_button("🚀 Concluir e Gravar OS(s)", use_container_width=True)
-                    
-                    if submit_baixa:
-                        if origem != "GPS":
-                            st.warning("📍 **Atenção:** A geolocalização é obrigatória. Role para cima e clique em '📍 Minha Localização'.")
-                        elif not todos_preenchidos:
-                            st.warning("⚠️ Preencha os horários de **início e fim** de todas as OSs.")
-                        else:
-                            geo_baixa = f"{st.session_state.get('local_nome', 'Local')} (Lat: {st.session_state.get('lat_partida')}, Lon: {st.session_state.get('lon_partida')})"
-                            equipe_str = ", ".join(equipe_selecionada) if equipe_selecionada else "Sozinho"
-                            data_hoje_br = datetime.now().strftime("%d/%m/%Y")
-                            realizado_dt = agora_dt()
-                            
-                            for os_id in set(os_selecionadas):
-                                hora_ini_str = apontamentos[os_id]["inicio"].strftime("%H:%M:%S")
-                                hora_fim_str = apontamentos[os_id]["fim"].strftime("%H:%M:%S")
-                                
-                                mask = (st.session_state["df_os"]["Ordem servico"].astype(str) == str(os_id))
-                                dt_prog = st.session_state["df_os"].loc[mask, "Data inicial programada"].iloc[0] if len(st.session_state["df_os"].loc[mask]) > 0 else pd.NaT
-                                coord = st.session_state["df_os"].loc[mask, "Coordenacao"].iloc[0] if len(st.session_state["df_os"].loc[mask]) > 0 else "Campo"
-
-                                novo_status = determinar_status_execucao(pd.to_datetime(dt_prog, errors="coerce"), realizado_dt)
-
-                                upsert_baixa(
-                                    os_id=str(os_id), status=novo_status, realizado_em_str=formatar_dt_br(realizado_dt),
-                                    coordenacao=coord, concluido_por=usr_logado, geolocalizacao_baixa=geo_baixa,
-                                    equipe=equipe_str, data_inicio=data_hoje_br, hora_inicio=hora_ini_str,
-                                    data_fim=data_hoje_br, hora_fim=hora_fim_str
-                                )
-                            
-                            st.success(f"✅ Execução de {len(set(os_selecionadas))} OS(s) registrada com sucesso!")
-                            time.sleep(2)
-                            st.rerun()
-
+            # === NOVA APLICAÇÃO DE PERFORMANCE: FRAGMENTO DE APONTAMENTO ===
+            # O decorador @st.fragment isola esta parte da tela. 
+            # Interagir com o multiselect não vai mais recarregar o mapa nem o cronograma!
+            @st.fragment
+            def renderizar_bloco_apontamento():
                 st.markdown("---")
+                st.markdown("#### ✅ Apontamento e Conclusão de OS")
+                
+                lista_os_unicas = df_recomendado["Ordem servico"].astype(str).unique().tolist()
+                
+                os_selecionadas = st.multiselect(
+                    "1. Selecione as OSs que deseja baixar:",
+                    lista_os_unicas
+                )
+
+                if os_selecionadas:
+                    conn = get_connection()
+                    df_users_equipe = pd.read_sql_query("SELECT username FROM usuarios", conn)
+                    release_connection(conn)
+                    lista_equipe_disp = df_users_equipe["username"].tolist()
+                    
+                    usr_logado = st.session_state.get("username", "")
+                    if usr_logado in lista_equipe_disp:
+                        lista_equipe_disp.remove(usr_logado)
+                    
+                    with st.form("form_apontamento_os"):
+                        equipe_selecionada = st.multiselect(
+                            "2. Selecione a sua equipe (Co-executantes presentes):", 
+                            lista_equipe_disp, help="Deixe em branco se estiver trabalhando sozinho."
+                        )
+
+                        st.markdown("---")
+                        st.markdown("#### ⏳ Apontamento de Tempos Individuais")
+                        
+                        apontamentos = {}
+                        todos_preenchidos = True
+                        
+                        for os_id in set(os_selecionadas):
+                            st.markdown(f"<b style='color: #3B82F6;'>OS: {os_id}</b>", unsafe_allow_html=True)
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                h_ini = st.time_input(f"Horário Início", key=f"time_ini_{os_id}", value=None)
+                            with c2:
+                                h_fim = st.time_input(f"Horário Fim", key=f"time_fim_{os_id}", value=None)
+                                
+                            apontamentos[os_id] = {"inicio": h_ini, "fim": h_fim}
+                            if h_ini is None or h_fim is None:
+                                todos_preenchidos = False
+                            st.markdown("<hr style='margin: 8px 0; border-color: #333D4E;'>", unsafe_allow_html=True)
+
+                        origem = st.session_state.get("origem_tipo", "BASE")
+                        
+                        submit_baixa = st.form_submit_button("🚀 Concluir e Gravar OS(s)", use_container_width=True)
+                        
+                        if submit_baixa:
+                            if origem != "GPS":
+                                st.warning("📍 **Atenção:** A geolocalização é obrigatória. Role para cima e clique em '📍 Minha Localização'.")
+                            elif not todos_preenchidos:
+                                st.warning("⚠️ Preencha os horários de **início e fim** de todas as OSs.")
+                            else:
+                                geo_baixa = f"{st.session_state.get('local_nome', 'Local')} (Lat: {st.session_state.get('lat_partida')}, Lon: {st.session_state.get('lon_partida')})"
+                                equipe_str = ", ".join(equipe_selecionada) if equipe_selecionada else "Sozinho"
+                                data_hoje_br = datetime.now().strftime("%d/%m/%Y")
+                                realizado_dt = agora_dt()
+                                
+                                for os_id in set(os_selecionadas):
+                                    hora_ini_str = apontamentos[os_id]["inicio"].strftime("%H:%M:%S")
+                                    hora_fim_str = apontamentos[os_id]["fim"].strftime("%H:%M:%S")
+                                    
+                                    mask = (st.session_state["df_os"]["Ordem servico"].astype(str) == str(os_id))
+                                    dt_prog = st.session_state["df_os"].loc[mask, "Data inicial programada"].iloc[0] if len(st.session_state["df_os"].loc[mask]) > 0 else pd.NaT
+                                    coord = st.session_state["df_os"].loc[mask, "Coordenacao"].iloc[0] if len(st.session_state["df_os"].loc[mask]) > 0 else "Campo"
+
+                                    novo_status = determinar_status_execucao(pd.to_datetime(dt_prog, errors="coerce"), realizado_dt)
+
+                                    upsert_baixa(
+                                        os_id=str(os_id), status=novo_status, realizado_em_str=formatar_dt_br(realizado_dt),
+                                        coordenacao=coord, concluido_por=usr_logado, geolocalizacao_baixa=geo_baixa,
+                                        equipe=equipe_str, data_inicio=data_hoje_br, hora_inicio=hora_ini_str,
+                                        data_fim=data_hoje_br, hora_fim=hora_fim_str
+                                    )
+                                
+                                st.success(f"✅ Execução de {len(set(os_selecionadas))} OS(s) registrada com sucesso!")
+                                time.sleep(2)
+                                st.rerun() # Esse rerun dentro do botão "fura" o fragmento e recarrega o app inteiro para atualizar a tela!
+
+            # Chama a função fragmentada para renderizar na tela
+            renderizar_bloco_apontamento()
+            st.markdown("---")
 
     with col_mapa:
         SP_MIN_LAT, SP_MAX_LAT = -25.50, -19.50
