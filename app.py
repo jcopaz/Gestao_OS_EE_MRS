@@ -2013,9 +2013,11 @@ st.markdown("---")
 
 #region SESSÃO 8: Abas e Renderização dos Gráficos
 
-# --- CRIAÇÃO DINÂMICA DE ABAS BASEADA NO ACESSO ---
-perfil_usuario = st.session_state.get("perfil", "")
+# --- MAPEAMENTO DINÂMICO DE ABAS (PROTEÇÃO ABSOLUTA DE ACESSO) ---
+# Resgata o perfil do usuário logado antes de criar as abas
+perfil_logado = st.session_state.get("perfil", "")
 
+# A aba de Governança só é injetada no DOM se o perfil for gestor E o botão da sidebar estiver ativo
 if perfil_logado in ["Gerente", "Coordenador", "Gerência"] and st.session_state.get("ver_governanca", False):
     tab1, tab2, tab3 = st.tabs(["📋 Painel de Controle", "📊 Indicadores Gerenciais", "⚖️ Governança Operacional"])
 else:
