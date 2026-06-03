@@ -867,6 +867,7 @@ def resumir_conclusoes_por_turno_data(
 
 #region SESSÃO 2.7 ===== Administração de Dados =====
 import json
+from datetime import datetime
 
 def render_tela_admin():
     st.title("⚙️ Administração de Dados")
@@ -883,12 +884,10 @@ def render_tela_admin():
     if arquivo_upload is not None and mes_ref:
         if st.button("🚀 Processar e Salvar no Banco", use_container_width=True, type="primary"):
             
-            # --- TRAVA DE SEGURANÇA DE GOVERNANÇA ---
             escopo_user = st.session_state.get("escopo", "Todas")
             if escopo_user != "Todas" and escopo_user != coord_upload:
-                st.error(f"⚠️ **ACESSO BLOQUEADO:** Seu perfil está restrito à coordenação **{escopo_user}**. Você não tem permissão para fazer upload de bases de **{coord_upload}**.")
+                st.error(f"⚠️ **ACESSO BLOQUEADO:** Seu perfil está restrito à coordenação **{escopo_user}**.")
                 st.stop()
-            # ----------------------------------------
 
             with st.spinner("Lendo e processando dados..."):
                 try:
@@ -914,17 +913,23 @@ def render_tela_admin():
                             data_upload = CURRENT_TIMESTAMP;
                     """
                     
+                    # --- TRADUTOR DE DATA BRASILEIRO ---
+                    def conversor_brasileiro(obj):
+                        if isinstance(obj, (pd.Timestamp, datetime)):
+                            return obj.strftime('%d/%m/%Y')
+                        return str(obj)
+                    # -----------------------------------
+                    
                     for _, row in df.iterrows():
                         os_num = str(row["Ordem servico"]).strip()
                         if os_num: 
-                            # CORREÇÃO: default=str adicionado abaixo para transformar datas em texto!
-                            cur.execute(comando_sql, (os_num, mes_ref, coord_upload, json.dumps(row.to_dict(), default=str)))
+                            cur.execute(comando_sql, (os_num, mes_ref, coord_upload, json.dumps(row.to_dict(), default=conversor_brasileiro)))
                             sucesso_count += 1
                             
                     conn.commit()
                     cur.close()
                     release_connection(conn)
-                    st.success(f"✅ Sucesso! {sucesso_count} Ordens de Serviço foram atualizadas na base de {coord_upload}.")
+                    st.success(f"✅ Sucesso! {sucesso_count} Ordens de Serviço foram atualizadas.")
                 except Exception as e:
                     st.error(f"❌ Ocorreu um erro ao processar o arquivo: {e}")
     elif arquivo_upload is not None:
@@ -1590,7 +1595,8 @@ if st.session_state["perfil"] != "Técnico":
         "Período de Programação",
         value=(min_date, max_date),
         min_value=min_date,
-        max_value=max_date
+        max_value=max_date,
+        format="DD/MM/YYYY"  # <--- Essa linha mágica resolve a exibição visual!
     )
 
     if isinstance(data_selecionada, tuple):
