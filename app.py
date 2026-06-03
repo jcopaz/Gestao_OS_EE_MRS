@@ -1895,7 +1895,7 @@ if "Gestão de Usuários" in st.session_state.get("governanca", ""):
 #endregion
 
 #region SESSÃO 9: Motor de Governança Operacional
-if pode_ver_governanca:
+if exibir_governanca:
     with tab3:
         st.markdown("<h3 style='color: #0F172A; font-weight: 700;'>⚖️ Motor de Governança Operacional</h3>", unsafe_allow_html=True)
         st.markdown("Análise estatística de eficiência, variabilidade de cronograma e calibração de tempos de manutenção.")
