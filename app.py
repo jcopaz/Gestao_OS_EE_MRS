@@ -497,6 +497,97 @@ def salvar_excel_com_backup_bytes(excel_bytes: bytes, destino: Path, max_tentati
                     pass
     finally:
         _release_lock(lock_path)
+
+def gerar_excel_sap_bytes(df_filtrado_atual: pd.DataFrame) -> bytes:
+    # 1. Filtra apenas o que já foi executado
+    df_concluidas = df_filtrado_atual[df_filtrado_atual["Status_norm"].isin(_status_prazo | _status_atraso)].copy()
+    if df_concluidas.empty:
+        return b""
+
+    # 2. Busca no banco os horários reais exatos de cada OS
+    lista_os = tuple(df_concluidas["Ordem servico"].astype(str).tolist())
+    conn = get_connection()
+    if len(lista_os) == 1:
+        query = f"SELECT os, data_inicio, hora_inicio, data_fim, hora_fim, concluido_por, coordenacao FROM baixas WHERE os = '{lista_os[0]}'"
+    else:
+        query = f"SELECT os, data_inicio, hora_inicio, data_fim, hora_fim, concluido_por, coordenacao FROM baixas WHERE os IN {lista_os}"
+    df_detalhes = pd.read_sql_query(query, conn)
+    release_connection(conn)
+
+    # 3. Junta os dados do filtro com os horários do banco
+    df_sap = df_concluidas.merge(df_detalhes, left_on="Ordem servico", right_on="os", how="inner")
+
+    def calc_trab_real(h_ini, h_fim):
+        try:
+            t_ini = pd.to_datetime(h_ini, format='%H:%M:%S')
+            t_fim = pd.to_datetime(h_fim, format='%H:%M:%S')
+            diff = (t_fim - t_ini).total_seconds() / 60.0
+            if diff < 0: diff += 24 * 60 
+            h = int(diff // 60)
+            m = int(diff % 60)
+            return f"{h:02d},{m:02d}"
+        except Exception:
+            return ""
+
+    def get_centro_trab(coord):
+        c = str(coord).upper()
+        if 'IPG' in c or 'PIAÇAGUERA' in c or 'PIACAGUERA' in c: return 'E.SP.IPG'
+        return 'E.SP.IPA'
+
+    def get_centro(coord):
+        c = str(coord).upper()
+        if 'IPG' in c or 'PIAÇAGUERA' in c or 'PIACAGUERA' in c: return 'CIPG'
+        return 'CIPA'
+
+    # 4. Construção da Tabela Padrão SAP
+    sap_out = pd.DataFrame()
+    sap_out['A'] = [""] * len(df_sap)
+    sap_out['Ordem'] = df_sap['Ordem servico']
+    sap_out['Operação'] = ["10"] * len(df_sap)
+    sap_out['D'] = [""] * len(df_sap)
+    sap_out['E'] = [""] * len(df_sap)
+    sap_out['F'] = [""] * len(df_sap)
+    sap_out['Trab. real'] = df_sap.apply(lambda r: calc_trab_real(r['hora_inicio'], r['hora_fim']), axis=1)
+    sap_out['UN Medida 1'] = ["MIN"] * len(df_sap)
+    sap_out['I'] = [""] * len(df_sap)
+    sap_out['J'] = [""] * len(df_sap)
+    sap_out['K'] = [""] * len(df_sap)
+    sap_out['Centro de Trabalho'] = df_sap['coordenacao'].apply(get_centro_trab)
+    sap_out['Centro'] = df_sap['coordenacao'].apply(get_centro)
+    sap_out['N'] = [""] * len(df_sap)
+    sap_out['O'] = [""] * len(df_sap)
+    sap_out['P'] = [""] * len(df_sap)
+    sap_out['Matrícula'] = df_sap['concluido_por']
+    sap_out['R'] = [""] * len(df_sap)
+    sap_out['S'] = [""] * len(df_sap)
+    sap_out['UN Medida 2'] = ["MIN"] * len(df_sap)
+    sap_out['U'] = [""] * len(df_sap)
+    sap_out['V'] = [""] * len(df_sap)
+    sap_out['W'] = [""] * len(df_sap)
+    sap_out['X'] = [""] * len(df_sap)
+    sap_out['Data Inicio Real'] = df_sap['data_inicio'].astype(str).str.replace('/', '.')
+    sap_out['Hora Inicio Real'] = df_sap['hora_inicio']
+    sap_out['Data Fim Real'] = df_sap['data_fim'].astype(str).str.replace('/', '.')
+    sap_out['Hora Fim Real'] = df_sap['hora_fim']
+
+    col_names = []
+    for i, c in enumerate(sap_out.columns):
+        if c in ['A', 'D', 'E', 'F', 'I', 'J', 'K', 'N', 'O', 'P', 'R', 'S', 'U', 'V', 'W', 'X']:
+            col_names.append(" " * (i + 1))
+        elif c == 'UN Medida 1' or c == 'UN Medida 2':
+            col_names.append("UN Medida" + " " * i)
+        else:
+            col_names.append(c)
+            
+    sap_out.columns = col_names
+
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        sap_out.to_excel(writer, index=False, sheet_name="Importacao_SAP")
+    output.seek(0)
+    
+    return output.read()
+
 #endregion
 
 #region SESSÃO 2.4 ===== Auxiliares: datas/turnos para gráficos gerenciais =====
@@ -2076,7 +2167,27 @@ with tab1:
                 else:
                     st.info("Sem dados cronológicos.")
 
-        st.subheader("📋 Lista Detalhada de OS")
+# --- INÍCIO DA TABELA E EXPORTAÇÃO ---
+        col_tit_lista, col_btn_sap = st.columns([7, 3])
+        with col_tit_lista:
+            st.subheader("📋 Lista Detalhada de OS")
+            
+        with col_btn_sap:
+            st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+            tem_concluida = df_visao_base["Status_norm"].isin(_status_prazo | _status_atraso).any()
+            
+            if tem_concluida:
+                arquivo_sap = gerar_excel_sap_bytes(df_visao_base)
+                if arquivo_sap:
+                    st.download_button(
+                        label="⬇️ Gerar Arquivo SAP (Massa)",
+                        data=arquivo_sap,
+                        file_name=f"Baixa_Massa_SAP_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        type="primary"
+                    )
+
         df_lista = df_visao_base.copy().rename(columns={"Ordem servico": "OS"})
 
         if "Data inicial programada" in df_lista.columns:
@@ -2084,9 +2195,7 @@ with tab1:
 
         if "Data/Hora Realizado" in df_lista.columns:
             df_lista["Data/Hora Realizado"] = pd.to_datetime(
-                df_lista["Data/Hora Realizado"], 
-                dayfirst=True, 
-                errors="coerce"
+                df_lista["Data/Hora Realizado"], dayfirst=True, errors="coerce"
             ).dt.strftime("%d/%m/%Y %H:%M").fillna("")
 
         colunas_ordem = ["OS", "Patio", "Ativo", "Criticidade", "Classificacao", "Descrição Longa", "Data inicial programada", "Status da Operação", "Data/Hora Realizado", "Concluído por", "Geolocalização de Baixa"]
@@ -2257,146 +2366,143 @@ with tab2:
     if data_ref_card.year != int(st.session_state["cal_ref_ano"]) or data_ref_card.month != int(st.session_state["cal_ref_mes"]):
         data_ref_card = dia_ref_default
 
-    calendar_events = montar_eventos_calendario_patios(
-        df_base_cal=df_calendario,
-        ano=int(st.session_state["cal_ref_ano"]),
-        mes=int(st.session_state["cal_ref_mes"]),
-        max_patios_visiveis=2
-    )
+# === APLICAÇÃO DE PERFORMANCE (VERDADEIRO LAZY LOADING) ===
+    mostrar_calendario = st.toggle("📅 Mostrar Agenda Mensal de Demanda por Pátio e Turno", value=not is_tecnico)
 
-    calendar_options = {
-        "initialView": "dayGridMonth",
-        "initialDate": f"{int(st.session_state['cal_ref_ano']):04d}-{int(st.session_state['cal_ref_mes']):02d}-01",
-        "locale": "pt-br",
-        "height": "auto",
-        "contentHeight": "auto",
-        "headerToolbar": { "left": "", "center": "title", "right": "" },
-        "dayMaxEvents": 2,
-        "eventOrder": "displayOrder,title",
-        "fixedWeekCount": False,
-        "showNonCurrentDates": True,
-        "expandRows": True,
-        "handleWindowResize": True,
-    }
-
-    calendar_css_base = """
-    .fc { font-size: 14px; background: #FFFFFF; border-radius: 12px; padding: 6px; box-shadow: 0 1px 8px rgba(15, 23, 42, 0.08); }
-    .fc .fc-toolbar { margin-bottom: 0.25rem !important; }
-    .fc .fc-toolbar-title { font-size: 1.4rem !important; font-weight: 800; text-align: center; text-transform: capitalize; color: #1E293B; }
-    .fc .fc-scrollgrid { border-radius: 10px; overflow: hidden; border: 1px solid #E2E8F0; }
-    .fc .fc-scroller, .fc .fc-scroller-liquid-absolute { overflow: hidden !important; }
-    .fc .fc-col-header-cell { background-color: #F8FAFC; }
-    .fc .fc-col-header-cell-cushion { font-size: 14px; font-weight: 800; color: #334155; padding: 6px 2px !important; text-transform: capitalize; }
-    .fc .fc-daygrid-day-number { font-size: 1.1rem; font-weight: 800; padding: 4px 6px !important; color: #334155; }
-    .fc .fc-daygrid-day-frame { min-height: 62px !important; cursor: pointer; transition: background-color 0.2s; }
-    .fc .fc-daygrid-day-frame:hover { background-color: #F8FAFC !important; }
-    .fc .fc-daygrid-event { border-radius: 6px; padding: 3px 5px; font-size: 12.5px !important; line-height: 1.15; font-weight: 800; margin-top: 1px !important; cursor: pointer; }
-    .fc .fc-daygrid-event .fc-event-title { white-space: nowrap !important; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0.2px; }
-    .fc .fc-theme-standard td, .fc .fc-theme-standard th { border-color: #E2E8F0; }
-    """
-
-    calendar_css_dinamico = f"""
-    {calendar_css_base}
-    .fc-daygrid-day[data-date="{data_ref_card.strftime('%Y-%m-%d')}"] {{
-        background-color: #EFF6FF !important;
-        box-shadow: inset 0 0 0 3px #3B82F6 !important;
-    }}
-    .fc-daygrid-day[data-date="{data_ref_card.strftime('%Y-%m-%d')}"] .fc-daygrid-day-number {{
-        color: #1D4ED8 !important;
-        background-color: #DBEAFE !important;
-        border-radius: 6px;
-        padding: 2px 6px !important;
-    }}
-    """
-
- # === APLICAÇÃO DE PERFORMANCE (LAZY LOADING) SOLICITADA ===
-    with st.expander("📅 Mostrar Agenda Mensal de Demanda por Pátio e Turno", expanded=not is_tecnico):
-        col_calendario, col_cards, col_turno = st.columns([5.8, 2.0, 2.2], gap="large")
-
-        with col_calendario:
-            # Correção: Removida a key estática que estava travando o render para o técnico
-            calendar_state = calendar(
-                events=calendar_events,
-                options=calendar_options,
-                custom_css=calendar_css_dinamico,
-                callbacks=["dateClick", "eventClick"],
-                key=f"cal_dinamico_geral_{st.session_state.get('cal_ref_mes')}_{st.session_state.get('cal_ref_ano')}"
+    if mostrar_calendario:
+        with st.spinner("Carregando agenda..."):
+            calendar_events = montar_eventos_calendario_patios(
+                df_base_cal=df_calendario,
+                ano=int(st.session_state["cal_ref_ano"]),
+                mes=int(st.session_state["cal_ref_mes"]),
+                max_patios_visiveis=2
             )
 
-        resumo_card = resumir_demanda_calendario(
-            df_base_cal=df_calendario, ano=data_ref_card.year, mes=data_ref_card.month, dia_ref=data_ref_card.day
-        )
-
-        resumo_turno = resumir_conclusoes_por_turno_data(df_base_cal=df_calendario, data_ref=data_ref_card)
-
-        with col_cards:
-            # Card 1 - Pátios do Dia (Azul) 
-            st.markdown(
-                f"""
-                <div class="kpi-wrapper kpi-card-blue">
-                    <div class="kpi-title-blue">Pátios do Dia</div>
-                    <div class="kpi-val-blue">{resumo_card['qtd_patios']} <span style='font-size: 22px;'>📌</span></div>
-                    <div class="kpi-sub-blue">Referência: {data_ref_card.strftime('%d/%m/%Y')}</div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-
-            # Lógica de Variação para o Card 2 (Delta)
-            dia_idx = data_ref_card.day - 1
-            serie_mes = resumo_card["serie_total_os_mes"]
-            hoje_total = serie_mes[dia_idx] if dia_idx < len(serie_mes) else 0
-            ontem_total = serie_mes[dia_idx - 1] if dia_idx > 0 else hoje_total
-
-            if ontem_total > 0: delta_pct = ((hoje_total - ontem_total) / ontem_total) * 100
-            else: delta_pct = 0.0
-
-            if delta_pct > 0: seta, cor_badge, bg_badge, sinal = "↑", "#065F46", "#A7F3D0", "+"
-            elif delta_pct < 0: seta, cor_badge, bg_badge, sinal = "↓", "#991B1B", "#FECACA", ""
-            else: seta, cor_badge, bg_badge, sinal = "→", "#475569", "#E2E8F0", ""
-
-            # Card 2 - Total de OS do Dia (Verde)
-            total_os_options = {
-                "backgroundColor": "transparent", "animation": False,
-                "graphic": [
-                    {"type": "rect", "left": 0, "top": 0, "shape": {"x": 0, "y": 0, "width": 320, "height": 140, "r": 18}, "style": {"fill": "#F0FDF4"}},
-                    {"type": "rect", "left": 0, "top": 0, "shape": {"x": 0, "y": 0, "width": 5, "height": 140, "r": [18, 0, 0, 18]}, "style": {"fill": "#10B981"}},
-                    {"type": "text", "left": "6%", "top": "16%", "style": {"text": "TOTAL DE OS DO DIA", "fill": "#064E3B", "font": "700 14px 'Source Sans Pro', sans-serif"}},
-                    {"type": "text", "left": "6%", "top": "40%", "style": {"text": f"{hoje_total} 🎯", "fill": "#065F46", "font": "400 32px 'Source Sans Pro', sans-serif"}},
-                    {"type": "text", "left": "6%", "top": "72%", "style": {"text": f"{seta} {sinal}{delta_pct:.1f}% vs ontem", "fill": "#10B981", "font": "400 12px 'Source Sans Pro', sans-serif"}}
-                ]
+            calendar_options = {
+                "initialView": "dayGridMonth",
+                "initialDate": f"{int(st.session_state['cal_ref_ano']):04d}-{int(st.session_state['cal_ref_mes']):02d}-01",
+                "locale": "pt-br",
+                "height": "auto",
+                "contentHeight": "auto",
+                "headerToolbar": { "left": "", "center": "title", "right": "" },
+                "dayMaxEvents": 2,
+                "eventOrder": "displayOrder,title",
+                "fixedWeekCount": False,
+                "showNonCurrentDates": True,
+                "expandRows": True,
+                "handleWindowResize": True,
             }
-            st_echarts(options=total_os_options, height="140px", key="card_total_os_dia")
-            st.markdown("<div style='margin-bottom: 16px;'></div>", unsafe_allow_html=True)
 
-            # Card 3 - Pátio Prioritário (Vermelho)
-            st.markdown(
-                f"""
-                <div class="kpi-wrapper kpi-card-red">
-                    <div class="kpi-title-red">Pátio Prioritário</div>
-                    <div class="kpi-val-red">{resumo_card['patio_prioritario']}</div>
-                    <div class="kpi-sub-red">Critério: backlog + prioridade</div>
-                </div>
-                """,
-                unsafe_allow_html=True
+            calendar_css_base = """
+            .fc { font-size: 14px; background: #FFFFFF; border-radius: 12px; padding: 6px; box-shadow: 0 1px 8px rgba(15, 23, 42, 0.08); }
+            .fc .fc-toolbar { margin-bottom: 0.25rem !important; }
+            .fc .fc-toolbar-title { font-size: 1.4rem !important; font-weight: 800; text-align: center; text-transform: capitalize; color: #1E293B; }
+            .fc .fc-scrollgrid { border-radius: 10px; overflow: hidden; border: 1px solid #E2E8F0; }
+            .fc .fc-scroller, .fc .fc-scroller-liquid-absolute { overflow: hidden !important; }
+            .fc .fc-col-header-cell { background-color: #F8FAFC; }
+            .fc .fc-col-header-cell-cushion { font-size: 14px; font-weight: 800; color: #334155; padding: 6px 2px !important; text-transform: capitalize; }
+            .fc .fc-daygrid-day-number { font-size: 1.1rem; font-weight: 800; padding: 4px 6px !important; color: #334155; }
+            .fc .fc-daygrid-day-frame { min-height: 62px !important; cursor: pointer; transition: background-color 0.2s; }
+            .fc .fc-daygrid-day-frame:hover { background-color: #F8FAFC !important; }
+            .fc .fc-daygrid-event { border-radius: 6px; padding: 3px 5px; font-size: 12.5px !important; line-height: 1.15; font-weight: 800; margin-top: 1px !important; cursor: pointer; }
+            .fc .fc-daygrid-event .fc-event-title { white-space: nowrap !important; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0.2px; }
+            .fc .fc-theme-standard td, .fc .fc-theme-standard th { border-color: #E2E8F0; }
+            """
+
+            calendar_css_dinamico = f"""
+            {calendar_css_base}
+            .fc-daygrid-day[data-date="{data_ref_card.strftime('%Y-%m-%d')}"] {{
+                background-color: #EFF6FF !important;
+                box-shadow: inset 0 0 0 3px #3B82F6 !important;
+            }}
+            .fc-daygrid-day[data-date="{data_ref_card.strftime('%Y-%m-%d')}"] .fc-daygrid-day-number {{
+                color: #1D4ED8 !important;
+                background-color: #DBEAFE !important;
+                border-radius: 6px;
+                padding: 2px 6px !important;
+            }}
+            """
+
+            col_calendario, col_cards, col_turno = st.columns([5.8, 2.0, 2.2], gap="large")
+
+            with col_calendario:
+                calendar_state = calendar(
+                    events=calendar_events,
+                    options=calendar_options,
+                    custom_css=calendar_css_dinamico,
+                    callbacks=["dateClick", "eventClick"],
+                    key=f"cal_dinamico_{cal_key}_{st.session_state.get('cal_ref_mes')}"
+                )
+
+            resumo_card = resumir_demanda_calendario(
+                df_base_cal=df_calendario, ano=data_ref_card.year, mes=data_ref_card.month, dia_ref=data_ref_card.day
             )
+            resumo_turno = resumir_conclusoes_por_turno_data(df_base_cal=df_calendario, data_ref=data_ref_card)
 
-        with col_turno:
-            _cor_turno_aba2 = { "00h-07h": "#4F46E5", "07h-16h": "#3B82F6", "16h-00h": "#06B6D4" }
-            dados_formatados_turno = [
-                {"value": val, "itemStyle": { "color": _cor_turno_aba2.get(lbl, "#3B82F6"), "borderRadius": [0, 6, 6, 0] }}
-                for lbl, val in zip(resumo_turno["labels"], resumo_turno["valores"])
-            ]
-            with st.container(border=True):
-                concl_turno_options = {
-                    "title": {"text": resumo_turno["titulo"], "subtext": resumo_turno["subtitulo"], "left": "center", "top": "5%", "textStyle": { "fontSize": 14, "fontWeight": "bold", "color": "#1E293B", "fontFamily": '"Source Sans Pro", sans-serif' }, "subtextStyle": { "fontSize": 12, "color": "#64748B", "fontFamily": '"Source Sans Pro", sans-serif' }},
-                    "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
-                    "grid": { "left": "18%", "right": "10%", "bottom": "12%", "top": "24%", "containLabel": True },
-                    "xAxis": { "type": "value", "minInterval": 1, "splitLine": { "lineStyle": { "type": "dashed", "color": "#E2E8F0" } } },
-                    "yAxis": { "type": "category", "data": resumo_turno["labels"], "axisLabel": { "fontSize": 12, "fontWeight": "600", "color": "#475569", "fontFamily": '"Source Sans Pro", sans-serif' }, "axisLine": { "show": False }, "axisTick": { "show": False }},
-                    "series": [{"name": "OS Concluídas", "type": "bar", "data": dados_formatados_turno, "barWidth": "42%", "label": { "show": True, "position": "right", "color": "#1E293B", "fontWeight": "bold", "fontSize": 13, "fontFamily": '"Source Sans Pro", sans-serif' }}]
+            with col_cards:
+                st.markdown(
+                    f"""
+                    <div class="kpi-wrapper kpi-card-blue">
+                        <div class="kpi-title-blue">Pátios do Dia</div>
+                        <div class="kpi-val-blue">{resumo_card['qtd_patios']} <span style='font-size: 22px;'>📌</span></div>
+                        <div class="kpi-sub-blue">Referência: {data_ref_card.strftime('%d/%m/%Y')}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+                dia_idx = data_ref_card.day - 1
+                serie_mes = resumo_card["serie_total_os_mes"]
+                hoje_total = serie_mes[dia_idx] if dia_idx < len(serie_mes) else 0
+                ontem_total = serie_mes[dia_idx - 1] if dia_idx > 0 else hoje_total
+
+                if ontem_total > 0: delta_pct = ((hoje_total - ontem_total) / ontem_total) * 100
+                else: delta_pct = 0.0
+
+                if delta_pct > 0: seta, cor_badge, bg_badge, sinal = "↑", "#065F46", "#A7F3D0", "+"
+                elif delta_pct < 0: seta, cor_badge, bg_badge, sinal = "↓", "#991B1B", "#FECACA", ""
+                else: seta, cor_badge, bg_badge, sinal = "→", "#475569", "#E2E8F0", ""
+
+                total_os_options = {
+                    "backgroundColor": "transparent", "animation": False,
+                    "graphic": [
+                        {"type": "rect", "left": 0, "top": 0, "shape": {"x": 0, "y": 0, "width": 320, "height": 140, "r": 18}, "style": {"fill": "#F0FDF4"}},
+                        {"type": "rect", "left": 0, "top": 0, "shape": {"x": 0, "y": 0, "width": 5, "height": 140, "r": [18, 0, 0, 18]}, "style": {"fill": "#10B981"}},
+                        {"type": "text", "left": "6%", "top": "16%", "style": {"text": "TOTAL DE OS DO DIA", "fill": "#064E3B", "font": "700 14px 'Source Sans Pro', sans-serif"}},
+                        {"type": "text", "left": "6%", "top": "40%", "style": {"text": f"{hoje_total} 🎯", "fill": "#065F46", "font": "400 32px 'Source Sans Pro', sans-serif"}},
+                        {"type": "text", "left": "6%", "top": "72%", "style": {"text": f"{seta} {sinal}{delta_pct:.1f}% vs ontem", "fill": "#10B981", "font": "400 12px 'Source Sans Pro', sans-serif"}}
+                    ]
                 }
-                st_echarts(options=concl_turno_options, height="435px", theme="streamlit", key="chart_conclusoes_turno_data")
+                st_echarts(options=total_os_options, height="140px", key="card_total_os_dia")
+                st.markdown("<div style='margin-bottom: 16px;'></div>", unsafe_allow_html=True)
+
+                st.markdown(
+                    f"""
+                    <div class="kpi-wrapper kpi-card-red">
+                        <div class="kpi-title-red">Pátio Prioritário</div>
+                        <div class="kpi-val-red">{resumo_card['patio_prioritario']}</div>
+                        <div class="kpi-sub-red">Critério: backlog + prioridade</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+            with col_turno:
+                _cor_turno_aba2 = { "00h-07h": "#4F46E5", "07h-16h": "#3B82F6", "16h-00h": "#06B6D4" }
+                dados_formatados_turno = [
+                    {"value": val, "itemStyle": { "color": _cor_turno_aba2.get(lbl, "#3B82F6"), "borderRadius": [0, 6, 6, 0] }}
+                    for lbl, val in zip(resumo_turno["labels"], resumo_turno["valores"])
+                ]
+                with st.container(border=True):
+                    concl_turno_options = {
+                        "title": {"text": resumo_turno["titulo"], "subtext": resumo_turno["subtitulo"], "left": "center", "top": "5%", "textStyle": { "fontSize": 14, "fontWeight": "bold", "color": "#1E293B", "fontFamily": '"Source Sans Pro", sans-serif' }, "subtextStyle": { "fontSize": 12, "color": "#64748B", "fontFamily": '"Source Sans Pro", sans-serif' }},
+                        "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
+                        "grid": { "left": "18%", "right": "10%", "bottom": "12%", "top": "24%", "containLabel": True },
+                        "xAxis": { "type": "value", "minInterval": 1, "splitLine": { "lineStyle": { "type": "dashed", "color": "#E2E8F0" } } },
+                        "yAxis": { "type": "category", "data": resumo_turno["labels"], "axisLabel": { "fontSize": 12, "fontWeight": "600", "color": "#475569", "fontFamily": '"Source Sans Pro", sans-serif' }, "axisLine": { "show": False }, "axisTick": { "show": False }},
+                        "series": [{"name": "OS Concluídas", "type": "bar", "data": dados_formatados_turno, "barWidth": "42%", "label": { "show": True, "position": "right", "color": "#1E293B", "fontWeight": "bold", "fontSize": 13, "fontFamily": '"Source Sans Pro", sans-serif' }}]
+                    }
+                    st_echarts(options=concl_turno_options, height="435px", theme="streamlit", key="chart_conclusoes_turno_data")
 
     st.markdown("---")
 
