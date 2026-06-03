@@ -1895,177 +1895,178 @@ if "Gestão de Usuários" in st.session_state.get("governanca", ""):
 #endregion
 
 #region SESSÃO 9: Motor de Governança Operacional
-with tab3:
-    st.markdown("<h3 style='color: #0F172A; font-weight: 700;'>⚖️ Motor de Governança Operacional</h3>", unsafe_allow_html=True)
-    st.markdown("Análise estatística de eficiência, variabilidade de cronograma e calibração de tempos de manutenção.")
+if pode_ver_governanca:
+    with tab3:
+        st.markdown("<h3 style='color: #0F172A; font-weight: 700;'>⚖️ Motor de Governança Operacional</h3>", unsafe_allow_html=True)
+        st.markdown("Análise estatística de eficiência, variabilidade de cronograma e calibração de tempos de manutenção.")
 
-    # Proteção de Sanidade: Cópia isolada do DataFrame para evitar regressão nas outras abas
-    df_gov = df_filtrado.copy()
+        # Proteção de Sanidade: Cópia isolada do DataFrame para evitar regressão nas outras abas
+        df_gov = df_filtrado.copy()
 
-    if df_gov.empty:
-        st.warning("⚠️ Nenhum dado disponível para os filtros atuais da Sidebar. Ajuste os filtros para renderizar os indicadores de governança.")
-    else:
-        # Garantia de integridade de dados (Fallbacks de segurança caso colunas não estejam povoadas)
-        if "tempo_real_min" not in df_gov.columns:
-            df_gov["tempo_real_min"] = 60
-        if "tempo_estimado_min" not in df_gov.columns:
-            df_gov["tempo_estimado_min"] = 55
-        if "subsistema" not in df_gov.columns:
-            df_gov["subsistema"] = "Geral"
+        if df_gov.empty:
+            st.warning("⚠️ Nenhum dado disponível para os filtros atuais da Sidebar. Ajuste os filtros para renderizar os indicadores de governança.")
+        else:
+            # Garantia de integridade de dados (Fallbacks de segurança caso colunas não estejam povoadas)
+            if "tempo_real_min" not in df_gov.columns:
+                df_gov["tempo_real_min"] = 60
+            if "tempo_estimado_min" not in df_gov.columns:
+                df_gov["tempo_estimado_min"] = 55
+            if "subsistema" not in df_gov.columns:
+                df_gov["subsistema"] = "Geral"
 
-        # --- CARDS DE SÍNTESE DE GOVERNANÇA ---
-        col_card1, col_card2, col_card3, col_card4 = st.columns(4)
-        
-        t_real_medio = df_gov["tempo_real_min"].mean()
-        t_est_medio = df_gov["tempo_estimado_min"].mean()
-        desvio_padrao = df_gov["tempo_real_min"].std() if len(df_gov) > 1 else 0.0
-        
-        # Cálculo de Aderência (OS executadas no tempo planejado ou menor)
-        df_gov["no_prazo"] = df_gov["tempo_real_min"] <= df_gov["tempo_estimado_min"]
-        pct_aderencia = (df_gov["no_prazo"].sum() / len(df_gov)) * 100 if len(df_gov) > 0 else 100.0
-
-        with col_card1:
-            st.metric("Tempo Médio Real", f"{t_real_medio:.1f} min", delta=f"{t_real_medio - t_est_medio:.1f} min vs Planejado", delta_color="inverse")
-        with col_card2:
-            st.metric("Aderência ao Estimado", f"{pct_aderencia:.1f}%", help="Percentual de OS concluídas dentro ou abaixo do tempo estipulado.")
-        with col_card3:
-            st.metric("Variabilidade Operacional", f"{desvio_padrao:.1f} min", help="Desvio padrão do tempo real. Valores altos indicam imprevisibilidade na operação.")
-        with col_card4:
-            st.metric("Volume de Amostragem", f"{len(df_gov)} OS", help="Total de Ordens de Serviço avaliadas neste quadrante de governança.")
-
-        st.markdown("---")
-
-        # Processamento dos gráficos protegido por Spinner para conformidade de performance
-        with st.spinner("Processando matrizes estatísticas de governança..."):
+            # --- CARDS DE SÍNTESE DE GOVERNANÇA ---
+            col_card1, col_card2, col_card3, col_card4 = st.columns(4)
             
-            # --- CONSTRUÇÃO DO GRÁFICO 1 & 2 (LADO A LADO) ---
-            col_g1, col_g2 = st.columns(2)
+            t_real_medio = df_gov["tempo_real_min"].mean()
+            t_est_medio = df_gov["tempo_estimado_min"].mean()
+            desvio_padrao = df_gov["tempo_real_min"].std() if len(df_gov) > 1 else 0.0
+            
+            # Cálculo de Aderência (OS executadas no tempo planejado ou menor)
+            df_gov["no_prazo"] = df_gov["tempo_real_min"] <= df_gov["tempo_estimado_min"]
+            pct_aderencia = (df_gov["no_prazo"].sum() / len(df_gov)) * 100 if len(df_gov) > 0 else 100.0
 
-            with col_g1:
-                st.markdown("#### 🎯 Matriz de Eficiência do Mantenedor")
-                st.caption("Mapeia a produtividade individual cruzando volume de entregas com velocidade média.")
+            with col_card1:
+                st.metric("Tempo Médio Real", f"{t_real_medio:.1f} min", delta=f"{t_real_medio - t_est_medio:.1f} min vs Planejado", delta_color="inverse")
+            with col_card2:
+                st.metric("Aderência ao Estimado", f"{pct_aderencia:.1f}%", help="Percentual de OS concluídas dentro ou abaixo do tempo estipulado.")
+            with col_card3:
+                st.metric("Variabilidade Operacional", f"{desvio_padrao:.1f} min", help="Desvio padrão do tempo real. Valores altos indicam imprevisibilidade na operação.")
+            with col_card4:
+                st.metric("Volume de Amostragem", f"{len(df_gov)} OS", help="Total de Ordens de Serviço avaliadas neste quadrante de governança.")
+
+            st.markdown("---")
+
+            # Processamento dos gráficos protegido por Spinner para conformidade de performance
+            with st.spinner("Processando matrizes estatísticas de governança..."):
                 
-                # Agrupamento seguro por mantenedor
-                if "mantenedor" in df_gov.columns:
-                    df_maint = df_gov.groupby("mantenedor").agg(
-                        volume=("id_os", "count"),
-                        tempo_medio=("tempo_real_min", "mean")
-                    ).reset_index()
-                else:
-                    df_maint = pd.DataFrame(columns=["mantenedor", "volume", "tempo_medio"])
+                # --- CONSTRUÇÃO DO GRÁFICO 1 & 2 (LADO A LADO) ---
+                col_g1, col_g2 = st.columns(2)
 
-                scatter_data = [[row["volume"], round(row["tempo_medio"], 1), row["mantenedor"]] for _, row in df_maint.iterrows()]
+                with col_g1:
+                    st.markdown("#### 🎯 Matriz de Eficiência do Mantenedor")
+                    st.caption("Mapeia a produtividade individual cruzando volume de entregas com velocidade média.")
+                    
+                    # Agrupamento seguro por mantenedor
+                    if "mantenedor" in df_gov.columns:
+                        df_maint = df_gov.groupby("mantenedor").agg(
+                            volume=("id_os", "count"),
+                            tempo_medio=("tempo_real_min", "mean")
+                        ).reset_index()
+                    else:
+                        df_maint = pd.DataFrame(columns=["mantenedor", "volume", "tempo_medio"])
 
-                options_scatter = {
-                    "backgroundColor": "#FFFFFF",
-                    "tooltip": {
-                        "trigger": "item",
-                        "formatter": JsCode("function (p) { return '<b>' + (p.data[2] || '') + '</b><br>OS Concluídas: ' + p.data[0] + '<br>Tempo Médio: ' + p.data[1] + ' min'; }")
-                    },
-                    "grid": {"top": "15%", "bottom": "15%", "left": "10%", "right": "10%"},
-                    "xAxis": {
-                        "type": "value", 
-                        "name": "Volume de OS", 
-                        "nameLocation": "middle", 
-                        "nameGap": 25,
-                        "splitLine": {"show": True, "lineStyle": {"type": "dashed", "color": "#E2E8F0"}}
-                    },
-                    "yAxis": {
-                        "type": "value", 
-                        "name": "Tempo Médio Real (min)", 
-                        "nameLocation": "middle", 
-                        "nameGap": 40,
-                        "splitLine": {"show": True, "lineStyle": {"type": "dashed", "color": "#E2E8F0"}}
-                    },
-                    "series": [{
-                        "type": "scatter",
-                        "data": scatter_data,
-                        "symbolSize": 16,
-                        "itemStyle": {
-                            "color": "#2563EB",
-                            "shadowBlur": 4,
-                            "shadowColor": "rgba(37, 99, 235, 0.3)"
+                    scatter_data = [[row["volume"], round(row["tempo_medio"], 1), row["mantenedor"]] for _, row in df_maint.iterrows()]
+
+                    options_scatter = {
+                        "backgroundColor": "#FFFFFF",
+                        "tooltip": {
+                            "trigger": "item",
+                            "formatter": JsCode("function (p) { return '<b>' + (p.data[2] || '') + '</b><br>OS Concluídas: ' + p.data[0] + '<br>Tempo Médio: ' + p.data[1] + ' min'; }")
+                        },
+                        "grid": {"top": "15%", "bottom": "15%", "left": "10%", "right": "10%"},
+                        "xAxis": {
+                            "type": "value", 
+                            "name": "Volume de OS", 
+                            "nameLocation": "middle", 
+                            "nameGap": 25,
+                            "splitLine": {"show": True, "lineStyle": {"type": "dashed", "color": "#E2E8F0"}}
+                        },
+                        "yAxis": {
+                            "type": "value", 
+                            "name": "Tempo Médio Real (min)", 
+                            "nameLocation": "middle", 
+                            "nameGap": 40,
+                            "splitLine": {"show": True, "lineStyle": {"type": "dashed", "color": "#E2E8F0"}}
+                        },
+                        "series": [{
+                            "type": "scatter",
+                            "data": scatter_data,
+                            "symbolSize": 16,
+                            "itemStyle": {
+                                "color": "#2563EB",
+                                "shadowBlur": 4,
+                                "shadowColor": "rgba(37, 99, 235, 0.3)"
                         }
-                    }]
-                }
-                st_echarts(options=options_scatter, height="350px", key="gov_scatter_eficiencia")
+                        }]
+                    }
+                    st_echarts(options=options_scatter, height="350px", key="gov_scatter_eficiencia")
 
-            with col_g2:
-                st.markdown("#### 📉 Calibração de Planejamento por Subsistema")
-                st.caption("Comparativo entre janelas de tempo estimadas e a realidade executada em campo.")
+                with col_g2:
+                    st.markdown("#### 📉 Calibração de Planejamento por Subsistema")
+                    st.caption("Comparativo entre janelas de tempo estimadas e a realidade executada em campo.")
 
-                df_sub = df_gov.groupby("subsistema").agg(
-                    estimado=("tempo_estimado_min", "mean"),
-                    real=("tempo_real_min", "mean")
-                ).reset_index()
+                    df_sub = df_gov.groupby("subsistema").agg(
+                        estimado=("tempo_estimado_min", "mean"),
+                        real=("tempo_real_min", "mean")
+                    ).reset_index()
 
-                sub_categories = df_sub["subsistema"].tolist()
-                estimado_vals = [round(v, 1) for v in df_sub["estimado"].tolist()]
-                real_vals = [round(v, 1) for v in df_sub["real"].tolist()]
+                    sub_categories = df_sub["subsistema"].tolist()
+                    estimado_vals = [round(v, 1) for v in df_sub["estimado"].tolist()]
+                    real_vals = [round(v, 1) for v in df_sub["real"].tolist()]
 
-                options_bar_comp = {
+                    options_bar_comp = {
+                        "backgroundColor": "#FFFFFF",
+                        "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
+                        "legend": {"data": ["Tempo Estimado", "Tempo Real"], "bottom": "0%"},
+                        "grid": {"top": "10%", "bottom": "15%", "left": "12%", "right": "5%"},
+                        "xAxis": {"type": "category", "data": sub_categories, "axisLabel": {"rotate": 15}},
+                        "yAxis": {"type": "value", "name": "Minutos", "splitLine": {"lineStyle": {"color": "#E2E8F0"}}},
+                        "series": [
+                            {"name": "Tempo Estimado", "type": "bar", "data": estimado_vals, "itemStyle": {"color": "#94A3B8"}},
+                            {"name": "Tempo Real", "type": "bar", "data": real_vals, "itemStyle": {"color": "#F59E0B"}}
+                        ]
+                    }
+                    st_echarts(options=options_bar_comp, height="350px", key="gov_bar_subgrupos")
+
+                # --- CONSTRUÇÃO DO GRÁFICO 3 (LARGURA TOTAL) ---
+                st.markdown("#### ⚖️ Índice de Cumprimento de SLA Cronometrado por Criticidade")
+                st.caption("Aderência percentual detalhada de prazos, segmentada pelo nível de severidade do ativo ferroviário.")
+
+                if "criticidade" in df_gov.columns:
+                    df_sla = df_gov.groupby(["criticidade", "no_prazo"]).size().unstack(fill_value=0)
+                    
+                    if True not in df_sla.columns:
+                        df_sla[True] = 0
+                    if False not in df_sla.columns:
+                        df_sla[False] = 0
+
+                    df_sla["total"] = df_sla[True] + df_sla[False]
+                    df_sla["pct_no_prazo"] = (df_sla[True] / df_sla["total"]) * 100
+                    df_sla["pct_atrasado"] = (df_sla[False] / df_sla["total"]) * 100
+
+                    crit_categories = df_sla.index.tolist()
+                    no_prazo_pct = [round(v, 1) for v in df_sla["pct_no_prazo"].tolist()]
+                    atrasado_pct = [round(v, 1) for v in df_sla["pct_atrasado"].tolist()]
+                else:
+                    crit_categories, no_prazo_pct, atrasado_pct = [], [], []
+
+                options_stack_sla = {
                     "backgroundColor": "#FFFFFF",
-                    "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
-                    "legend": {"data": ["Tempo Estimado", "Tempo Real"], "bottom": "0%"},
-                    "grid": {"top": "10%", "bottom": "15%", "left": "12%", "right": "5%"},
-                    "xAxis": {"type": "category", "data": sub_categories, "axisLabel": {"rotate": 15}},
-                    "yAxis": {"type": "value", "name": "Minutos", "splitLine": {"lineStyle": {"color": "#E2E8F0"}}},
+                    "tooltip": {"trigger": "axis", "formatter": "{b}<br/>{a0}: {c0}%<br/>{a1}: {c1}%"},
+                    "legend": {"data": ["Dentro do Prazo Estimado", "Acima do Prazo Estimado"], "top": "0%"},
+                    "grid": {"top": "15%", "bottom": "10%", "left": "10%", "right": "5%"},
+                    "xAxis": {"type": "value", "max": 100, "axisLabel": {"formatter": "{value}%"}, "splitLine": {"show": False}},
+                    "yAxis": {"type": "category", "data": crit_categories},
                     "series": [
-                        {"name": "Tempo Estimado", "type": "bar", "data": estimado_vals, "itemStyle": {"color": "#94A3B8"}},
-                        {"name": "Tempo Real", "type": "bar", "data": real_vals, "itemStyle": {"color": "#F59E0B"}}
+                        {
+                            "name": "Dentro do Prazo Estimado",
+                            "type": "bar",
+                            "stack": "total_sla",
+                            "label": {"show": True, "formatter": "{c}%", "position": "inside"},
+                            "itemStyle": {"color": "#10B981"},
+                            "data": no_prazo_pct
+                        },
+                        {
+                            "name": "Acima do Prazo Estimado",
+                            "type": "bar",
+                            "stack": "total_sla",
+                            "label": {"show": True, "formatter": "{c}%", "position": "inside"},
+                            "itemStyle": {"color": "#EF4444"},
+                            "data": atrasado_pct
+                        }
                     ]
                 }
-                st_echarts(options=options_bar_comp, height="350px", key="gov_bar_subgrupos")
-
-            # --- CONSTRUÇÃO DO GRÁFICO 3 (LARGURA TOTAL) ---
-            st.markdown("#### ⚖️ Índice de Cumprimento de SLA Cronometrado por Criticidade")
-            st.caption("Aderência percentual detalhada de prazos, segmentada pelo nível de severidade do ativo ferroviário.")
-
-            if "criticidade" in df_gov.columns:
-                df_sla = df_gov.groupby(["criticidade", "no_prazo"]).size().unstack(fill_value=0)
-                
-                if True not in df_sla.columns:
-                    df_sla[True] = 0
-                if False not in df_sla.columns:
-                    df_sla[False] = 0
-
-                df_sla["total"] = df_sla[True] + df_sla[False]
-                df_sla["pct_no_prazo"] = (df_sla[True] / df_sla["total"]) * 100
-                df_sla["pct_atrasado"] = (df_sla[False] / df_sla["total"]) * 100
-
-                crit_categories = df_sla.index.tolist()
-                no_prazo_pct = [round(v, 1) for v in df_sla["pct_no_prazo"].tolist()]
-                atrasado_pct = [round(v, 1) for v in df_sla["pct_atrasado"].tolist()]
-            else:
-                crit_categories, no_prazo_pct, atrasado_pct = [], [], []
-
-            options_stack_sla = {
-                "backgroundColor": "#FFFFFF",
-                "tooltip": {"trigger": "axis", "formatter": "{b}<br/>{a0}: {c0}%<br/>{a1}: {c1}%"},
-                "legend": {"data": ["Dentro do Prazo Estimado", "Acima do Prazo Estimado"], "top": "0%"},
-                "grid": {"top": "15%", "bottom": "10%", "left": "10%", "right": "5%"},
-                "xAxis": {"type": "value", "max": 100, "axisLabel": {"formatter": "{value}%"}, "splitLine": {"show": False}},
-                "yAxis": {"type": "category", "data": crit_categories},
-                "series": [
-                    {
-                        "name": "Dentro do Prazo Estimado",
-                        "type": "bar",
-                        "stack": "total_sla",
-                        "label": {"show": True, "formatter": "{c}%", "position": "inside"},
-                        "itemStyle": {"color": "#10B981"},
-                        "data": no_prazo_pct
-                    },
-                    {
-                        "name": "Acima do Prazo Estimado",
-                        "type": "bar",
-                        "stack": "total_sla",
-                        "label": {"show": True, "formatter": "{c}%", "position": "inside"},
-                        "itemStyle": {"color": "#EF4444"},
-                        "data": atrasado_pct
-                    }
-                ]
-            }
-            st_echarts(options=options_stack_sla, height="300px", key="gov_stack_sla_criticidade")
+                st_echarts(options=options_stack_sla, height="300px", key="gov_stack_sla_criticidade")
 #endregion
 #endregion
 
@@ -2187,7 +2188,25 @@ st.markdown("---")
 #endregion
 
 #region SESSÃO 8: Abas e Renderização dos Gráficos
-tab1, tab2 = st.tabs(["📊 Visão Gerencial (Indicadores)", "🗺️ Roteirização e Mapa de Campo"])
+
+#region 8.1: CRIAÇÃO DINÂMICA DE ABAS BASEADA NO ACESSO
+# --- CRIAÇÃO DINÂMICA DE ABAS BASEADA NO ACESSO ---
+perfil_usuario = st.session_state.get("perfil", "")
+
+if perfil_usuario in ["Gerente", "Coordenador"]:
+    tab1, tab2, tab3 = st.tabs([
+        "📊 Visão Gerencial (Indicadores)", 
+        "🗺️ Roteirização e Mapa de Campo",
+        "⚖️ Governança Operacional"
+    ])
+    exibir_governanca = True
+else:
+    tab1, tab2 = st.tabs([
+        "📊 Visão Gerencial (Indicadores)", 
+        "🗺️ Roteirização e Mapa de Campo"
+    ])
+    exibir_governanca = False
+#endregion
 
 #region 8.2: ABA 1 — Visão Gerencial (Indicadores)
 with tab1:
