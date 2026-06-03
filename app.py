@@ -1894,20 +1894,18 @@ if "Gestão de Usuários" in st.session_state.get("governanca", ""):
                     st.session_state["msg_sucesso_user"] = f"Usuário {usr_sel} excluído."; st.rerun()
 #endregion
 
-#region SESSÃO 9: Painel de Governança Operacional (Versão Final Corrigida)
+#region SESSÃO 9: Painel de Governança Operacional (Consolidado e Ajustado)
 if st.session_state.get("tela_atual") == "governanca":
-    
-    st.title("🛡️ Governança Operacional e Auditoria de Campo")
-    
-    # 1. Extração de Dados
-    with st.spinner("Compilando dados..."):
+    st.title("🛡️ Governança Operacional e Auditoria")
+
+    # 1. Extração e Tratamento
+    with st.spinner("Compilando painéis..."):
         conn = get_connection()
         df_baixas = pd.read_sql_query("SELECT * FROM baixas", conn)
         df_logs = pd.read_sql_query("SELECT username, data_hora_login FROM logs_acesso", conn)
         release_connection(conn)
         
-        df_base = st.session_state.get("df_os", pd.DataFrame())
-        df_gov = df_baixas.merge(df_base[["Ordem servico", "Patio", "Ativo", "Classificacao"]], left_on="os", right_on="Ordem servico", how="inner")
+        df_gov = df_baixas.merge(st.session_state.get("df_os", pd.DataFrame()), left_on="os", right_on="Ordem servico", how="inner")
         df_gov["Data_Real"] = pd.to_datetime(df_gov["data_inicio"], format="%d/%m/%Y", errors="coerce").dt.date
         df_gov["Tempo_Minutos"] = df_gov.apply(lambda row: (pd.to_datetime(row['hora_fim'], format='%H:%M:%S') - pd.to_datetime(row['hora_inicio'], format='%H:%M:%S')).total_seconds()/60, axis=1)
 
@@ -1915,44 +1913,56 @@ if st.session_state.get("tela_atual") == "governanca":
     c_f1, c_f2 = st.columns(2)
     tecs = sorted(df_gov["concluido_por"].dropna().unique().tolist())
     tec_sel = c_f1.multiselect("👤 Colaborador:", tecs, default=tecs)
-    patios = sorted(df_gov["Patio"].dropna().unique().tolist())
-    patio_sel = c_f2.multiselect("📍 Pátio:", patios, default=patios)
-    
-    df_gov_f = df_gov[(df_gov["concluido_por"].isin(tec_sel)) & (df_gov["Patio"].isin(patio_sel))].copy()
+    df_gov_f = df_gov[df_gov["concluido_por"].isin(tec_sel)].sort_values("Data_Real").copy()
 
-    if df_gov_f.empty: st.info("Sem dados."); st.stop()
+    # 3. Gráficos de Produtividade (Diária + Acumulada)
+    st.markdown("#### 📈 Produtividade: Diária vs Acumulada")
+    data_prod = df_gov_f.groupby("Data_Real").size()
+    data_acum = data_prod.cumsum()
+    st_echarts({
+        "tooltip": {"trigger": "axis"},
+        "xAxis": {"type": "category", "data": [d.strftime("%d/%m") for d in data_prod.index]},
+        "yAxis": [{"type": "value", "name": "Diário"}, {"type": "value", "name": "Acumulado"}],
+        "series": [
+            {"name": "Diário", "type": "bar", "data": data_prod.values.tolist(), "itemStyle": {"color": "#3B82F6"}},
+            {"name": "Acumulado", "type": "line", "yAxisIndex": 1, "data": data_acum.values.tolist(), "smooth": True}
+        ]
+    }, height=300)
 
-    # 3. Gráficos Corrigidos (Sem erros de Stacking ou Echarts)
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.markdown("#### 📈 Produtividade Diária")
-        st.bar_chart(df_gov_f.groupby("Data_Real").size())
+    # 4. Esforço e Aderência
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("#### ⏱️ Esforço Médio por Classificação")
+        data_esf = df_gov_f.groupby("Classificacao")["Tempo_Minutos"].mean()
+        st_echarts({
+            "xAxis": {"type": "value"},
+            "yAxis": {"type": "category", "data": data_esf.index.tolist()},
+            "series": [{"type": "bar", "data": data_esf.values.round(1).tolist()}]
+        }, height=300)
     
-    with col_b:
-        st.markdown("#### ⏱️ Esforço Médio por Classe")
-        st.bar_chart(df_gov_f.groupby("Classificacao")["Tempo_Minutos"].mean())
+    with col2:
+        st.markdown("#### 🕒 Aderência: Login vs. Início")
+        # Ajuste: garantindo que as listas tenham o mesmo tamanho para o scatter
+        plot_data = [[str(l), str(i)] for l, i in zip(df_logs["data_hora_login"], df_gov_f["hora_inicio"].head(len(df_logs)))]
+        st_echarts({
+            "xAxis": {"type": "category"},
+            "yAxis": {"type": "category"},
+            "series": [{"type": "scatter", "data": plot_data}]
+        }, height=300)
 
-    # 4. Novos Gráficos (Corrigidos para evitar exceções)
-    st.markdown("---")
-    st.markdown("### 🚀 Radar de Desempenho")
-    col_c, col_d = st.columns(2)
-    
-    with col_c:
-        st.markdown("#### 🕒 Aderência (Login/Início)")
-        # Gráfico simples que não exige configurações complexas do Echarts
-        st.line_chart(df_gov_f.groupby("Data_Real")["Tempo_Minutos"].mean())
-        st.caption("Evolução do tempo médio de execução.")
-    
-    with col_d:
+    # 5. Pátios e Auditoria
+    col3, col4 = st.columns(2)
+    with col3:
         st.markdown("#### 🔝 Produtividade por Pátio")
-        # Removido o argumento 'stack', agora é compatível com a nova API do Streamlit
-        st.bar_chart(df_gov_f.groupby("Patio").size())
+        data_patio = df_gov_f.groupby("Patio").size()
+        st_echarts({
+            "series": [{"type": "pie", "radius": ["40%", "70%"], "data": [{"value": v, "name": n} for n, v in data_patio.items()]}]
+        }, height=300)
 
-    # 5. Tabela de Auditoria
-    st.markdown("### 📍 Tabela de Auditoria")
-    df_auditoria = df_gov_f[["os", "concluido_por", "Data_Real", "geolocalizacao_baixa"]]
-    st.dataframe(df_auditoria, use_container_width=True)
-    
+    with col4:
+        st.markdown("### 📍 Tabela de Auditoria")
+        st.dataframe(df_gov_f[["os", "concluido_por", "Patio", "geolocalizacao_baixa"]], use_container_width=True, height=250)
+
     st.stop()
 #endregion
 #endregion
