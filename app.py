@@ -23,7 +23,7 @@ import psycopg2
 from psycopg2 import pool
 
 # --- CONFIGURAÇÕES GLOBAIS ---
-st.set_page_config(page_title="Painel de OS Eletroeletrônica", layout="wide")
+st.set_page_config(page_title="Painel de OS Eletroeletrônica", layout="wide", initial_sidebar_state="collapsed")
 
 if not st.session_state.get("logged_in", False):
     col_vazia1, col_centro, col_vazia2 = st.columns([1, 6, 1])
@@ -2637,8 +2637,6 @@ with tab2:
         if not df_recomendado.empty:
             
             # === NOVA APLICAÇÃO DE PERFORMANCE: FRAGMENTO DE APONTAMENTO ===
-            # O decorador @st.fragment isola esta parte da tela. 
-            # Interagir com o multiselect não vai mais recarregar o mapa nem o cronograma!
             @st.fragment
             def renderizar_bloco_apontamento():
                 st.markdown("---")
@@ -2652,6 +2650,21 @@ with tab2:
                 )
 
                 if os_selecionadas:
+                    # --- 🛑 GEOFENCING: TRAVA DE RAIO DE 5 KM ---
+                    os_distantes = []
+                    for os_id in os_selecionadas:
+                        # Puxa a distância exata da OS selecionada
+                        dist = df_recomendado.loc[df_recomendado["Ordem servico"].astype(str) == str(os_id), "Distancia_km"].iloc[0]
+                        if dist > 5.0:
+                            os_distantes.append(f"{os_id} (a {dist:.1f} km)")
+                            
+                    if os_distantes:
+                        st.error(f"🛑 **Bloqueio Geográfico:** O sistema exige que você esteja em um raio máximo de **5 km** do local da manutenção para registrar a execução.")
+                        st.warning(f"Você está muito longe das seguintes OSs: **{', '.join(os_distantes)}**.")
+                        st.info("💡 Aproxime-se do pátio e atualize sua posição no botão '📍 Minha Localização' acima para liberar o apontamento.")
+                        return  # ⬅️ O código "morre" aqui. O formulário de apontamento nem sequer aparece na tela!
+                    # --------------------------------------------
+
                     conn = get_connection()
                     df_users_equipe = pd.read_sql_query("SELECT username FROM usuarios", conn)
                     release_connection(conn)
@@ -2720,7 +2733,7 @@ with tab2:
                                 
                                 st.success(f"✅ Execução de {len(set(os_selecionadas))} OS(s) registrada com sucesso!")
                                 time.sleep(2)
-                                st.rerun() # Esse rerun dentro do botão "fura" o fragmento e recarrega o app inteiro para atualizar a tela!
+                                st.rerun()
 
             # Chama a função fragmentada para renderizar na tela
             renderizar_bloco_apontamento()
