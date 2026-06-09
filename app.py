@@ -1534,19 +1534,19 @@ def gerar_base_simulada(qtd: int = 800, seed: int = 42, pct_p: int = 45, pct_ok:
 _DEV_MODE = os.getenv("DEV_MODE", "0") == "1"
 
 if _DEV_MODE:
-def simulacao_sidebar():
-    st.sidebar.header("🧪 Simulação (Teste)")
-    usar_sim = st.sidebar.checkbox("Usar dados simulados (teste KPIs)", value=False)
+    def simulacao_sidebar():
+        st.sidebar.header("🧪 Simulação (Teste)")
+        usar_sim = st.sidebar.checkbox("Usar dados simulados (teste KPIs)", value=False)
 
-    if not usar_sim:
-        return False, None
+        if not usar_sim:
+            return False, None
 
-    qtd_sim = st.sidebar.slider("Quantidade de OS simuladas", 100, 4000, 1200, 100)
-    seed_sim = st.sidebar.number_input("Seed (repete os mesmos dados)", min_value=1, max_value=999999, value=42, step=1)
+        qtd_sim = st.sidebar.slider("Quantidade de OS simuladas", 100, 4000, 1200, 100)
+        seed_sim = st.sidebar.number_input("Seed (repete os mesmos dados)", min_value=1, max_value=999999, value=42, step=1)
 
-    df_sim = gerar_base_simulada(qtd=int(qtd_sim), seed=int(seed_sim))
-    st.sidebar.info("✅ Simulação ativa. Excel real NÃO será carregado.")
-    return True, df_sim
+        df_sim = gerar_base_simulada(qtd=int(qtd_sim), seed=int(seed_sim))
+        st.sidebar.info("✅ Simulação ativa. Excel real NÃO será carregado.")
+        return True, df_sim
 #endregion
 #endregion
 
