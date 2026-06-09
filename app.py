@@ -1048,18 +1048,18 @@ def render_tela_admin():
                             return obj.strftime('%d/%m/%Y')
                         return str(obj)
                     
-                        total_linhas = len(df)
-                        barra = st.progress(0, text="Processando...")
+                    total_linhas = len(df)
+                    barra = st.progress(0, text="Processando...")
 
-                        for idx, (_, row) in enumerate(df.iterrows()):
-                            os_num = str(row["Ordem servico"]).strip()
-                            if os_num:
-                                cur.execute(comando_sql, (os_num, mes_ref, coord_upload, json.dumps(row.to_dict(), default=conversor_brasileiro)))
-                                sucesso_count += 1
+                    for idx, (_, row) in enumerate(df.iterrows()):
+                        os_num = str(row["Ordem servico"]).strip()
+                        if os_num:
+                            cur.execute(comando_sql, (os_num, mes_ref, coord_upload, json.dumps(row.to_dict(), default=conversor_brasileiro)))
+                            sucesso_count += 1
 
-                            if (idx + 1) % 50 == 0 or (idx + 1) == total_linhas:
-                                pct = min((idx + 1) / total_linhas, 1.0)
-                                barra.progress(pct, text=f"Processando... {idx + 1}/{total_linhas} linhas")
+                        if (idx + 1) % 50 == 0 or (idx + 1) == total_linhas:
+                            pct = min((idx + 1) / total_linhas, 1.0)
+                            barra.progress(pct, text=f"Processando... {idx + 1}/{total_linhas} linhas")
 
                         conn.commit()
                         cur.close()
@@ -1070,6 +1070,7 @@ def render_tela_admin():
                     st.error(f"❌ Ocorreu um erro ao processar o arquivo: {e}")
     elif arquivo_upload is not None:
         st.warning("⚠️ Preencha o Mês e a Coordenação antes de processar.")
+
 # --- SESSÃO DE EXPORTAÇÃO SAP ---
     if "Exportar SAP" in st.session_state.get("governanca", ""):
         st.markdown("---")
