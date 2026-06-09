@@ -1020,8 +1020,10 @@ def render_tela_admin():
 
             with st.spinner("Lendo e processando dados..."):
                 try:
-                    if arquivo_upload.name.endswith('.csv'): df = pd.read_csv(arquivo_upload, sep=';', encoding='utf-8-sig')
-                    else: df = pd.read_excel(arquivo_upload)
+                    if arquivo_upload.name.endswith('.csv'):
+                        df = pd.read_csv(arquivo_upload, sep=';', encoding='utf-8-sig')
+                    else:
+                        df = pd.read_excel(arquivo_upload)
                     
                     if "Ordem servico" not in df.columns:
                         st.error("❌ A coluna 'Ordem servico' não foi encontrada. Verifique o arquivo.")
@@ -1029,45 +1031,47 @@ def render_tela_admin():
                     
                     df = df.fillna("")
                     conn = get_connection()
-                    cur = conn.cursor()
-                    sucesso_count = 0
-                    
-                    comando_sql = """
-                        INSERT INTO os_programadas (os, mes_referencia, coordenacao, dados_completos)
-                        VALUES (%s, %s, %s, %s)
-                        ON CONFLICT (os) DO UPDATE 
-                        SET mes_referencia = EXCLUDED.mes_referencia,
-                            coordenacao = EXCLUDED.coordenacao,
-                            dados_completos = EXCLUDED.dados_completos,
-                            data_upload = CURRENT_TIMESTAMP;
-                    """
-                    
-                    # --- TRADUTOR DE DATA BRASILEIRO ---
-                    def conversor_brasileiro(obj):
-                        if isinstance(obj, (pd.Timestamp, datetime)):
-                            return obj.strftime('%d/%m/%Y')
-                        return str(obj)
-                    
-                    total_linhas = len(df)
-                    barra = st.progress(0, text="Processando...")
+                    try:
+                        cur = conn.cursor()
+                        sucesso_count = 0
+                        
+                        comando_sql = """
+                            INSERT INTO os_programadas (os, mes_referencia, coordenacao, dados_completos)
+                            VALUES (%s, %s, %s, %s)
+                            ON CONFLICT (os) DO UPDATE 
+                            SET mes_referencia = EXCLUDED.mes_referencia,
+                                coordenacao = EXCLUDED.coordenacao,
+                                dados_completos = EXCLUDED.dados_completos,
+                                data_upload = CURRENT_TIMESTAMP;
+                        """
+                        
+                        def conversor_brasileiro(obj):
+                            if isinstance(obj, (pd.Timestamp, datetime)):
+                                return obj.strftime('%d/%m/%Y')
+                            return str(obj)
+                        
+                        total_linhas = len(df)
+                        barra = st.progress(0, text="Processando...")
 
-                    for idx, (_, row) in enumerate(df.iterrows()):
-                        os_num = str(row["Ordem servico"]).strip()
-                        if os_num:
-                            cur.execute(comando_sql, (os_num, mes_ref, coord_upload, json.dumps(row.to_dict(), default=conversor_brasileiro)))
-                            sucesso_count += 1
+                        for idx, (_, row) in enumerate(df.iterrows()):
+                            os_num = str(row["Ordem servico"]).strip()
+                            if os_num:
+                                cur.execute(comando_sql, (os_num, mes_ref, coord_upload, json.dumps(row.to_dict(), default=conversor_brasileiro)))
+                                sucesso_count += 1
 
-                        if (idx + 1) % 50 == 0 or (idx + 1) == total_linhas:
-                            pct = min((idx + 1) / total_linhas, 1.0)
-                            barra.progress(pct, text=f"Processando... {idx + 1}/{total_linhas} linhas")
+                            if (idx + 1) % 50 == 0 or (idx + 1) == total_linhas:
+                                pct = min((idx + 1) / total_linhas, 1.0)
+                                barra.progress(pct, text=f"Processando... {idx + 1}/{total_linhas} linhas")
 
                         conn.commit()
                         cur.close()
-                        release_connection(conn)
                         barra.progress(1.0, text="Concluído!")
                         st.success(f"✅ Sucesso! {sucesso_count} Ordens de Serviço foram atualizadas.")
+                    finally:
+                        release_connection(conn)
+
                 except Exception as e:
-                    st.error(f"❌ Ocorreu um erro ao processar o arquivo: {e}")
+                    st.error(f"❌  Ocorreu um erro ao processar o arquivo: {e}")
     elif arquivo_upload is not None:
         st.warning("⚠️ Preencha o Mês e a Coordenação antes de processar.")
 
