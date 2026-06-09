@@ -1513,21 +1513,6 @@ def simulacao_sidebar():
 #endregion
 
 #region SESSÃO 5: Sidebar, Navegação, Carga e Filtro
-#region--- BLOCO SEGURO DE VERIFICAÇÃO DE PERFIL ---
-# Criamos as variáveis com segurança no topo da sessão caso o usuário esteja logado
-if st.session_state.get("logged_in", False):
-    perfil_seguro = str(st.session_state.get("perfil", "")).strip().lower()
-    perfis_autorizados = ["gerente", "coordenador", "gerência", "admin", "administrador"]
-    
-    # 🕵️‍♂️ Linhas espiãs posicionadas logo após a criação da variável
-    st.sidebar.write(f"Meu perfil atual é: '{perfil_seguro}'")
-    st.sidebar.write(f"Botão ligado? {st.session_state.get('ver_governanca')}")
-    
-    # Se o perfil for autorizado, renderiza o toggle de controle da Auditoria
-    if perfil_seguro in perfis_autorizados:
-        st.sidebar.markdown("---")
-        st.sidebar.toggle("⚖️ Habilitar Governança e Auditoria", key="ver_governanca")
-#endregion
 
 #region SESSÃO 5.1: Identidade visual, navegação e escopo
 # 5.1.1 CSS / identidade visual
@@ -1750,7 +1735,7 @@ if st.session_state["perfil"] != "Técnico":
         value=(min_date, max_date),
         min_value=min_date,
         max_value=max_date,
-        format="DD/MM/YYYY"  # <--- Essa linha mágica resolve a exibição visual!
+        format="DD/MM/YYYY"  
     )
 
     if isinstance(data_selecionada, tuple):
@@ -1797,7 +1782,6 @@ df_filtrado = aplicar_filtros_sidebar(
     end_date=end_date,
     status_sel=status_sel
 )
-#endregion
 #endregion
 #endregion
 
