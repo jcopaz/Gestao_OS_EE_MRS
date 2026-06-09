@@ -1078,11 +1078,15 @@ def render_tela_admin():
                         cur.close()
                     finally:
                         release_connection(conn)
-                    
+
                     barra.progress(1.0, text="Concluído!")
                     st.success(f"✅ Sucesso! {len(registros)} de {total_linhas_arquivo} linhas foram processadas.")
+                    st.cache_data.clear()
+                    time.sleep(1.5)
+                    st.rerun()
                     
                 except Exception as e:
+
                     st.error(f"❌  Ocorreu um erro ao processar o arquivo: {e}")
     elif arquivo_upload is not None:
         st.warning("⚠️ Preencha o Mês e a Coordenação antes de processar.")
@@ -1917,8 +1921,7 @@ df_filtrado = aplicar_filtros_sidebar(
 if "Gestão de Usuários" in st.session_state.get("governanca", ""):
     with st.sidebar.expander("⚙️ Sistema, Dados e Gestão", expanded=False):
         
-        if _DEV_MODE:
-            st.checkbox("🧪 Usar dados simulados (teste rápido)", key="chk_sim")
+        st.checkbox("🧪 Usar dados simulados (teste rápido)", key="chk_sim")
         if st.session_state.get("chk_sim"):
             st.slider("Volume de OS simuladas", 100, 4000, 1200, 100, key="qtd_sim")
             st.number_input("Seed (repete mesmos dados)", value=42, key="seed_sim")
