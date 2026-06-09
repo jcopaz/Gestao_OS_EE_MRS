@@ -2277,25 +2277,25 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     else:
                         st.info("Sem dados cronológicos.")
 
-        st.subheader("📋 Lista Detalhada de OS")
-        df_lista = df_visao_base.copy().rename(columns={"Ordem servico": "OS"})
+                        st.subheader("📋 Lista Detalhada de OS")
+                        df_lista = df_visao_base.copy().rename(columns={"Ordem servico": "OS"})
 
-        if "Data inicial programada" in df_lista.columns:
-            df_lista["Data inicial programada"] = pd.to_datetime(df_lista["Data inicial programada"], errors="coerce").dt.strftime("%d/%m/%Y")
+                        if "Data inicial programada" in df_lista.columns:
+                            df_lista["Data inicial programada"] = pd.to_datetime(df_lista["Data inicial programada"], errors="coerce").dt.strftime("%d/%m/%Y")
 
-        if "Data/Hora Realizado" in df_lista.columns:
-            df_lista["Data/Hora Realizado"] = pd.to_datetime(
-                df_lista["Data/Hora Realizado"], dayfirst=True, errors="coerce"
-            ).dt.strftime("%d/%m/%Y %H:%M").fillna("")
+                        if "Data/Hora Realizado" in df_lista.columns:
+                            df_lista["Data/Hora Realizado"] = pd.to_datetime(
+                                df_lista["Data/Hora Realizado"], dayfirst=True, errors="coerce"
+                            ).dt.strftime("%d/%m/%Y %H:%M").fillna("")
 
-        colunas_ordem = ["OS", "Patio", "Ativo", "Criticidade", "Classificacao", "Descrição Longa", "Data inicial programada", "Status da Operação", "Data/Hora Realizado", "Concluído por", "Geolocalização de Baixa"]
+                        colunas_ordem = ["OS", "Patio", "Ativo", "Criticidade", "Classificacao", "Descrição Longa", "Data inicial programada", "Status da Operação", "Data/Hora Realizado", "Concluído por", "Geolocalização de Baixa"]
 
-        for c in colunas_ordem:
-            if c not in df_lista.columns: df_lista[c] = ""
+                        for c in colunas_ordem:
+                            if c not in df_lista.columns: df_lista[c] = ""
 
-        if not df_lista.empty:
-            df_styled = df_lista[colunas_ordem].style.set_properties(**{'text-align': 'center'}).set_table_styles([{'selector': 'th', 'props': [('text-align', 'center')]}])
-            st.dataframe(df_styled, use_container_width=True, height=400, hide_index=True)
+                        if not df_lista.empty:
+                            df_styled = df_lista[colunas_ordem].style.set_properties(**{'text-align': 'center'}).set_table_styles([{'selector': 'th', 'props': [('text-align', 'center')]}])
+                            st.dataframe(df_styled, use_container_width=True, height=400, hide_index=True)
 #endregion
 
 #region 8.3: ABA 2 — Roteirização e Mapa de Campo
