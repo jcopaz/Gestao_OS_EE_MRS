@@ -6,7 +6,7 @@ import re
 import os
 import shutil
 import hashlib
-from datetime import datetime
+import json
 from pathlib import Path
 from streamlit_calendar import calendar
 
@@ -18,6 +18,7 @@ from streamlit_folium import st_folium
 from geopy.geocoders import Nominatim
 from streamlit_js_eval import get_geolocation
 from streamlit_echarts import st_echarts, JsCode
+from datetime import datetime, timezone, timedelta
 
 import psycopg2
 from psycopg2 import pool
@@ -53,10 +54,11 @@ _status_atraso = {"REALIZADO FORA DA DATA DE PROGRAMAÇÃO", "REALIZADO FORA DO 
 _status_aberto = {"NÃO REALIZADO", "NAO REALIZADO", "PENDENTE", "ATRASADO", ""}
 
 def init_db():
+    conn = None
     try:
         conn = get_connection()
         cur = conn.cursor()
-        
+
         # Criação padrão das tabelas...
         cur.execute("""
             CREATE TABLE IF NOT EXISTS baixas (
@@ -114,11 +116,25 @@ def init_db():
             
         conn.commit()
         cur.close()
-        release_connection(conn)
-    except Exception:
-        pass
-
+    except Exception as e:
+        import logging
+        logging.warning(f"[init_db] Erro na inicialização do banco: {e}")
+    finally:
+        if conn is not None:
+            release_connection(conn)
 init_db()
+
+# --- INICIALIZAÇÃO CENTRALIZADA DE SESSION_STATE ---
+_defaults_session = {
+    "gps_pending": False,
+    "gps_trials": 0,
+    "origem_tipo": "BASE",
+    "gov_auth_ok": False,
+}
+for _key, _val in _defaults_session.items():
+    if _key not in st.session_state:
+        st.session_state[_key] = _val
+
 #endregion
 
 #region SESSÃO 1.5: Barreira de Login com Governança e GPS Obrigatório
@@ -301,8 +317,6 @@ def parse_data_programada(valor):
         return pd.NaT
 
 def agora_dt():
-    from datetime import timezone, timedelta
-    # Força o horário oficial de Brasília (UTC-3)
     fuso_br = timezone(timedelta(hours=-3))
     return datetime.now(fuso_br)
 
@@ -439,36 +453,43 @@ def tentar_gps_uma_vez():
 
 #region SESSÃO 2.2 ===== Persistência (SQLite) =====
 
-def upsert_baixa(os_id: str, status: str, realizado_em_str: str, coordenacao: str, concluido_por: str, 
-                 geolocalizacao_baixa: str = "", equipe: str = "", 
-                 data_inicio: str = "", hora_inicio: str = "", 
+def upsert_baixa(os_id: str, status: str, realizado_em_str: str, coordenacao: str, concluido_por: str,
+                 geolocalizacao_baixa: str = "", equipe: str = "",
+                 data_inicio: str = "", hora_inicio: str = "",
                  data_fim: str = "", hora_fim: str = ""):
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO baixas (os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (os) DO UPDATE SET
-            status = EXCLUDED.status,
-            realizado_em = EXCLUDED.realizado_em,
-            concluido_por = EXCLUDED.concluido_por,
-            geolocalizacao_baixa = EXCLUDED.geolocalizacao_baixa,
-            equipe = EXCLUDED.equipe,
-            data_inicio = EXCLUDED.data_inicio,
-            hora_inicio = EXCLUDED.hora_inicio,
-            data_fim = EXCLUDED.data_fim,
-            hora_fim = EXCLUDED.hora_fim;
-    """, (str(os_id), str(status), str(realizado_em_str), str(coordenacao), str(concluido_por), 
-          str(geolocalizacao_baixa), str(equipe), str(data_inicio), str(hora_inicio), str(data_fim), str(hora_fim)))
-    conn.commit()
-    cur.close()
-    release_connection(conn)
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO baixas (os, status, realizado_em, coordenacao, concluido_por,
+                                geolocalizacao_baixa, equipe, data_inicio, hora_inicio,
+                                data_fim, hora_fim)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (os) DO UPDATE SET
+                status = EXCLUDED.status,
+                realizado_em = EXCLUDED.realizado_em,
+                concluido_por = EXCLUDED.concluido_por,
+                geolocalizacao_baixa = EXCLUDED.geolocalizacao_baixa,
+                equipe = EXCLUDED.equipe,
+                data_inicio = EXCLUDED.data_inicio,
+                hora_inicio = EXCLUDED.hora_inicio,
+                data_fim = EXCLUDED.data_fim,
+                hora_fim = EXCLUDED.hora_fim;
+        """, (str(os_id), str(status), str(realizado_em_str), str(coordenacao),
+              str(concluido_por), str(geolocalizacao_baixa), str(equipe),
+              str(data_inicio), str(hora_inicio), str(data_fim), str(hora_fim)))
+        conn.commit()
+        cur.close()
+    finally:
+        release_connection(conn)
+
 
 def carregar_baixas_df() -> pd.DataFrame:
     conn = get_connection()
-    # Correção Ponto 3: Adicionando a geolocalizacao_baixa na busca do banco
-    df = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa FROM baixas", conn)
-    release_connection(conn)
+    try:
+        df = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa FROM baixas", conn)
+    finally:
+        release_connection(conn)
     if df.empty:
         return df
     df["os"] = df["os"].astype(str)
@@ -484,41 +505,36 @@ def gerar_excel_sap_bytes(df_filtrado_atual: pd.DataFrame) -> bytes:
         return b""
 
     # 2. Busca no banco os horários reais e a EQUIPE
-    lista_os = tuple(df_concluidas["Ordem servico"].astype(str).tolist())
+    lista_os = df_concluidas["Ordem servico"].astype(str).tolist()
     conn = get_connection()
-    if len(lista_os) == 1:
-        # Adicionado a coluna "equipe" na query
-        query = f"SELECT os, data_inicio, hora_inicio, data_fim, hora_fim, concluido_por, equipe, coordenacao FROM baixas WHERE os = '{lista_os[0]}'"
-    else:
-        query = f"SELECT os, data_inicio, hora_inicio, data_fim, hora_fim, concluido_por, equipe, coordenacao FROM baixas WHERE os IN {lista_os}"
-    df_detalhes = pd.read_sql_query(query, conn)
-    release_connection(conn)
+    try:
+        if len(lista_os) == 1:
+            query = "SELECT os, data_inicio, hora_inicio, data_fim, hora_fim, concluido_por, equipe, coordenacao FROM baixas WHERE os = %s"
+            df_detalhes = pd.read_sql_query(query, conn, params=(lista_os[0],))
+        else:
+            placeholders = ",".join(["%s"] * len(lista_os))
+            query = f"SELECT os, data_inicio, hora_inicio, data_fim, hora_fim, concluido_por, equipe, coordenacao FROM baixas WHERE os IN ({placeholders})"
+            df_detalhes = pd.read_sql_query(query, conn, params=tuple(lista_os))
+    finally:
+        release_connection(conn)
 
     # 3. Junta os dados do filtro com os dados do banco
     df_sap = df_concluidas.merge(df_detalhes, left_on="Ordem servico", right_on="os", how="inner")
 
     # --- A MÁGICA DA MULTIPLICAÇÃO (EXPLODE) DE EQUIPE ---
-    linhas_explodidas = []
-    for _, row in df_sap.iterrows():
-        # O técnico principal que fez a baixa
-        usuarios_os = [str(row["concluido_por"]).strip()]
-        
-        # Os co-executantes
+    def montar_lista_equipe(row):
+        principal = str(row["concluido_por"]).strip()
         eqp = str(row["equipe"]).strip()
-        if eqp and eqp.upper() != "SOZINHO" and eqp.upper() != "NAN":
-            co_executantes = [u.strip() for u in eqp.split(",") if u.strip()]
-            usuarios_os.extend(co_executantes)
-        
-        # Remove duplicidades (caso o técnico tenha se colocado na equipe por engano)
-        usuarios_os = list(dict.fromkeys(usuarios_os))
-        
-        # Duplica a linha da OS para cada membro da equipe
-        for usr in usuarios_os:
-            nova_linha = row.to_dict()
-            nova_linha["matricula_final"] = usr
-            linhas_explodidas.append(nova_linha)
-            
-    df_sap_explodido = pd.DataFrame(linhas_explodidas)
+        if eqp and eqp.upper() not in ("SOZINHO", "NAN", ""):
+            co_exec = [u.strip() for u in eqp.split(",") if u.strip()]
+            todos = [principal] + co_exec
+        else:
+            todos = [principal]
+        return list(dict.fromkeys(todos))  # Remove duplicatas mantendo ordem
+
+    df_sap["_lista_equipe"] = df_sap.apply(montar_lista_equipe, axis=1)
+    df_sap_explodido = df_sap.explode("_lista_equipe").rename(columns={"_lista_equipe": "matricula_final"})
+    df_sap_explodido = df_sap_explodido.drop(columns=["_lista_equipe"], errors="ignore")
     # -----------------------------------------------------
 
     def calc_trab_real(h_ini, h_fim):
@@ -980,8 +996,6 @@ def resumir_conclusoes_por_turno_data(
 #endregion
 
 #region SESSÃO 2.7 ===== Administração de Dados =====
-import json
-from datetime import datetime
 
 def render_tela_admin():
     st.title("⚙️ Administração de Dados")
@@ -1163,6 +1177,7 @@ def obter_base_padrao_usuario():
 
     # Busca no banco de usuários
     if username:
+        conn = None
         try:
             conn = get_connection()
             cur = conn.cursor()
@@ -1172,12 +1187,13 @@ def obter_base_padrao_usuario():
             )
             row = cur.fetchone()
             cur.close()
-            release_connection(conn)
-
             if row and row[0]:
                 valor_base = str(row[0]).strip()
         except Exception:
             valor_base = None
+        finally:
+            if conn is not None:
+                release_connection(conn)
 
     # Fallback para o escopo
     if not valor_base:
@@ -1332,7 +1348,6 @@ def carregar_base_sem_overlay(
     if df_raw_db.empty:
         return pd.DataFrame()
 
-    import json
     dfs_tratados = []
     
     # 2. Agrupa por coordenação e remonta o formato Excel a partir do JSON do banco
@@ -1347,12 +1362,12 @@ def carregar_base_sem_overlay(
         if lista_linhas:
             df_bruto_coord = pd.DataFrame(lista_linhas)
             try:
-                # 3. Passa os dados pelo motor de tratamento (ETL) que você já construiu
                 df_tratado_coord = tratar_df_os(df_bruto_coord)
                 df_tratado_coord["Coordenacao"] = coord
                 dfs_tratados.append(df_tratado_coord)
-            except Exception:
-                pass # Ignora silenciosamente se uma coordenação estiver com dados corrompidos
+            except Exception as e:
+                import logging
+                logging.warning(f"[ETL] Erro ao tratar coordenação '{coord}': {e}")
 
     if not dfs_tratados:
         return pd.DataFrame()
@@ -1516,6 +1531,9 @@ def gerar_base_simulada(qtd: int = 800, seed: int = 42, pct_p: int = 45, pct_ok:
 #endregion
 
 #region SESSÃO EXTRA: Controle na Sidebar
+_DEV_MODE = os.getenv("DEV_MODE", "0") == "1"
+
+if _DEV_MODE:
 def simulacao_sidebar():
     st.sidebar.header("🧪 Simulação (Teste)")
     usar_sim = st.sidebar.checkbox("Usar dados simulados (teste KPIs)", value=False)
@@ -1709,25 +1727,31 @@ usar_sim = st.session_state.get("chk_sim", False)
 qtd_sim = st.session_state.get("qtd_sim", 1200)
 seed_sim = st.session_state.get("seed_sim", 42)
 
-baixas_mtime = time.time()
+
+# Gera um hash baseado na quantidade real de baixas (só muda quando há novas baixas)
+def _hash_baixas():
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*), MAX(os) FROM baixas")
+        row = cur.fetchone()
+        cur.close()
+        return f"{row[0]}_{row[1]}"
+    finally:
+        release_connection(conn)
+
+baixas_mtime = _hash_baixas()
 
 df_base_bruto = carregar_base_sem_overlay(
-    usar_sim=usar_sim,
-    qtd_sim=int(qtd_sim),
-    seed_sim=int(seed_sim),
+    usar_sim=usar_sim, qtd_sim=int(qtd_sim), seed_sim=int(seed_sim),
     escopo_usuario=st.session_state["escopo"],
     etl_version=ETL_VERSION
 )
 
-if df_base_bruto.empty and not usar_sim:
-    pasta_bases = Path("bases_os")
-    st.error(f"Nenhuma planilha encontrada na pasta '{pasta_bases.absolute()}'.")
-    st.stop()
-
 df_base = aplicar_overlay_baixas(
     df_base_bruto=df_base_bruto,
     escopo_usuario=st.session_state["escopo"],
-    baixas_mtime=baixas_mtime
+    baixas_mtime=baixas_mtime   # ← agora só invalida quando o banco muda de fato
 )
 
 st.session_state["df_os"] = df_base
@@ -1807,7 +1831,8 @@ df_filtrado = aplicar_filtros_sidebar(
 if "Gestão de Usuários" in st.session_state.get("governanca", ""):
     with st.sidebar.expander("⚙️ Sistema, Dados e Gestão", expanded=False):
         
-        st.checkbox("🧪 Usar dados simulados (teste rápido)", key="chk_sim")
+        if _DEV_MODE:
+            st.checkbox("🧪 Usar dados simulados (teste rápido)", key="chk_sim")
         if st.session_state.get("chk_sim"):
             st.slider("Volume de OS simuladas", 100, 4000, 1200, 100, key="qtd_sim")
             st.number_input("Seed (repete mesmos dados)", value=42, key="seed_sim")
@@ -2580,16 +2605,14 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
             with col_acao:
                 st.markdown("#### ⚙️ Ferramentas de Campo")
 
+
+                # --- INICIALIZAÇÃO CENTRALIZADA DE SESSION_STATE ---
+
                 if "lat_partida" not in st.session_state:
                     lat_base, lon_base, nome_base = obter_base_padrao_usuario()
                     st.session_state["lat_partida"] = lat_base
                     st.session_state["lon_partida"] = lon_base
                     st.session_state["local_nome"] = nome_base
-                    st.session_state["origem_tipo"] = "BASE"
-
-                if "gps_pending" not in st.session_state: st.session_state["gps_pending"] = False
-                if "gps_trials" not in st.session_state: st.session_state["gps_trials"] = 0
-                if "origem_tipo" not in st.session_state: st.session_state["origem_tipo"] = "BASE"
 
                 GPS_MAX_TRIALS = 25
 
@@ -2688,8 +2711,10 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                                 return 
 
                             conn = get_connection()
-                            df_users_equipe = pd.read_sql_query("SELECT username FROM usuarios", conn)
-                            release_connection(conn)
+                            try:
+                                df_users_equipe = pd.read_sql_query("SELECT username FROM usuarios", conn)
+                            finally:
+                                release_connection(conn)
                             lista_equipe_disp = df_users_equipe["username"].tolist()
                             
                             usr_logado = st.session_state.get("username", "")
