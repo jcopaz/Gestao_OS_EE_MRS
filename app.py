@@ -533,7 +533,7 @@ def gerar_excel_sap_bytes(df_filtrado_atual: pd.DataFrame) -> bytes:
         return list(dict.fromkeys(todos))  # Remove duplicatas mantendo ordem
 
     df_sap["_lista_equipe"] = df_sap.apply(montar_lista_equipe, axis=1)
-    df_sap_explodido = df_sap.explode("_lista_equipe").rename(columns={"_lista_equipe": "matricula_final"})
+    df_sap_explodido = df_sap.explode("_lista_equipe").rename(columns={"_lista_equipe": "matricula_final"}).reset_index(drop=True)
     df_sap_explodido = df_sap_explodido.drop(columns=["_lista_equipe"], errors="ignore")
     # -----------------------------------------------------
 
@@ -559,36 +559,38 @@ def gerar_excel_sap_bytes(df_filtrado_atual: pd.DataFrame) -> bytes:
         if 'IPG' in c or 'PIAÇAGUERA' in c or 'PIACAGUERA' in c: return 'CIPG'
         return 'CIPA'
 
-    # 4. Construção da Tabela Padrão SAP usando o DataFrame Explodido
-    sap_out = pd.DataFrame()
-    sap_out['A'] = [""] * len(df_sap_explodido)
-    sap_out['Ordem'] = df_sap_explodido['Ordem servico']
-    sap_out['Operação'] = ["10"] * len(df_sap_explodido)
-    sap_out['D'] = [""] * len(df_sap_explodido)
-    sap_out['E'] = [""] * len(df_sap_explodido)
-    sap_out['F'] = [""] * len(df_sap_explodido)
-    sap_out['Trab. real'] = df_sap_explodido.apply(lambda r: calc_trab_real(r['hora_inicio'], r['hora_fim']), axis=1)
-    sap_out['UN Medida 1'] = ["MIN"] * len(df_sap_explodido)
-    sap_out['I'] = [""] * len(df_sap_explodido)
-    sap_out['J'] = [""] * len(df_sap_explodido)
-    sap_out['K'] = [""] * len(df_sap_explodido)
-    sap_out['Centro de Trabalho'] = df_sap_explodido['coordenacao'].apply(get_centro_trab)
-    sap_out['Centro'] = df_sap_explodido['coordenacao'].apply(get_centro)
-    sap_out['N'] = [""] * len(df_sap_explodido)
-    sap_out['O'] = [""] * len(df_sap_explodido)
-    sap_out['P'] = [""] * len(df_sap_explodido)
-    sap_out['Matrícula'] = df_sap_explodido['matricula_final'] # <--- Usa a matrícula explodida
-    sap_out['R'] = [""] * len(df_sap_explodido)
-    sap_out['S'] = [""] * len(df_sap_explodido)
-    sap_out['UN Medida 2'] = ["MIN"] * len(df_sap_explodido)
-    sap_out['U'] = [""] * len(df_sap_explodido)
-    sap_out['V'] = [""] * len(df_sap_explodido)
-    sap_out['W'] = [""] * len(df_sap_explodido)
-    sap_out['X'] = [""] * len(df_sap_explodido)
-    sap_out['Data Inicio Real'] = df_sap_explodido['data_inicio'].astype(str).str.replace('/', '.')
-    sap_out['Hora Inicio Real'] = df_sap_explodido['hora_inicio']
-    sap_out['Data Fim Real'] = df_sap_explodido['data_fim'].astype(str).str.replace('/', '.')
-    sap_out['Hora Fim Real'] = df_sap_explodido['hora_fim']
+# 4. Construção da Tabela Padrão SAP usando o DataFrame Explodido
+    n = len(df_sap_explodido)
+    sap_out = pd.DataFrame({
+        'A': [""] * n,
+        'Ordem': df_sap_explodido['Ordem servico'].values,
+        'Operação': ["10"] * n,
+        'D': [""] * n,
+        'E': [""] * n,
+        'F': [""] * n,
+        'Trab. real': df_sap_explodido.apply(lambda r: calc_trab_real(r['hora_inicio'], r['hora_fim']), axis=1).values,
+        'UN Medida 1': ["MIN"] * n,
+        'I': [""] * n,
+        'J': [""] * n,
+        'K': [""] * n,
+        'Centro de Trabalho': df_sap_explodido['coordenacao'].apply(get_centro_trab).values,
+        'Centro': df_sap_explodido['coordenacao'].apply(get_centro).values,
+        'N': [""] * n,
+        'O': [""] * n,
+        'P': [""] * n,
+        'Matrícula': df_sap_explodido['matricula_final'].values,
+        'R': [""] * n,
+        'S': [""] * n,
+        'UN Medida 2': ["MIN"] * n,
+        'U': [""] * n,
+        'V': [""] * n,
+        'W': [""] * n,
+        'X': [""] * n,
+        'Data Inicio Real': df_sap_explodido['data_inicio'].astype(str).str.replace('/', '.').values,
+        'Hora Inicio Real': df_sap_explodido['hora_inicio'].values,
+        'Data Fim Real': df_sap_explodido['data_fim'].astype(str).str.replace('/', '.').values,
+        'Hora Fim Real': df_sap_explodido['hora_fim'].values,
+    })
 
     col_names = []
     for i, c in enumerate(sap_out.columns):
@@ -598,7 +600,6 @@ def gerar_excel_sap_bytes(df_filtrado_atual: pd.DataFrame) -> bytes:
             col_names.append("UN Medida" + " " * i)
         else:
             col_names.append(c)
-            
     sap_out.columns = col_names
 
     output = io.BytesIO()
