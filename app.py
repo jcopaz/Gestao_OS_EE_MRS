@@ -21,6 +21,7 @@ from pathlib import Path
 from streamlit_calendar import calendar
 from psycopg2.extras import execute_values
 from psycopg2 import pool
+import requests
 
 # --- CONFIGURAÇÕES GLOBAIS ---
 st.set_page_config(page_title="Painel de OS Eletroeletrônica", layout="wide", initial_sidebar_state="collapsed")
@@ -83,6 +84,19 @@ def init_db():
             CREATE TABLE IF NOT EXISTS os_programadas (
                 id SERIAL PRIMARY KEY, os VARCHAR(255) UNIQUE NOT NULL, mes_referencia VARCHAR(50),
                 dados_completos JSONB, data_upload TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS evidencias (
+                id SERIAL PRIMARY KEY,
+                ativo VARCHAR(255) NOT NULL,
+                atividade VARCHAR(500) NOT NULL,
+                foto_url TEXT,
+                os_referencia VARCHAR(255),
+                concluido_por VARCHAR(255),
+                geolocalizacao VARCHAR(255),
+                data_upload TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(ativo, atividade)
             );
         """)
         
@@ -494,6 +508,54 @@ def carregar_baixas_df() -> pd.DataFrame:
     df["os"] = df["os"].astype(str)
     return df
 
+#endregion
+
+#region SESSÃO 2.2.1 ===== Supabase Storage (Evidências Fotográficas) =====
+def upload_foto_supabase(arquivo_bytes: bytes, nome_arquivo: str) -> str:
+    """Faz upload de uma foto para o Supabase Storage (bucket 'evidencias') e retorna a URL pública."""
+    url_base = st.secrets["SUPABASE_URL"]
+    chave = st.secrets["SUPABASE_KEY"]
+    upload_url = f"{url_base}/storage/v1/object/evidencias/{nome_arquivo}"
+    headers = {
+        "Authorization": f"Bearer {chave}",
+        "apikey": chave,
+        "Content-Type": "image/jpeg",
+        "x-upsert": "true"
+    }
+    resp = requests.post(upload_url, headers=headers, data=arquivo_bytes)
+    if resp.status_code in (200, 201):
+        return f"{url_base}/storage/v1/object/public/evidencias/{nome_arquivo}"
+    else:
+        raise Exception(f"Erro Supabase Storage ({resp.status_code}): {resp.text}")
+
+def upsert_evidencia(ativo: str, atividade: str, foto_url: str, os_referencia: str, concluido_por: str, geolocalizacao: str):
+    """Grava ou substitui a evidência fotográfica no banco Neon. Chave única = (ativo, atividade)."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO evidencias (ativo, atividade, foto_url, os_referencia, concluido_por, geolocalizacao, data_upload)
+            VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (ativo, atividade) DO UPDATE SET
+                foto_url = EXCLUDED.foto_url,
+                os_referencia = EXCLUDED.os_referencia,
+                concluido_por = EXCLUDED.concluido_por,
+                geolocalizacao = EXCLUDED.geolocalizacao,
+                data_upload = CURRENT_TIMESTAMP;
+        """, (str(ativo), str(atividade), str(foto_url), str(os_referencia), str(concluido_por), str(geolocalizacao)))
+        conn.commit()
+        cur.close()
+    finally:
+        release_connection(conn)
+
+def carregar_evidencias_df() -> pd.DataFrame:
+    """Carrega todas as evidências do banco para exibição na Lista Detalhada."""
+    conn = get_connection()
+    try:
+        df = pd.read_sql_query("SELECT ativo, atividade, foto_url, os_referencia, data_upload FROM evidencias", conn)
+    finally:
+        release_connection(conn)
+    return df
 #endregion
 
 #region SESSÃO 2.3 ===== Export/Salvar Excel (MASTER) =====
@@ -1373,6 +1435,7 @@ def tratar_df_os(df: pd.DataFrame):
         "Ordem servico": df[col_os].astype(str).str.strip(),
         "Patio": df["PATIO_CAN"],
         "Ativo": df["ATIVO_CAN"],
+        "Atividade ativo": df["ATIVIDADE_CAN"],
         "Criticidade": df["Criticidade"],
         "Classificacao": df["Classificacao"],
         "Descrição Longa": df["DESC_LONGA_CAN"],
@@ -2369,6 +2432,29 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
             st.subheader("📋 Lista Detalhada de OS")
             df_lista = df_visao_base.copy().rename(columns={"Ordem servico": "OS"})
 
+            # --- EVIDÊNCIAS FOTOGRÁFICAS (merge com a tabela de evidências) ---
+            try:
+                df_evidencias = carregar_evidencias_df()
+                if not df_evidencias.empty and "Ativo" in df_lista.columns:
+                    col_atividade_lista = "Atividade ativo" if "Atividade ativo" in df_lista.columns else None
+                    if col_atividade_lista:
+                        df_lista = df_lista.merge(
+                            df_evidencias[["ativo", "atividade", "foto_url"]],
+                            left_on=["Ativo", col_atividade_lista],
+                            right_on=["ativo", "atividade"],
+                            how="left"
+                        )
+                        df_lista["Evidência"] = df_lista["foto_url"].apply(
+                            lambda url: f'<a href="{url}" target="_blank">📷 Ver Foto</a>' if pd.notna(url) and str(url).startswith("http") else ""
+                        )
+                        df_lista.drop(columns=["ativo", "atividade", "foto_url"], inplace=True, errors="ignore")
+                    else:
+                        df_lista["Evidência"] = ""
+                else:
+                    df_lista["Evidência"] = ""
+            except Exception:
+                df_lista["Evidência"] = ""
+
             if "Data inicial programada" in df_lista.columns:
                 df_lista["Data inicial programada"] = pd.to_datetime(df_lista["Data inicial programada"], errors="coerce").dt.strftime("%d/%m/%Y")
 
@@ -2377,7 +2463,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     df_lista["Data/Hora Realizado"], dayfirst=True, errors="coerce"
                 ).dt.strftime("%d/%m/%Y %H:%M").fillna("")
 
-            colunas_ordem = ["OS", "Patio", "Ativo", "Criticidade", "Classificacao", "Descrição Longa", "Data inicial programada", "Status da Operação", "Data/Hora Realizado", "Concluído por", "Geolocalização de Baixa"]
+            colunas_ordem = ["OS", "Patio", "Ativo", "Criticidade", "Classificacao", "Descrição Longa", "Data inicial programada", "Status da Operação", "Data/Hora Realizado", "Concluído por", "Geolocalização de Baixa", "Evidência"]
 
             for c in colunas_ordem:
                 if c not in df_lista.columns:
@@ -2800,6 +2886,17 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                                 st.info("💡 Aproxime-se do pátio e atualize sua posição em '📍 Minha Localização'.")
                                 return 
 
+                            st.markdown("---")
+                            st.markdown("#### 📷 Evidência Fotográfica")
+                            st.caption("Registre a evidência da execução. Use a câmera ou selecione da galeria.")
+                            col_cam, col_gal = st.columns(2)
+                            with col_cam:
+                                foto_camera = st.camera_input("📸 Capturar Foto", key="cam_evidencia")
+                            with col_gal:
+                                foto_galeria = st.file_uploader("🖼️ Selecionar da Galeria", type=["jpg", "jpeg", "png"], key="gal_evidencia")
+                            foto_final = foto_camera if foto_camera is not None else foto_galeria
+
+
                             conn = get_connection()
                             try:
                                 df_users_equipe = pd.read_sql_query("SELECT username FROM usuarios", conn)
@@ -2855,6 +2952,39 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                                                 equipe=equipe_str, data_inicio=data_hoje_br, hora_inicio=hora_ini_str,
                                                 data_fim=data_hoje_br, hora_fim=hora_fim_str
                                             )
+                                        # --- UPLOAD DE EVIDÊNCIA FOTOGRÁFICA ---
+                                        if foto_final is not None:
+                                            with st.spinner("📤 Enviando evidência fotográfica..."):
+                                                try:
+                                                    foto_bytes = foto_final.getvalue()
+                                                    pares_processados = set()
+                                                    for os_id_foto in set(os_selecionadas):
+                                                        mask_foto = (st.session_state["df_os"]["Ordem servico"].astype(str) == str(os_id_foto))
+                                                        df_match = st.session_state["df_os"].loc[mask_foto]
+                                                        if df_match.empty:
+                                                            continue
+                                                        ativo_val = str(df_match["Ativo"].iloc[0]).strip()
+                                                        atividade_col = "Atividade ativo" if "Atividade ativo" in df_match.columns else None
+                                                        atividade_val = str(df_match[atividade_col].iloc[0]).strip() if atividade_col else "N_A"
+                                                        par_chave = (ativo_val, atividade_val)
+                                                        if par_chave in pares_processados:
+                                                            continue
+                                                        pares_processados.add(par_chave)
+                                                        nome_seguro = re.sub(r'[^\w\-.]', '_', f"{ativo_val}__{atividade_val}.jpg")
+                                                        url_foto = upload_foto_supabase(foto_bytes, nome_seguro)
+                                                        geo_evidencia = f"Lat: {st.session_state.get('lat_partida')}, Lon: {st.session_state.get('lon_partida')}"
+                                                        upsert_evidencia(
+                                                            ativo=ativo_val,
+                                                            atividade=atividade_val,
+                                                            foto_url=url_foto,
+                                                            os_referencia=str(os_id_foto),
+                                                            concluido_por=usr_logado,
+                                                            geolocalizacao=geo_evidencia
+                                                        )
+                                                    st.info("📷 Evidência fotográfica registrada com sucesso!")
+                                                except Exception as e_foto:
+                                                    st.warning(f"⚠️ OS gravada, mas a foto falhou: {e_foto}")
+
                                         st.success(f"✅ Execução registrada com sucesso!")
                                         time.sleep(2)
                                         st.rerun()
