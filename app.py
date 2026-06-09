@@ -2937,29 +2937,22 @@ if st.session_state.get("tela_atual") == "governanca":
 #endregion
 
 #region 9.3: Gráficos de Governança e Auditoria
-
     # ==========================================
     # LINHA 1: Volume Diário vs Produtividade Acumulada
     # ==========================================
     col_l1_c1, col_l1_c2 = st.columns(2, gap="large")
-    
+
     # Cruzamento para obter o Planejado + Backlog da base mestre
     df_real_dia = df_gov_f.groupby("Data_Real").size().reset_index(name="Realizado")
     df_os_base["Data_Prog_Pure"] = pd.to_datetime(df_os_base["Data inicial programada"], errors="coerce").dt.date
     df_plan_dia = df_os_base.groupby("Data_Prog_Pure").size().reset_index(name="Planejado_Backlog")
-    
-    # 1. Faz o merge sem o fillna(0) global para não corromper as datas
+
     df_merge_vol = pd.merge(df_real_dia, df_plan_dia, left_on="Data_Real", right_on="Data_Prog_Pure", how="outer")
-    
-    # 2. Unifica a coluna de data (pega do Planejado se o Realizado for vazio)
     df_merge_vol["Data_Real"] = df_merge_vol["Data_Real"].combine_first(df_merge_vol["Data_Prog_Pure"])
-    
-    # 3. Preenche apenas as colunas numéricas com 0
     df_merge_vol["Realizado"] = df_merge_vol["Realizado"].fillna(0)
     df_merge_vol["Planejado_Backlog"] = df_merge_vol["Planejado_Backlog"].fillna(0)
-    
-    # 4. Ordena com segurança
     df_merge_vol = df_merge_vol.sort_values(by="Data_Real")
+
     eixo_x_l1 = [d.strftime("%d/%m") if hasattr(d, "strftime") else str(d) for d in df_merge_vol["Data_Real"]]
 
     with col_l1_c1:
@@ -3052,28 +3045,21 @@ if st.session_state.get("tela_atual") == "governanca":
     with col_l3_c1:
         st.markdown("#### 🕒 Aderência: Login vs. Primeiro Apontamento")
         st.caption("Evolução temporal comparando o horário de login (Azul) com a primeira baixa efetuada (Verde).")
-        
         df_logs["Data_Real_Pure"] = pd.to_datetime(df_logs["data_hora_login"]).dt.date
         df_gov_f["dt_baixa_calc"] = pd.to_datetime(df_gov_f["data_fim"] + " " + df_gov_f["hora_fim"], format="%d/%m/%Y %H:%M:%S", errors="coerce")
         df_primeira_baixa = df_gov_f.groupby(["concluido_por", "Data_Real"])["dt_baixa_calc"].min().reset_index(name="dt_baixa_1os")
-        
         df_aderencia = df_logs.merge(df_primeira_baixa, left_on=["username", "Data_Real_Pure"], right_on=["concluido_por", "Data_Real"])
-        
+
         if not df_aderencia.empty:
             df_aderencia["x_date"] = pd.to_datetime(df_aderencia["data_hora_login"]).dt.strftime("%d/%m")
-            
             dt_login = pd.to_datetime(df_aderencia["data_hora_login"])
             df_aderencia["y_login_frac"] = dt_login.dt.hour + dt_login.dt.minute / 60.0
-            
             dt_baixa = pd.to_datetime(df_aderencia["dt_baixa_1os"])
             df_aderencia["y_baixa_frac"] = dt_baixa.dt.hour + dt_baixa.dt.minute / 60.0
-            
             df_aderencia = df_aderencia.sort_values("Data_Real_Pure")
             dates_list = sorted(df_aderencia["x_date"].unique().tolist())
-            
             login_data = [[row["x_date"], round(row["y_login_frac"], 2), row["username"]] for _, row in df_aderencia.iterrows()]
             baixa_data = [[row["x_date"], round(row["y_baixa_frac"], 2), row["username"]] for _, row in df_aderencia.iterrows()]
-
             st_echarts(options={
                 "tooltip": {
                     "trigger": "item",
@@ -3089,11 +3075,7 @@ if st.session_state.get("tela_atual") == "governanca":
                 "grid": {"top": "10%", "bottom": "20%", "left": "10%", "right": "5%"},
                 "xAxis": {"type": "category", "data": dates_list},
                 "yAxis": {
-                    "type": "value",
-                    "name": "Horário (hh:mm)",
-                    "min": 0,
-                    "max": 24,
-                    "interval": 4,
+                    "type": "value", "name": "Horário (hh:mm)", "min": 0, "max": 24, "interval": 4,
                     "axisLabel": {
                         "formatter": JsCode("""function(value) {
                             var hh = Math.floor(value);
@@ -3112,7 +3094,8 @@ if st.session_state.get("tela_atual") == "governanca":
     with col_l3_c2:
         st.markdown("#### 🔝 Top Técnicos: OS por Pátio")
         st.caption("Distribuição da carga de trabalho por técnico e pátio.")
-        df_freq = df_gov_f.groupby(["Concluido Por", "Patio"]).size().unstack().fillna(0)
+        # ✅ CORREÇÃO 1: "concluido_por" em vez de "Concluido Por"
+        df_freq = df_gov_f.groupby(["concluido_por", "Patio"]).size().unstack().fillna(0)
         st.bar_chart(df_freq, height=200)
 
     # ==========================================
@@ -3121,18 +3104,26 @@ if st.session_state.get("tela_atual") == "governanca":
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("---")
     st.markdown("#### 📊 Análise de Variabilidade de Execução")
-    df_var = df_gov_f.groupby("Concluido Por")["Tempo em Minutos"].mean().reset_index()
-    st.bar_chart(df_var.set_index("Concluido Por"), height=180)
+    # ✅ CORREÇÃO 2: "concluido_por" e "Tempo_Minutos" (nomes reais das colunas)
+    df_var = df_gov_f.groupby("concluido_por")["Tempo_Minutos"].mean().reset_index()
+    st.bar_chart(df_var.set_index("concluido_por"), height=180)
 
     # ==========================================
     # LINHA 5: Tabela de Auditoria de Apontamentos (GPS)
     # ==========================================
     st.markdown("---")
     st.markdown("#### 📍 Tabela de Auditoria de Apontamentos (GPS)")
-    
-    df_auditoria = df_gov_f[["Ordem servico", "concluido_por", "data_inicio", "hora_fim", "geolocalizacao_baixa", "equipe", "Tempo_Minutos"]].copy().sort_values(by=["data_inicio", "hora_fim"], ascending=[False, False]).rename(columns={"Ordem servico": "OS", "Concluido Por": "Apontador Principal", "data_inicio": "Data", "hora_fim": "Hora Apontada", "geolocalizacao_baixa": "Localização do Celular", "equipe": "Co-Executantes", "Tempo_Minutos": "Tempo Gasto (min)"})
+    # ✅ CORREÇÃO 3: rename com "concluido_por" (nome real da coluna)
+    df_auditoria = df_gov_f[["Ordem servico", "concluido_por", "data_inicio", "hora_fim", "geolocalizacao_baixa", "equipe", "Tempo_Minutos"]].copy().sort_values(by=["data_inicio", "hora_fim"], ascending=[False, False]).rename(columns={
+        "Ordem servico": "OS",
+        "concluido_por": "Apontador Principal",
+        "data_inicio": "Data",
+        "hora_fim": "Hora Apontada",
+        "geolocalizacao_baixa": "Localização do Celular",
+        "equipe": "Co-Executantes",
+        "Tempo_Minutos": "Tempo Gasto (min)"
+    })
     df_auditoria["Tempo Gasto (min)"] = df_auditoria["Tempo Gasto (min)"].round(0).astype(int)
-    
     st.dataframe(df_auditoria.style.map(lambda v: 'background-color: #FEE2E2; color: #991B1B; font-weight: bold;' if pd.notna(v) and ('Base' in str(v) or 'Sede' in str(v)) else 'color: #065F46;', subset=["Localização do Celular"]), use_container_width=True, height=300, hide_index=True)
     st.stop()
 #endregion
