@@ -3112,13 +3112,8 @@ if st.session_state.get("tela_atual") == "governanca":
     with col_l3_c2:
         st.markdown("#### 🔝 Top Técnicos: OS por Pátio")
         st.caption("Distribuição da carga de trabalho por técnico e pátio.")
-        df_freq = df_gov_f.groupby(["concluido_por", "Patio"]).size().unstack().fillna(0)
+        df_freq = df_gov_f.groupby(["Concluido Por", "Patio"]).size().unstack().fillna(0)
         st.bar_chart(df_freq, height=200)
-
-        # Tabela Estruturada do Gráfico de Pátios com nomes de colunas corrigidos
-        df_top_table = df_gov_f.groupby(["concluido_por", "Patio"]).size().reset_index(name="Quantidade")
-        df_top_table = df_top_table.rename(columns={"concluido_por": "Concluído Por", "Patio": "Pátio"}).sort_values(by="Quantidade", ascending=False)
-        st.dataframe(df_top_table, use_container_width=True, height=150, hide_index=True)
 
     # ==========================================
     # LINHA 4: Análise de Variabilidade de Execução
@@ -3126,13 +3121,8 @@ if st.session_state.get("tela_atual") == "governanca":
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("---")
     st.markdown("#### 📊 Análise de Variabilidade de Execução")
-    df_var = df_gov_f.groupby("concluido_por")["Tempo_Minutos"].mean().reset_index()
-    st.bar_chart(df_var.set_index("concluido_por"), height=180)
-
-    # Ajuste de títulos das colunas na tabela de variabilidade conforme solicitado
-    df_var_table = df_var.copy().rename(columns={"concluido_por": "Concluído Por", "Tempo_Minutos": "Tempo Total (Min)"})
-    df_var_table["Tempo Total (Min)"] = df_var_table["Tempo Total (Min)"].round(1).astype(str) + " min"
-    st.dataframe(df_var_table, use_container_width=True, height=150, hide_index=True)
+    df_var = df_gov_f.groupby("Concluido Por")["Tempo em Minutos"].mean().reset_index()
+    st.bar_chart(df_var.set_index("Concluido Por"), height=180)
 
     # ==========================================
     # LINHA 5: Tabela de Auditoria de Apontamentos (GPS)
@@ -3140,7 +3130,7 @@ if st.session_state.get("tela_atual") == "governanca":
     st.markdown("---")
     st.markdown("#### 📍 Tabela de Auditoria de Apontamentos (GPS)")
     
-    df_auditoria = df_gov_f[["Ordem servico", "concluido_por", "data_inicio", "hora_fim", "geolocalizacao_baixa", "equipe", "Tempo_Minutos"]].copy().sort_values(by=["data_inicio", "hora_fim"], ascending=[False, False]).rename(columns={"Ordem servico": "OS", "concluido_por": "Apontador Principal", "data_inicio": "Data", "hora_fim": "Hora Apontada", "geolocalizacao_baixa": "Localização do Celular", "equipe": "Co-Executantes", "Tempo_Minutos": "Tempo Gasto (min)"})
+    df_auditoria = df_gov_f[["Ordem servico", "concluido_por", "data_inicio", "hora_fim", "geolocalizacao_baixa", "equipe", "Tempo_Minutos"]].copy().sort_values(by=["data_inicio", "hora_fim"], ascending=[False, False]).rename(columns={"Ordem servico": "OS", "Concluido Por": "Apontador Principal", "data_inicio": "Data", "hora_fim": "Hora Apontada", "geolocalizacao_baixa": "Localização do Celular", "equipe": "Co-Executantes", "Tempo_Minutos": "Tempo Gasto (min)"})
     df_auditoria["Tempo Gasto (min)"] = df_auditoria["Tempo Gasto (min)"].round(0).astype(int)
     
     st.dataframe(df_auditoria.style.map(lambda v: 'background-color: #FEE2E2; color: #991B1B; font-weight: bold;' if pd.notna(v) and ('Base' in str(v) or 'Sede' in str(v)) else 'color: #065F46;', subset=["Localização do Celular"]), use_container_width=True, height=300, hide_index=True)
