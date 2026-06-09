@@ -3043,7 +3043,7 @@ if st.session_state.get("tela_atual") == "governanca":
         }, height="320px", key="gov_heatmap_l2")
 
     # ==========================================
-    # LINHA 3: Aderência (Boxplot + Tabela) vs Top Técnicos (Barra + Tabela)
+    # LINHA 3: Aderência (Scatter Colors) vs Top Técnicos (Barra + Tabela)
     # ==========================================
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("---")
@@ -3051,50 +3051,74 @@ if st.session_state.get("tela_atual") == "governanca":
 
     with col_l3_c1:
         st.markdown("#### 🕒 Aderência: Login vs. Primeiro Apontamento")
+        st.caption("Evolução temporal comparando o horário de login (Azul) com a primeira baixa efetuada (Verde).")
+        
         df_logs["Data_Real_Pure"] = pd.to_datetime(df_logs["data_hora_login"]).dt.date
         df_gov_f["dt_baixa_calc"] = pd.to_datetime(df_gov_f["data_fim"] + " " + df_gov_f["hora_fim"], format="%d/%m/%Y %H:%M:%S", errors="coerce")
         df_primeira_baixa = df_gov_f.groupby(["concluido_por", "Data_Real"])["dt_baixa_calc"].min().reset_index(name="dt_baixa_1os")
         
         df_aderencia = df_logs.merge(df_primeira_baixa, left_on=["username", "Data_Real_Pure"], right_on=["concluido_por", "Data_Real"])
-        df_aderencia["Tempo_Min"] = (df_aderencia["dt_baixa_1os"] - pd.to_datetime(df_aderencia["data_hora_login"])).dt.total_seconds() / 60.0
-        df_aderencia = df_aderencia[df_aderencia["Tempo_Min"] >= 0].copy()
-
-        # Renderização do Boxplot Estatístico nativo Echarts
-        box_vals = df_aderencia["Tempo_Min"].dropna().tolist()
-        if box_vals:
-            b_data = [[float(np.min(box_vals)), float(np.percentile(box_vals, 25)), float(np.median(box_vals)), float(np.percentile(box_vals, 75)), float(np.max(box_vals))]]
-        else:
-            b_data = []
-
-        st_echarts(options={
-            "title": {"text": "Distribuição de Desvio Inicial (Minutos)", "left": "center", "textStyle": {"fontSize": 12, "color": "#64748B"}},
-            "tooltip": {"trigger": "item", "axisPointer": {"type": "shadow"}},
-            "xAxis": {"type": "category", "data": ["Filtro Atual"]},
-            "yAxis": {"type": "value", "name": "Minutos Gasto"},
-            "series": [{"name": "Aderência", "type": "boxplot", "data": b_data, "itemStyle": {"color": "#8B5CF6", "borderColor": "#6D28D9"}}]
-        }, height="180px", key="gov_boxplot_aderencia")
-
-        # Tabela Estruturada de Aderência com colunas customizadas
-        df_tab_ade = pd.DataFrame()
+        
         if not df_aderencia.empty:
-            df_tab_ade["Data Hora 1º Login"] = pd.to_datetime(df_aderencia["data_hora_login"]).dt.strftime("%d/%m %H:%M")
-            df_tab_ade["Concluido por"] = df_aderencia["username"]
-            df_tab_ade["Data Hora Baixa 1º OS"] = pd.to_datetime(df_aderencia["dt_baixa_1os"]).dt.strftime("%d/%m %H:%M")
-            df_tab_ade["Tempo em Minutos"] = df_aderencia["Tempo_Min"].round(0).astype(int).astype(str) + " min"
-        else:
-            df_tab_ade = pd.DataFrame(columns=["Data Hora 1º Login", "Concluido por", "Data Hora Baixa 1º OS", "Tempo em Minutos"])
+            df_aderencia["x_date"] = pd.to_datetime(df_aderencia["data_hora_login"]).dt.strftime("%d/%m")
+            
+            dt_login = pd.to_datetime(df_aderencia["data_hora_login"])
+            df_aderencia["y_login_frac"] = dt_login.dt.hour + dt_login.dt.minute / 60.0
+            
+            dt_baixa = pd.to_datetime(df_aderencia["dt_baixa_1os"])
+            df_aderencia["y_baixa_frac"] = dt_baixa.dt.hour + dt_baixa.dt.minute / 60.0
+            
+            df_aderencia = df_aderencia.sort_values("Data_Real_Pure")
+            dates_list = sorted(df_aderencia["x_date"].unique().tolist())
+            
+            login_data = [[row["x_date"], round(row["y_login_frac"], 2), row["username"]] for _, row in df_aderencia.iterrows()]
+            baixa_data = [[row["x_date"], round(row["y_baixa_frac"], 2), row["username"]] for _, row in df_aderencia.iterrows()]
 
-        st.dataframe(df_tab_ade, use_container_width=True, height=180, hide_index=True)
+            st_echarts(options={
+                "tooltip": {
+                    "trigger": "item",
+                    "formatter": JsCode("""function (p) {
+                        var hh = Math.floor(p.data[1]);
+                        var mm = Math.round((p.data[1] - hh) * 60);
+                        if (mm == 60) { hh += 1; mm = 0; }
+                        var timeStr = (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm;
+                        return '<b>' + p.data[2] + '</b><br>' + p.seriesName + ': ' + timeStr + '<br>Data: ' + p.data[0];
+                    }""")
+                },
+                "legend": {"data": ["Login", "Primeira Baixa"], "bottom": "0%"},
+                "grid": {"top": "10%", "bottom": "20%", "left": "10%", "right": "5%"},
+                "xAxis": {"type": "category", "data": dates_list},
+                "yAxis": {
+                    "type": "value",
+                    "name": "Horário (hh:mm)",
+                    "min": 0,
+                    "max": 24,
+                    "interval": 4,
+                    "axisLabel": {
+                        "formatter": JsCode("""function(value) {
+                            var hh = Math.floor(value);
+                            return (hh < 10 ? '0' : '') + hh + ':00';
+                        }""")
+                    }
+                },
+                "series": [
+                    {"name": "Login", "type": "scatter", "data": login_data, "symbolSize": 12, "itemStyle": {"color": "#3B82F6"}},
+                    {"name": "Primeira Baixa", "type": "scatter", "data": baixa_data, "symbolSize": 12, "itemStyle": {"color": "#10B981"}}
+                ]
+            }, height="350px", key="gov_scatter_aderencia_colors")
+        else:
+            st.info("Dados insuficientes para cruzar o horário de login com o apontamento da OS.")
 
     with col_l3_c2:
         st.markdown("#### 🔝 Top Técnicos: OS por Pátio")
+        st.caption("Distribuição da carga de trabalho por técnico e pátio.")
         df_freq = df_gov_f.groupby(["concluido_por", "Patio"]).size().unstack().fillna(0)
-        st.bar_chart(df_freq, height=180)
+        st.bar_chart(df_freq, height=200)
 
-        # Tabela Estruturada do Gráfico de Pátios
+        # Tabela Estruturada do Gráfico de Pátios com nomes de colunas corrigidos
         df_top_table = df_gov_f.groupby(["concluido_por", "Patio"]).size().reset_index(name="Quantidade")
         df_top_table = df_top_table.rename(columns={"concluido_por": "Concluído Por", "Patio": "Pátio"}).sort_values(by="Quantidade", ascending=False)
-        st.dataframe(df_top_table, use_container_width=True, height=180, hide_index=True)
+        st.dataframe(df_top_table, use_container_width=True, height=150, hide_index=True)
 
     # ==========================================
     # LINHA 4: Análise de Variabilidade de Execução
@@ -3105,7 +3129,7 @@ if st.session_state.get("tela_atual") == "governanca":
     df_var = df_gov_f.groupby("concluido_por")["Tempo_Minutos"].mean().reset_index()
     st.bar_chart(df_var.set_index("concluido_por"), height=180)
 
-    # Ajuste de títulos das colunas na tabela de variabilidade
+    # Ajuste de títulos das colunas na tabela de variabilidade conforme solicitado
     df_var_table = df_var.copy().rename(columns={"concluido_por": "Concluído Por", "Tempo_Minutos": "Tempo Total (Min)"})
     df_var_table["Tempo Total (Min)"] = df_var_table["Tempo Total (Min)"].round(1).astype(str) + " min"
     st.dataframe(df_var_table, use_container_width=True, height=150, hide_index=True)
