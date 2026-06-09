@@ -1315,7 +1315,10 @@ def carregar_base_sem_overlay(
     etl_version: str
 ) -> pd.DataFrame:
     if usar_sim:
-        return gerar_base_simulada(qtd=qtd_sim, seed=seed_sim)
+        pct_p = st.session_state.get("sim_pct_pendente", 45)
+        pct_ok = st.session_state.get("sim_pct_prazo", 40)
+        pct_a = st.session_state.get("sim_pct_atraso", 15)
+        return gerar_base_simulada(qtd=qtd_sim, seed=seed_sim, pct_p=pct_p, pct_ok=pct_ok, pct_a=pct_a)
 
     # 1. Conecta ao Neon e puxa os dados salvos pelo Admin/Assistente
     conn = get_connection()
@@ -1414,26 +1417,21 @@ def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, bai
 # ==========================================
 
 #region SESSÃO EXTRA: Gerador de base simulada (para testar KPIs e gráficos)
-def gerar_base_simulada(qtd: int = 800, seed: int = 42) -> pd.DataFrame:
+def gerar_base_simulada(qtd: int = 800, seed: int = 42, pct_p: int = 45, pct_ok: int = 40, pct_a: int = 15) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
 
-    patios = [
-        "IAA", "IEF", "OLU", "IPA", "IRS", "IPG", "ICG",
-        "IRG", "IOF", "ISU", "ILA", "IJN", "ZPD", "IIP"
-]
-
+    patios = ["IAA", "IEF", "OLU", "IPA", "IRS", "IPG", "ICG", "IRG", "IOF", "ISU", "ILA", "IJN", "ZPD", "IIP"]
     prioridades = ["1-Muito Alta", "2-Alta", "3-Média", "4-Baixa"]
     prob_prio = [0.18, 0.32, 0.30, 0.20]
-
-    atividades = [
-        "EE_INS_SEG_C_I_MAQ CHAVE MOLA_1800",
-        "EE_MAN_CONF_C_I_CANALETA SUBESTACAO_0720",
-        "EE_INS_CONF_S_I_BATERIAS_0360"
-    ]
+    atividades = ["EE_INS_SEG_C_I_MAQ CHAVE MOLA_1800", "EE_MAN_CONF_C_I_CANALETA SUBESTACAO_0720", "EE_INS_CONF_S_I_BATERIAS_0360"]
     prob_ativ = [0.35, 0.30, 0.35]
 
+    # Normaliza as porcentagens recebidas da Sidebar
+    total_pct = pct_p + pct_ok + pct_a
+    if total_pct == 0: prob_status = [0.45, 0.40, 0.15]
+    else: prob_status = [pct_p / total_pct, pct_ok / total_pct, pct_a / total_pct]
+
     status_list = ["Não Realizado", "Realizado", "Realizado Fora da Data de Programação"]
-    prob_status = [0.45, 0.40, 0.15]
 
     hoje = datetime.now()
     dias_atras = rng.integers(0, 30, size=qtd)
@@ -1452,34 +1450,30 @@ def gerar_base_simulada(qtd: int = 800, seed: int = 42) -> pd.DataFrame:
     })
 
     df["Classificacao"] = df["Atividade ativo"].apply(classificar_atividade)
-
     crit = df["Prioridade"].apply(extrair_criticidade)
     df["Criticidade_rank"] = [c[0] for c in crit]
     df["Criticidade"] = [c[1] for c in crit]
-
-    df["Nivel_Prioridade"] = df.apply(
-        lambda r: calcular_nivel_prioridade(r["Classificacao"], r["Criticidade_rank"]),
-        axis=1
-    )
+    df["Nivel_Prioridade"] = df.apply(lambda r: calcular_nivel_prioridade(r["Classificacao"], r["Criticidade_rank"]), axis=1)
     df["Desc_Prioridade"] = df["Classificacao"] + " | " + df["Criticidade"]
 
     df["Status da Operação"] = rng.choice(status_list, size=qtd, p=prob_status)
     df["Data/Hora Realizado"] = ""
 
+    # --- MOCK: CRIA DADOS DE CAMPO PARA ALIMENTAR A GOVERNANÇA ---
+    tecnicos_mock = ["Julio Paz (Sim)", "Carlos Silva (Sim)", "Ana Souza (Sim)", "Roberto Gomes (Sim)"]
+    baixas_sim = []
+
     for i in range(qtd):
         stt = df.at[i, "Status da Operação"]
-        if stt == "Não Realizado":
-            continue
+        if stt == "Não Realizado": continue
 
         prog = pd.to_datetime(df.at[i, "Data inicial programada"])
         turno = rng.choice(["00h-07h", "07h-16h", "16h-00h"], p=[0.15, 0.60, 0.25])
 
-        if turno == "00h-07h":
-            hh = int(rng.integers(0, 7))
-        elif turno == "07h-16h":
-            hh = int(rng.integers(7, 16))
-        else:
-            hh = int(rng.integers(16, 24))
+        if turno == "00h-07h": hh = int(rng.integers(0, 7))
+        elif turno == "07h-16h": hh = int(rng.integers(7, 16))
+            
+        else: hh = int(rng.integers(16, 24))
         mm = int(rng.integers(0, 60))
 
         if stt == "Realizado":
@@ -1491,6 +1485,32 @@ def gerar_base_simulada(qtd: int = 800, seed: int = 42) -> pd.DataFrame:
 
         real_dt = real_date.replace(hour=hh, minute=mm, second=0, microsecond=0)
         df.at[i, "Data/Hora Realizado"] = formatar_dt_br(real_dt)
+
+        # Gera Horários de Início e Fim da Baixa
+        duracao_mins = int(rng.integers(20, 240))
+        ini_dt = real_dt - pd.Timedelta(minutes=duracao_mins)
+        tec = rng.choice(tecnicos_mock)
+            
+        # Simula Fraude de GPS para pegar na Auditoria (10% de chance)
+        gps_str = f"Lat: -23.{rng.integers(100,999)}, Lon: -46.{rng.integers(100,999)}"
+        if rng.random() < 0.1: gps_str = "Sede IPA (Lat: -23.767, Lon: -46.344)"
+
+        baixas_sim.append({
+            "os": df.at[i, "Ordem servico"], "status": stt, "realizado_em": formatar_dt_br(real_dt),
+            "coordenacao": df.at[i, "Coordenacao"], "concluido_por": tec, "geolocalizacao_baixa": gps_str,
+            "equipe": "", "data_inicio": ini_dt.strftime("%d/%m/%Y"), "hora_inicio": ini_dt.strftime("%H:%M:%S"),
+            "data_fim": real_dt.strftime("%d/%m/%Y"), "hora_fim": real_dt.strftime("%H:%M:%S")
+        })
+
+    # Armazena logs fakes na sessão para não poluir o banco de dados real
+    st.session_state["df_baixas_sim"] = pd.DataFrame(baixas_sim)
+
+    logs_sim = []
+    for tec in tecnicos_mock:
+        for dia in pd.date_range(end=datetime.now(), periods=15):
+            login_dt = dia.replace(hour=int(rng.integers(6,8)), minute=int(rng.integers(0,59)))
+            logs_sim.append({"username": tec, "data_hora_login": login_dt})
+    st.session_state["df_logs_sim"] = pd.DataFrame(logs_sim)
 
     return df
 #endregion
@@ -1791,6 +1811,12 @@ if "Gestão de Usuários" in st.session_state.get("governanca", ""):
         if st.session_state.get("chk_sim"):
             st.slider("Volume de OS simuladas", 100, 4000, 1200, 100, key="qtd_sim")
             st.number_input("Seed (repete mesmos dados)", value=42, key="seed_sim")
+            
+            st.markdown("<small style='color: #CBD5E1;'>Distribuição da Simulação</small>", unsafe_allow_html=True)
+            col_s1, col_s2, col_s3 = st.columns(3)
+            with col_s1: st.number_input("% Pendente", min_value=0, max_value=100, value=45, key="sim_pct_pendente")
+            with col_s2: st.number_input("% No Prazo", min_value=0, max_value=100, value=40, key="sim_pct_prazo")
+            with col_s3: st.number_input("% Atrasado", min_value=0, max_value=100, value=15, key="sim_pct_atraso")
         else:
             if st.button("🔄 Recarregar dados (ETL)", use_container_width=True):
                 st.cache_data.clear(); st.rerun()
@@ -2837,10 +2863,16 @@ if st.session_state.get("tela_atual") == "governanca":
 
     # --- LÓGICA DE AUDITORIA E GRÁFICOS ---
     with st.spinner("Compilando logs de auditoria e telemetria..."):
-        conn = get_connection()
-        df_baixas_full = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim FROM baixas", conn)
-        df_logs = pd.read_sql_query("SELECT username, data_hora_login FROM logs_acesso", conn)
-        release_connection(conn)
+        if st.session_state.get("chk_sim", False):
+            # MODO SIMULAÇÃO
+            df_baixas_full = st.session_state.get("df_baixas_sim", pd.DataFrame())
+            df_logs = st.session_state.get("df_logs_sim", pd.DataFrame())
+        else:
+            # MODO PRODUÇÃO (SGBD)
+            conn = get_connection()
+            df_baixas_full = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim FROM baixas", conn)
+            df_logs = pd.read_sql_query("SELECT username, data_hora_login FROM logs_acesso", conn)
+            release_connection(conn)
         
         df_os_base = st.session_state.get("df_os", pd.DataFrame())
         
