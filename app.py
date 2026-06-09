@@ -195,7 +195,7 @@ if not st.session_state["logged_in"]:
             with st.form("form_login"):
                 user_input = st.text_input("Usuário")
                 pass_input = st.text_input("Senha", type="password")
-                submit = st.form_submit_button("Entrar", width="stretch")
+                submit = st.form_submit_button("Entrar", use_container_width=True)
             
             if submit:
                 conn = get_connection()
@@ -996,7 +996,7 @@ def render_tela_admin():
     arquivo_upload = st.file_uploader("Selecione a planilha Excel ou CSV", type=["csv", "xlsx"])
     
     if arquivo_upload is not None and mes_ref:
-        if st.button("🚀 Processar e Salvar no Banco", width="stretch", type="primary"):
+        if st.button("🚀 Processar e Salvar no Banco", use_container_width=True, type="primary"):
             
             escopo_user = st.session_state.get("escopo", "Todas")
             if escopo_user != "Todas" and escopo_user != coord_upload:
@@ -1079,7 +1079,7 @@ def render_tela_admin():
                             data=arquivo_sap,
                             file_name=f"Baixa_Massa_SAP_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            use_container_width="content",
+                            use_container_width=False,
                             type="primary"
                         )
                 else:
@@ -1638,7 +1638,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # 5.1.2 Logotipo
-st.sidebar.image("logo_mrs.png", width="stretch")
+st.sidebar.image("logo_mrs.png", use_container_width=True)
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 # 5.1.3 Navegação Inteligente (Baseada na Governança)
@@ -1653,24 +1653,21 @@ gov_usuario = st.session_state.get("governanca", "")
 col_nav1, col_nav2 = st.sidebar.columns(2)
 with col_nav1:
     if "Painel Gerencial" in gov_usuario or "Mapa de Campo" in gov_usuario:
-        if st.button("📊 Painel", width="stretch"): 
+        if st.button("📊 Painel", use_container_width=True): 
             st.session_state["tela_atual"] = "dashboard"
-            st.session_state["gov_auth_ok"] = False # Trava a governança ao sair
             st.rerun()
 with col_nav2:
     if "Upload de Dados" in gov_usuario:
-        if st.button("⚙️ Dados", width="stretch"): 
+        if st.button("⚙️ Dados", use_container_width=True): 
             st.session_state["tela_atual"] = "admin"
-            st.session_state["gov_auth_ok"] = False # Trava a governança ao sair
             st.rerun()
 
-# Botão exclusivo para liderança - NAVEGAÇÃO DIRETA DE 1 CLIQUE
+# Botão exclusivo para liderança (CORRIGIDO PARA A SIDEBAR)
 if "Gestão de Usuários" in gov_usuario or "Exportar SAP" in gov_usuario:
-    if st.sidebar.button("⚖️ Governança (Auditoria)", width="stretch"): 
+    if st.sidebar.button("🛡️ Governança (Auditoria)", use_container_width=True): 
         st.session_state["tela_atual"] = "governanca"
         st.rerun()
 
-# Trava de renderização para a tela de Upload de Dados
 if st.session_state.get("tela_atual") == "admin":
     render_tela_admin()
     st.stop()
@@ -1685,7 +1682,7 @@ if "Painel Gerencial" in gov_usuario:
 else:
     filtro_visao = st.session_state.get("escopo", "Todas")
     st.sidebar.info(f"Visão Restrita: {filtro_visao}")
-#endregion
+# -------------------------------------------------------
 
 #region SESSÃO 5.2: Carregamento da base operacional
 usar_sim = st.session_state.get("chk_sim", False)
@@ -1735,7 +1732,7 @@ if st.session_state["perfil"] != "Técnico":
         value=(min_date, max_date),
         min_value=min_date,
         max_value=max_date,
-        format="DD/MM/YYYY"  
+        format="DD/MM/YYYY"  # <--- Essa linha mágica resolve a exibição visual!
     )
 
     if isinstance(data_selecionada, tuple):
@@ -1794,7 +1791,7 @@ if "Gestão de Usuários" in st.session_state.get("governanca", ""):
             st.slider("Volume de OS simuladas", 100, 4000, 1200, 100, key="qtd_sim")
             st.number_input("Seed (repete mesmos dados)", value=42, key="seed_sim")
         else:
-            if st.button("🔄 Recarregar dados (ETL)", width="stretch"):
+            if st.button("🔄 Recarregar dados (ETL)", use_container_width=True):
                 st.cache_data.clear(); st.rerun()
 
         st.markdown("<div style='background-color: #FF4B4B; color: #FFFFFF; font-weight: bold; text-align: center; padding: 8px; border-radius: 6px; margin-top: 15px; margin-bottom: 10px;'>Gestão de Usuários</div>", unsafe_allow_html=True)
@@ -1907,10 +1904,10 @@ with col_titulo:
 with col_acoes:
     st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
     
-    if st.button("🔄 Atualizar", width="stretch"):
+    if st.button("🔄 Atualizar", use_container_width=True):
         st.rerun()
         
-    if st.button("🔑 Trocar", width="stretch"):
+    if st.button("🔑 Trocar", use_container_width=True):
         usr_atual = st.session_state["username"]
         conn = get_connection()
         cur = conn.cursor()
@@ -1925,7 +1922,7 @@ with col_acoes:
         st.session_state["reset_user"] = usr_atual
         st.rerun()
         
-    if st.button("🚪 Sair", width="stretch"):
+    if st.button("🚪 Sair", use_container_width=True):
         st.session_state.clear() 
         st.session_state["logged_in"] = False
         st.rerun()
@@ -2016,212 +2013,218 @@ st.markdown("---")
 
 #region SESSÃO 8: Abas e Renderização dos Gráficos
 
-tab1, tab2 = st.tabs(["📋 Painel de Controle", "📊 Indicadores Gerenciais"])
+# ==========================================
+# ROTEAMENTO PRINCIPAL (CONTROLE DE TELAS)
+# ==========================================
+if st.session_state.get("tela_atual", "dashboard") == "dashboard":
+    
+    # Apenas 2 Abas! A Governança agora é uma tela separada.
+    tab1, tab2 = st.tabs(["📊 Visão Gerencial", "🗺️ Roteirização e Mapa de Campo"])
 
-#region 8.2: ABA 1 — Visão Gerencial (Indicadores)
-with tab1:
-    if st.session_state["perfil"] == "Técnico":
-        st.info("🔒 Seu perfil (Técnico) tem foco operacional. Por favor, utilize a aba 'Roteirização e Mapa de Campo'.")
-    else:
-        df_visao_base = df_filtrado.copy()
+    #region 8.2: ABA 1 — Visão Gerencial (Indicadores)
+    with tab1:
+        if st.session_state["perfil"] == "Técnico":
+            st.info("🔒 Seu perfil (Técnico) tem foco operacional. Por favor, utilize a aba 'Roteirização e Mapa de Campo'.")
+        else:
+            df_visao_base = df_filtrado.copy()
 
-        cor_plan = "#64748B"      
-        cor_real = "#3B82F6"      
-        cor_prazo = "#10B981"     
-        cor_atraso = "#F59E0B"    
-        cor_pendente = "#FF4B4B"  
+            cor_plan = "#64748B"      
+            cor_real = "#3B82F6"      
+            cor_prazo = "#10B981"     
+            cor_atraso = "#F59E0B"    
+            cor_pendente = "#FF4B4B"  
 
-        if taxa_conclusao <= 25: gauge_color = cor_pendente
-        elif taxa_conclusao <= 50: gauge_color = cor_atraso
-        elif taxa_conclusao <= 80: gauge_color = cor_prazo
-        else: gauge_color = cor_real
+            if taxa_conclusao <= 25: gauge_color = cor_pendente
+            elif taxa_conclusao <= 50: gauge_color = cor_atraso
+            elif taxa_conclusao <= 80: gauge_color = cor_prazo
+            else: gauge_color = cor_real
 
-        with st.expander("Resumo Executivo (Geral)", expanded=True):
-            col_g1, col_g2, col_g5 = st.columns(3)
+            with st.expander("Resumo Executivo (Geral)", expanded=True):
+                col_g1, col_g2, col_g5 = st.columns(3)
 
-            with col_g1:
-                st.markdown("#### Realizado x Planejado")
-                gauge_options = {
-                    "tooltip": {"formatter": "{a} <br/>{b}: {c}%"},
-                    "series": [{
-                        "name": "Conclusão", "type": "gauge", "min": 0, "max": 100, "radius": "75%",
-                        "progress": {"show": True, "width": 14, "itemStyle": {"color": gauge_color}},
-                        "axisLine": {
-                            "lineStyle": {
-                                "width": 14,
-                                "color": [[0.25, cor_pendente], [0.50, cor_atraso], [0.80, cor_prazo], [1.00, cor_real]]
-                            }
-                        },
-                        "pointer": {"show": True, "length": "60%", "width": 6},
-                        "itemStyle": {"color": gauge_color},
-                        "title": {"show": True, "offsetCenter": [0, "70%"], "fontSize": 14},
-                        "detail": {
-                            "valueAnimation": True, "offsetCenter": [0, "40%"],
-                            "formatter": f"{taxa_conclusao:.1f}%\n{realizado_total} / {total_os}", "fontSize": 16
-                        },
-                        "data": [{"value": round(taxa_conclusao, 1), "name": "Realizado"}],
-                    }],
-                }
-                st_echarts(options=gauge_options, height="350px", theme="streamlit", key="aba1_gauge")
+                with col_g1:
+                    st.markdown("#### Realizado x Planejado")
+                    gauge_options = {
+                        "tooltip": {"formatter": "{a} <br/>{b}: {c}%"},
+                        "series": [{
+                            "name": "Conclusão", "type": "gauge", "min": 0, "max": 100, "radius": "75%",
+                            "progress": {"show": True, "width": 14, "itemStyle": {"color": gauge_color}},
+                            "axisLine": {
+                                "lineStyle": {
+                                    "width": 14,
+                                    "color": [[0.25, cor_pendente], [0.50, cor_atraso], [0.80, cor_prazo], [1.00, cor_real]]
+                                }
+                            },
+                            "pointer": {"show": True, "length": "60%", "width": 6},
+                            "itemStyle": {"color": gauge_color},
+                            "title": {"show": True, "offsetCenter": [0, "70%"], "fontSize": 14},
+                            "detail": {
+                                "valueAnimation": True, "offsetCenter": [0, "40%"],
+                                "formatter": f"{taxa_conclusao:.1f}%\n{realizado_total} / {total_os}", "fontSize": 16
+                            },
+                            "data": [{"value": round(taxa_conclusao, 1), "name": "Realizado"}],
+                        }],
+                    }
+                    st_echarts(options=gauge_options, height="350px", theme="streamlit", key="aba1_gauge")
 
-            with col_g2:
-                st.markdown("#### Distribuição por Status")
-                rosca_options = {
-                    "tooltip": {"trigger": "item", "formatter": "{b}: {c} ({d}%)"},
-                    "legend": {"orient": "horizontal", "bottom": "0%"},
-                    "series": [{
-                        "name": "Status", "type": "pie", "radius": ["45%", "75%"],
-                        "data": [
-                            {"value": realizado_prazo, "name": "No Prazo", "itemStyle": {"color": cor_prazo}},
-                            {"value": realizado_atraso, "name": "Atrasado", "itemStyle": {"color": cor_atraso}},
-                            {"value": nao_realizado, "name": "Pendentes", "itemStyle": {"color": cor_pendente}},
-                        ],
-                        "label": {"show": True, "position": "inside", "formatter": "{c}\n({d}%)", "color": "#FFFFFF", "fontWeight": "bold"},
-                    }],
-                }
-                st_echarts(options=rosca_options, height="350px", theme="streamlit", key="aba1_rosca")
+                with col_g2:
+                    st.markdown("#### Distribuição por Status")
+                    rosca_options = {
+                        "tooltip": {"trigger": "item", "formatter": "{b}: {c} ({d}%)"},
+                        "legend": {"orient": "horizontal", "bottom": "0%"},
+                        "series": [{
+                            "name": "Status", "type": "pie", "radius": ["45%", "75%"],
+                            "data": [
+                                {"value": realizado_prazo, "name": "No Prazo", "itemStyle": {"color": cor_prazo}},
+                                {"value": realizado_atraso, "name": "Atrasado", "itemStyle": {"color": cor_atraso}},
+                                {"value": nao_realizado, "name": "Pendentes", "itemStyle": {"color": cor_pendente}},
+                            ],
+                            "label": {"show": True, "position": "inside", "formatter": "{c}\n({d}%)", "color": "#FFFFFF", "fontWeight": "bold"},
+                        }],
+                    }
+                    st_echarts(options=rosca_options, height="350px", theme="streamlit", key="aba1_rosca")
 
-            with col_g5:
-                st.markdown("#### Plan x Real Acumulado")
-                df_area = df_visao_base.copy()
-                df_area["dia_programado"] = pd.to_datetime(df_area["Data inicial programada"], errors="coerce").dt.normalize()
+                with col_g5:
+                    st.markdown("#### Plan x Real Acumulado")
+                    df_area = df_visao_base.copy()
+                    df_area["dia_programado"] = pd.to_datetime(df_area["Data inicial programada"], errors="coerce").dt.normalize()
 
-                realizado_diario_a = (df_area[df_area["Status_norm"].isin(_status_prazo | _status_atraso)].groupby("dia_realizado").size().rename("Realizado_Dia"))
-                planejado_diario_a = (df_area.groupby("dia_programado").size().rename("Planejado_Dia"))
+                    realizado_diario_a = (df_area[df_area["Status_norm"].isin(_status_prazo | _status_atraso)].groupby("dia_realizado").size().rename("Realizado_Dia"))
+                    planejado_diario_a = (df_area.groupby("dia_programado").size().rename("Planejado_Dia"))
 
-                _datas_a = pd.Index([]).union(realizado_diario_a.index).union(planejado_diario_a.index)
+                    _datas_a = pd.Index([]).union(realizado_diario_a.index).union(planejado_diario_a.index)
 
-                if len(_datas_a) > 0:
-                    _idx_da = pd.date_range(start=_datas_a.min(), end=_datas_a.max(), freq="D")
-                    _real_acum = realizado_diario_a.reindex(_idx_da, fill_value=0).cumsum()
-                    _plan_acum = planejado_diario_a.reindex(_idx_da, fill_value=0).cumsum()
+                    if len(_datas_a) > 0:
+                        _idx_da = pd.date_range(start=_datas_a.min(), end=_datas_a.max(), freq="D")
+                        _real_acum = realizado_diario_a.reindex(_idx_da, fill_value=0).cumsum()
+                        _plan_acum = planejado_diario_a.reindex(_idx_da, fill_value=0).cumsum()
 
-                    area_options = {
-                        "tooltip": {"trigger": "axis"},
-                        "legend": {"top": "bottom"},
-                        "toolbox": {"show": True, "feature": {"magicType": {"type": ["line", "bar"], "title": {"line": "Linha", "bar": "Barra"}}, "restore": {"title": "Restaurar"}, "saveAsImage": {"title": "Salvar Imagem"}}},
-                        "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}],
-                        "grid": {"left": "5%", "right": "5%", "bottom": "25%", "top": "15%", "containLabel": True},
-                        "xAxis": {"type": "category", "data": [d.strftime("%d/%m") for d in _idx_da]},
-                        "yAxis": {"type": "value"},
+                        area_options = {
+                            "tooltip": {"trigger": "axis"},
+                            "legend": {"top": "bottom"},
+                            "toolbox": {"show": True, "feature": {"magicType": {"type": ["line", "bar"], "title": {"line": "Linha", "bar": "Barra"}}, "restore": {"title": "Restaurar"}, "saveAsImage": {"title": "Salvar Imagem"}}},
+                            "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}],
+                            "grid": {"left": "5%", "right": "5%", "bottom": "25%", "top": "15%", "containLabel": True},
+                            "xAxis": {"type": "category", "data": [d.strftime("%d/%m") for d in _idx_da]},
+                            "yAxis": {"type": "value"},
+                            "series": [
+                                {"name": "Realizado Acumulado", "type": "line", "smooth": True, "data": _real_acum.tolist(), "areaStyle": {"color": "rgba(59,130,246,0.2)"}, "lineStyle": {"color": cor_real, "width": 3}, "itemStyle": {"color": cor_real}},
+                                {"name": "Planejado Acumulado", "type": "line", "smooth": True, "data": _plan_acum.tolist(), "lineStyle": {"color": cor_plan, "width": 3, "type": "dashed"}, "itemStyle": {"color": cor_plan}},
+                            ],
+                        }
+                        st_echarts(options=area_options, height="350px", theme="streamlit", key="aba1_area")
+                    else:
+                        st.info("Sem datas suficientes para área.")
+
+            with st.expander("Análise Operacional: Matriz de Prioridades e Execução por Categoria", expanded=True):
+                col_h1, col_h2 = st.columns([1.2, 1])
+
+                with col_h1:
+                    st.markdown("#### Matriz: Prioridade vs Classificação")
+                    st.caption("Volume total de OS planejadas (Cor indica concentração)")
+
+                    df_heat = df_visao_base.copy()
+                    agg = df_heat.groupby(["Classificacao", "Criticidade"]).size().reset_index(name="Total")
+
+                    ordem_class = ["Confiabilidade", "Segurança", "Confiabilidade e Segurança"]
+                    ordem_crit = ["Muito Alta", "Alta", "Média", "Baixa"]
+
+                    if not agg.empty:
+                        heat_data = []
+                        max_val = 0
+
+                        for _yi, _cls in enumerate(ordem_class):
+                            for _xi, _crt in enumerate(ordem_crit):
+                                _row = agg[(agg["Classificacao"] == _cls) & (agg["Criticidade"] == _crt)]
+                                _val = int(_row["Total"].iloc[0]) if not _row.empty else 0
+                                heat_data.append([_xi, _yi, _val])
+                                if _val > max_val: max_val = _val
+
+                        heatmap_options = {
+                            "tooltip": {"position": "top"},
+                            "grid": {"height": "70%", "top": "10%", "left": "25%", "containLabel": True},
+                            "xAxis": {"type": "category", "data": ordem_crit, "splitArea": {"show": True}, "axisLine": {"show": False}, "axisTick": {"show": False}},
+                            "yAxis": {"type": "category", "data": ordem_class, "splitArea": {"show": True}, "axisLine": {"show": False}, "axisTick": {"show": False}},
+                            "visualMap": {"min": 0, "max": max_val if max_val > 0 else 10, "calculable": True, "orient": "horizontal", "left": "center", "bottom": "0%", "inRange": {"color": ["#F1F5F9", "#93C5FD", "#3B82F6", "#1E3A8A"]}},
+                            "series": [{"name": "Total de OS", "type": "heatmap", "data": heat_data, "label": {"show": True, "color": "#FFFFFF", "fontWeight": "bold", "formatter": JsCode("function(p){return p.value[2] > 0 ? p.value[2] : '';}")}, "itemStyle": {"borderColor": "#FFFFFF", "borderWidth": 2}}],
+                        }
+                        st_echarts(options=heatmap_options, height="380px", theme="streamlit", key="aba1_heatmap_discrete")
+                    else:
+                        st.info("Sem dados para a Matriz.")
+
+                with col_h2:
+                    st.markdown("#### Plan x Realizado por Categoria")
+                    st.caption("Comparativo de volume total e execução.")
+
+                    df_bar_cat = df_visao_base.copy()
+                    plan_cat = df_bar_cat.groupby("Classificacao").size()
+                    real_cat = (df_bar_cat[df_bar_cat["Status_norm"].isin(_status_prazo | _status_atraso)].groupby("Classificacao").size())
+
+                    cats = ["Confiabilidade e Segurança", "Segurança", "Confiabilidade"]
+                    val_plan = [int(plan_cat.get(c, 0)) for c in cats]
+                    val_real = [int(real_cat.get(c, 0)) for c in cats]
+
+                    bar_horiz_options = {
+                        "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
+                        "legend": {"bottom": "0%"},
+                        "grid": {"left": "3%", "right": "10%", "bottom": "15%", "top": "10%", "containLabel": True},
+                        "xAxis": {"type": "value", "boundaryGap": [0, 0.01]},
+                        "yAxis": {"type": "category", "data": cats, "axisLabel": {"interval": 0}},
                         "series": [
-                            {"name": "Realizado Acumulado", "type": "line", "smooth": True, "data": _real_acum.tolist(), "areaStyle": {"color": "rgba(59,130,246,0.2)"}, "lineStyle": {"color": cor_real, "width": 3}, "itemStyle": {"color": cor_real}},
-                            {"name": "Planejado Acumulado", "type": "line", "smooth": True, "data": _plan_acum.tolist(), "lineStyle": {"color": cor_plan, "width": 3, "type": "dashed"}, "itemStyle": {"color": cor_plan}},
-                        ],
+                            {"name": "Planejado", "type": "bar", "data": val_plan, "itemStyle": {"color": cor_plan}, "label": {"show": True, "position": "right", "color": "#475569"}},
+                            {"name": "Realizado", "type": "bar", "data": val_real, "itemStyle": {"color": cor_real}, "label": {"show": True, "position": "right", "color": "#475569"}}
+                        ]
                     }
-                    st_echarts(options=area_options, height="350px", theme="streamlit", key="aba1_area")
-                else:
-                    st.info("Sem datas suficientes para área.")
+                    st_echarts(options=bar_horiz_options, height="380px", theme="streamlit", key="aba1_bar_horiz")
 
-        with st.expander("Análise Operacional: Matriz de Prioridades e Execução por Categoria", expanded=True):
-            col_h1, col_h2 = st.columns([1.2, 1])
+            with st.expander("Execução por Turno e Acumulado", expanded=True):
+                col_g3, col_g6 = st.columns(2)
 
-            with col_h1:
-                st.markdown("#### Matriz: Prioridade vs Classificação")
-                st.caption("Volume total de OS planejadas (Cor indica concentração)")
+                _cor_turno = { "00h-07h": "#4F46E5", "07h-16h": "#3B82F6", "16h-00h": "#06B6D4" }
 
-                df_heat = df_visao_base.copy()
-                agg = df_heat.groupby(["Classificacao", "Criticidade"]).size().reset_index(name="Total")
+                with col_g3:
+                    st.markdown("#### Realizado por Turno")
+                    df_barra_real = df_visao_base[df_visao_base["Status_norm"].isin(_status_prazo | _status_atraso)].copy()
+                    x_turnos = ["00h-07h", "07h-16h", "16h-00h"]
+                    _cnt_t = df_barra_real.groupby("Turno").size()
+                    y_vals = [int(_cnt_t.get(t, 0)) for t in x_turnos]
 
-                ordem_class = ["Confiabilidade", "Segurança", "Confiabilidade e Segurança"]
-                ordem_crit = ["Muito Alta", "Alta", "Média", "Baixa"]
-
-                if not agg.empty:
-                    heat_data = []
-                    max_val = 0
-
-                    for _yi, _cls in enumerate(ordem_class):
-                        for _xi, _crt in enumerate(ordem_crit):
-                            _row = agg[(agg["Classificacao"] == _cls) & (agg["Criticidade"] == _crt)]
-                            _val = int(_row["Total"].iloc[0]) if not _row.empty else 0
-                            heat_data.append([_xi, _yi, _val])
-                            if _val > max_val: max_val = _val
-
-                    heatmap_options = {
-                        "tooltip": {"position": "top"},
-                        "grid": {"height": "70%", "top": "10%", "left": "25%", "containLabel": True},
-                        "xAxis": {"type": "category", "data": ordem_crit, "splitArea": {"show": True}, "axisLine": {"show": False}, "axisTick": {"show": False}},
-                        "yAxis": {"type": "category", "data": ordem_class, "splitArea": {"show": True}, "axisLine": {"show": False}, "axisTick": {"show": False}},
-                        "visualMap": {"min": 0, "max": max_val if max_val > 0 else 10, "calculable": True, "orient": "horizontal", "left": "center", "bottom": "0%", "inRange": {"color": ["#F1F5F9", "#93C5FD", "#3B82F6", "#1E3A8A"]}},
-                        "series": [{"name": "Total de OS", "type": "heatmap", "data": heat_data, "label": {"show": True, "color": "#FFFFFF", "fontWeight": "bold", "formatter": JsCode("function(p){return p.value[2] > 0 ? p.value[2] : '';}")}, "itemStyle": {"borderColor": "#FFFFFF", "borderWidth": 2}}],
-                    }
-                    st_echarts(options=heatmap_options, height="380px", theme="streamlit", key="aba1_heatmap_discrete")
-                else:
-                    st.info("Sem dados para a Matriz.")
-
-            with col_h2:
-                st.markdown("#### Plan x Realizado por Categoria")
-                st.caption("Comparativo de volume total e execução.")
-
-                df_bar_cat = df_visao_base.copy()
-                plan_cat = df_bar_cat.groupby("Classificacao").size()
-                real_cat = (df_bar_cat[df_bar_cat["Status_norm"].isin(_status_prazo | _status_atraso)].groupby("Classificacao").size())
-
-                cats = ["Confiabilidade e Segurança", "Segurança", "Confiabilidade"]
-                val_plan = [int(plan_cat.get(c, 0)) for c in cats]
-                val_real = [int(real_cat.get(c, 0)) for c in cats]
-
-                bar_horiz_options = {
-                    "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
-                    "legend": {"bottom": "0%"},
-                    "grid": {"left": "3%", "right": "10%", "bottom": "15%", "top": "10%", "containLabel": True},
-                    "xAxis": {"type": "value", "boundaryGap": [0, 0.01]},
-                    "yAxis": {"type": "category", "data": cats, "axisLabel": {"interval": 0}},
-                    "series": [
-                        {"name": "Planejado", "type": "bar", "data": val_plan, "itemStyle": {"color": cor_plan}, "label": {"show": True, "position": "right", "color": "#475569"}},
-                        {"name": "Realizado", "type": "bar", "data": val_real, "itemStyle": {"color": cor_real}, "label": {"show": True, "position": "right", "color": "#475569"}}
-                    ]
-                }
-                st_echarts(options=bar_horiz_options, height="380px", theme="streamlit", key="aba1_bar_horiz")
-
-        with st.expander("Execução por Turno e Acumulado", expanded=True):
-            col_g3, col_g6 = st.columns(2)
-
-            _cor_turno = { "00h-07h": "#4F46E5", "07h-16h": "#3B82F6", "16h-00h": "#06B6D4" }
-
-            with col_g3:
-                st.markdown("#### Realizado por Turno")
-                df_barra_real = df_visao_base[df_visao_base["Status_norm"].isin(_status_prazo | _status_atraso)].copy()
-                x_turnos = ["00h-07h", "07h-16h", "16h-00h"]
-                _cnt_t = df_barra_real.groupby("Turno").size()
-                y_vals = [int(_cnt_t.get(t, 0)) for t in x_turnos]
-
-                barra_options = {
-                    "tooltip": {"trigger": "axis"},
-                    "xAxis": {"type": "category", "data": x_turnos},
-                    "yAxis": {"type": "value"},
-                    "toolbox": {"show": True, "feature": {"magicType": {"type": ["line", "bar"], "title": {"line": "Linha", "bar": "Barra"}}, "restore": {"title": "Restaurar"}, "saveAsImage": {"title": "Salvar Imagem"}}},
-                    "grid": {"left": "5%", "right": "5%", "bottom": "15%", "top": "15%", "containLabel": True},
-                    "series": [{"type": "bar", "barWidth": "55%", "label": {"show": True, "position": "inside", "formatter": "{c}", "color": "#FFFFFF", "fontWeight": "bold"}, "data": [{"value": v, "name": t, "itemStyle": {"color": _cor_turno.get(t, "#94A3B8")}} for t, v in zip(x_turnos, y_vals)]}],
-                }
-                st_echarts(options=barra_options, height="350px", theme="streamlit", key="aba1_barra")
-
-            with col_g6:
-                st.markdown("#### Realizado Acumulado por Turno")
-                df_linhas_plot = df_visao_base.dropna(subset=["dia_realizado"]).copy()
-
-                if not df_linhas_plot.empty:
-                    _ordem_t = ["00h-07h", "07h-16h", "16h-00h"]
-                    _idx_dt = pd.date_range(start=df_linhas_plot["dia_realizado"].min(), end=df_linhas_plot["dia_realizado"].max(), freq="D")
-
-                    _series_t = []
-                    for _t in _ordem_t:
-                        _s = (df_linhas_plot[df_linhas_plot["Turno"] == _t].groupby("dia_realizado").size().reindex(_idx_dt, fill_value=0).cumsum())
-                        _series_t.append({"name": _t, "type": "line", "smooth": True, "data": _s.tolist(), "lineStyle": {"color": _cor_turno[_t], "width": 3}, "itemStyle": {"color": _cor_turno[_t]}})
-
-                    linhas_options = {
+                    barra_options = {
                         "tooltip": {"trigger": "axis"},
-                        "legend": {"top": "bottom"},
-                        "toolbox": {"show": True, "feature": {"magicType": {"type": ["line", "bar", "stack"], "title": {"line": "Linha", "bar": "Barra", "stack": "Empilhado"}}, "restore": {"title": "Restaurar"}, "saveAsImage": {"title": "Salvar Imagem"}}},
-                        "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}],
-                        "grid": {"left": "5%", "right": "5%", "bottom": "25%", "top": "15%", "containLabel": True},
-                        "xAxis": {"type": "category", "data": [d.strftime("%d/%m") for d in _idx_dt]},
+                        "xAxis": {"type": "category", "data": x_turnos},
                         "yAxis": {"type": "value"},
-                        "series": _series_t,
+                        "toolbox": {"show": True, "feature": {"magicType": {"type": ["line", "bar"], "title": {"line": "Linha", "bar": "Barra"}}, "restore": {"title": "Restaurar"}, "saveAsImage": {"title": "Salvar Imagem"}}},
+                        "grid": {"left": "5%", "right": "5%", "bottom": "15%", "top": "15%", "containLabel": True},
+                        "series": [{"type": "bar", "barWidth": "55%", "label": {"show": True, "position": "inside", "formatter": "{c}", "color": "#FFFFFF", "fontWeight": "bold"}, "data": [{"value": v, "name": t, "itemStyle": {"color": _cor_turno.get(t, "#94A3B8")}} for t, v in zip(x_turnos, y_vals)]}],
                     }
-                    st_echarts(options=linhas_options, height="350px", theme="streamlit", key="aba1_linhas")
-                else:
-                    st.info("Sem dados cronológicos.")
+                    st_echarts(options=barra_options, height="350px", theme="streamlit", key="aba1_barra")
+
+                with col_g6:
+                    st.markdown("#### Realizado Acumulado por Turno")
+                    df_linhas_plot = df_visao_base.dropna(subset=["dia_realizado"]).copy()
+
+                    if not df_linhas_plot.empty:
+                        _ordem_t = ["00h-07h", "07h-16h", "16h-00h"]
+                        _idx_dt = pd.date_range(start=df_linhas_plot["dia_realizado"].min(), end=df_linhas_plot["dia_realizado"].max(), freq="D")
+
+                        _series_t = []
+                        for _t in _ordem_t:
+                            _s = (df_linhas_plot[df_linhas_plot["Turno"] == _t].groupby("dia_realizado").size().reindex(_idx_dt, fill_value=0).cumsum())
+                            _series_t.append({"name": _t, "type": "line", "smooth": True, "data": _s.tolist(), "lineStyle": {"color": _cor_turno[_t], "width": 3}, "itemStyle": {"color": _cor_turno[_t]}})
+
+                        linhas_options = {
+                            "tooltip": {"trigger": "axis"},
+                            "legend": {"top": "bottom"},
+                            "toolbox": {"show": True, "feature": {"magicType": {"type": ["line", "bar", "stack"], "title": {"line": "Linha", "bar": "Barra", "stack": "Empilhado"}}, "restore": {"title": "Restaurar"}, "saveAsImage": {"title": "Salvar Imagem"}}},
+                            "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}],
+                            "grid": {"left": "5%", "right": "5%", "bottom": "25%", "top": "15%", "containLabel": True},
+                            "xAxis": {"type": "category", "data": [d.strftime("%d/%m") for d in _idx_dt]},
+                            "yAxis": {"type": "value"},
+                            "series": _series_t,
+                        }
+                        st_echarts(options=linhas_options, height="350px", theme="streamlit", key="aba1_linhas")
+                    else:
+                        st.info("Sem dados cronológicos.")
 
         st.subheader("📋 Lista Detalhada de OS")
         df_lista = df_visao_base.copy().rename(columns={"Ordem servico": "OS"})
@@ -2241,7 +2244,7 @@ with tab1:
 
         if not df_lista.empty:
             df_styled = df_lista[colunas_ordem].style.set_properties(**{'text-align': 'center'}).set_table_styles([{'selector': 'th', 'props': [('text-align', 'center')]}])
-            st.dataframe(df_styled, width="stretch", height=400, hide_index=True)
+            st.dataframe(df_styled, use_container_width=True, height=400, hide_index=True)
 #endregion
 
 #region 8.3: ABA 2 — Roteirização e Mapa de Campo
@@ -2535,47 +2538,115 @@ with tab2:
                     st_echarts(options=concl_turno_options, height="435px", theme="streamlit", key="chart_conclusoes_turno_data")
 
     st.markdown("---")
+
+# ==========================================
+# RESTAURAÇÃO DA CAMADA DE MAPA E ROTEIRIZAÇÃO
+#region ==========================================
+    st.markdown("### 🗺️ Navegação Operacional e Mapa de Campo")
+        
+    # Obtém a base/origem do usuário logado (SESSÃO 3)
+    lat_orig, lon_orig, nome_orig = obter_base_padrao_usuario()
+        
+    df_pendentes = df_filtrado[df_filtrado["Status_norm"].isin(_status_aberto)].copy()
+        
+    col_mapa_ctrl, col_mapa_view = st.columns([1, 3])
+        
+    with col_mapa_ctrl:
+        st.info(f"📍 **Sua Origem:** {nome_orig}")
+        raio_km = st.slider("Raio de Atendimento (km)", min_value=1, max_value=100, value=30, step=1)
+            
+        # Botão de polling manual para buscar GPS do navegador se necessário
+        if st.button("📍 Forçar GPS do Navegador", use_container_width=True):
+            st.session_state["validando_gps"] = True
+            st.rerun()
+                
+    with col_mapa_view:
+        if not df_pendentes.empty:
+            # Associa coordenadas aos pátios pendentes
+            df_pendentes["lat"] = df_pendentes["Patio"].map(lambda p: COORDENADAS_FIXAS.get(p, [None, None])[0])
+            df_pendentes["lon"] = df_pendentes["Patio"].map(lambda p: COORDENADAS_FIXAS.get(p, [None, None])[1])
+            df_pend_coords = df_pendentes.dropna(subset=["lat", "lon"]).copy()
+                
+            if not df_pend_coords.empty:
+                # Filtra matematicamente as OS que estão dentro do raio escolhido
+                df_pend_coords["Distancia_km"] = haversine_vectorized(lat_orig, lon_orig, df_pend_coords["lat"], df_pend_coords["lon"])
+                df_raio = df_pend_coords[df_pend_coords["Distancia_km"] <= raio_km]
+                    
+                # Trava o mapa no Estado de SP/RJ usando trigonometria básica para não estourar o zoom
+                m = folium.Map(location=[lat_orig, lon_orig], zoom_start=9, max_bounds=True)
+                    
+                # Círculo do Raio e Marcador da Base
+                folium.Circle(location=[lat_orig, lon_orig], radius=raio_km * 1000, color="#3B82F6", fill=True, fill_opacity=0.1).add_to(m)
+                folium.Marker([lat_orig, lon_orig], popup="Sua Posição/Base", icon=folium.Icon(color="red", icon="home")).add_to(m)
+                    
+                # Desenha os pátios com demanda no mapa
+                for patio, grp in df_raio.groupby("Patio"):
+                    lat_p = grp["lat"].iloc[0]
+                    lon_p = grp["lon"].iloc[0]
+                    folium.Marker([lat_p, lon_p], popup=f"{patio}: {len(grp)} OS Pendentes", icon=folium.Icon(color="blue", icon="wrench")).add_to(m)
+                    
+                st_folium(m, height=400, use_container_width=True, returned_objects=[])
+            else:
+                st.warning("Nenhum pátio com coordenada mapeada possui pendências.")
+        else:
+            st.success("Tudo limpo! Não há ordens pendentes nos filtros atuais.")
+
+        st.markdown("---")
 #endregion
+    #endregion
 
-#region SESSÃO 9: Motor de Governança Operacional e Auditoria
+#region SESSÃO 9: Tela Isolada de Governança e Auditoria
+# ==========================================
+# TELA ISOLADA: SÓ RODA SE CLICAR NO BOTÃO DA SIDEBAR
 if st.session_state.get("tela_atual") == "governanca":
-
-    st.markdown("<h3 style='color: #0F172A; font-weight: 700;'>⚖️ Motor de Governança Operacional e Auditoria</h3>", unsafe_allow_html=True)
     
-    # --- CAMADA DE SEGURANÇA OBRIGATÓRIA ---
+    col_gov_t1, col_gov_t2 = st.columns([8, 2])
+    with col_gov_t1:
+        st.title("🛡️ Motor de Governança e Auditoria")
+    with col_gov_t2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("⬅️ Voltar ao Painel", use_container_width=True):
+            st.session_state["tela_atual"] = "dashboard"
+            st.session_state["gov_auth_ok"] = False # Reseta a senha ao sair
+            st.rerun()
+
+    st.markdown("Análise estatística de eficiência, variabilidade de cronograma e rastreabilidade de campo.")
+    st.markdown("---")
+
+    # --- CAMADA DE SEGURANÇA (VERIFICAÇÃO DE SENHA) ---
     if not st.session_state.get("gov_auth_ok", False):
-        st.warning("🔒 **Área Sensível:** Confirme sua senha de usuário para acessar os dados de auditoria de campo e desempenho.")
-        with st.form("form_auth_gov"):
-            senha_confirm = st.text_input("Senha de Acesso", type="password")
-            if st.form_submit_button("Desbloquear Painel"):
-                conn = get_connection()
-                cur = conn.cursor()
-                cur.execute("SELECT senha_hash FROM usuarios WHERE username = %s", (st.session_state.get("username"),))
-                row = cur.fetchone()
-                cur.close()
-                release_connection(conn)
+        st.error("🔒 **Acesso Restrito:** Para visualizar métricas de auditoria de pessoas e GPS, confirme sua credencial.")
+        
+        col_auth1, col_auth2 = st.columns([1, 2])
+        with col_auth1:
+            with st.form("form_auth_gov"):
+                senha_confirm = st.text_input("Digite sua Senha", type="password")
+                if st.form_submit_button("Desbloquear Painel", use_container_width=True):
+                    conn = get_connection()
+                    cur = conn.cursor()
+                    cur.execute("SELECT senha_hash FROM usuarios WHERE username = %s", (st.session_state.get("username"),))
+                    row = cur.fetchone()
+                    cur.close()
+                    release_connection(conn)
 
-                if row and row[0] == hash_senha(senha_confirm):
-                    st.session_state["gov_auth_ok"] = True
-                    st.rerun()
-                else:
-                    st.error("❌ Senha incorreta. Acesso negado.")
-        st.stop() # 🛑 Bloqueia a execução do resto do código até a senha estar certa!
+                    if row and row[0] == hash_senha(senha_confirm):
+                        st.session_state["gov_auth_ok"] = True
+                        st.rerun()
+                    else:
+                        st.error("❌ Senha incorreta. Acesso negado.")
+        st.stop() # 🛑 Trava de segurança: impede renderização do código abaixo se a senha falhar
 
-    # --- SE A SENHA ESTIVER CORRETA, RENDERIZA O PAINEL ---
-    st.markdown("Análise estatística de eficiência, variabilidade de cronograma, aderência de login e rastreabilidade de campo.")
+    # --- LÓGICA DE AUDITORIA (SÓ EXECUTA COM SENHA CORRETA) ---
     df_gov = df_filtrado.copy()
 
     if df_gov.empty:
         st.warning("⚠️ Nenhum dado disponível para os filtros atuais da Sidebar.")
     else:
-        # =========================================================
-        # TRATAMENTO DE DADOS CORRETOS (CONFORME REGRAS SOLICITADAS)
-        # =========================================================
+        # Tratamento de Tempo
         if "Hxh Plano" in df_gov.columns:
             df_gov["tempo_estimado_min"] = pd.to_numeric(df_gov["Hxh Plano"], errors="coerce").fillna(0)
         else:
-            df_gov["tempo_estimado_min"] = 60
+            df_gov["tempo_estimado_min"] = 60 
 
         col_fim = next((c for c in df_gov.columns if c.lower() in ["hora real fim", "hora_real_fim", "horarealfim"]), None)
         col_inicio = next((c for c in df_gov.columns if c.lower() in ["hora real inicio", "hora_real_inicio", "hora real início"]), None)
@@ -2591,60 +2662,19 @@ if st.session_state.get("tela_atual") == "governanca":
 
         df_gov["no_prazo"] = df_gov["tempo_real_min"] <= df_gov["tempo_estimado_min"]
 
-        # =========================================================
-        # SEÇÃO DE FILTROS INDIVIDUALIZADOS DA GOVERNANÇA
-        # =========================================================
-        st.markdown("##### 🔍 Filtros de Auditoria")
-        col_f1, col_f2 = st.columns([2, 2])
-        
+        st.markdown("##### 🔍 Filtros de Auditoria Específicos")
+        col_f1, _ = st.columns([1, 1])
         with col_f1:
             col_user = "mantenedor" if "mantenedor" in df_gov.columns else ("concluido_por" if "concluido_por" in df_gov.columns else None)
             if col_user:
                 lista_usuarios = ["Todos"] + sorted(df_gov[col_user].dropna().unique().tolist())
-                usuario_sel = st.selectbox("👤 Filtrar por Colaborador Individual:", lista_usuarios, key="gov_user_filter")
+                usuario_sel = st.selectbox("👤 Filtrar por Colaborador:", lista_usuarios, key="gov_user_filter")
                 if usuario_sel != "Todos":
                     df_gov = df_gov[df_gov[col_user] == usuario_sel]
-            else:
-                st.caption("Coluna de usuário não mapeada.")
-
-        st.markdown("---")
-
-        # =========================================================
-        # INDICADORES E MATRIZ DE ATENÇÃO
-        # =========================================================
-        st.markdown("#### 🚨 Alertas de Governança: Colaboradores sob Atenção")
-        st.caption("Métrica baseada no desvio médio em minutos (Tempo Executado Real vs Hxh Planejado) e taxa de cumprimento.")
-        
-        if col_user and not df_gov.empty:
-            df_metric_atencao = df_gov.groupby(col_user).agg(
-                total_os=("id_os" if "id_os" in df_gov.columns else df_gov.columns[0], "count"),
-                real_med=("tempo_real_min", "mean"),
-                plan_med=("tempo_estimado_min", "mean")
-            ).reset_index()
-            
-            df_metric_atencao["Desvio Médio (Min)"] = (df_metric_atencao["real_med"] - df_metric_atencao["plan_med"]).round(1)
-            
-            p_aderencia = []
-            for user_m in df_metric_atencao[col_user]:
-                sub_df = df_gov[df_gov[col_user] == user_m]
-                pct = (sub_df["no_prazo"].sum() / len(sub_df)) * 100 if len(sub_df) > 0 else 100
-                p_aderencia.append(f"{pct:.1f}%")
-            df_metric_atencao["Aderência"] = p_aderencia
-            
-            def classificar_risco(row):
-                if row["Desvio Médio (Min)"] > 20: return "🔴 Crítico (Estouro Constante)"
-                if row["Desvio Médio (Min)"] > 5: return "🟡 Alerta (Gargalo Operacional)"
-                return "🟢 Eficiente (No Ritmo do Plano)"
-                
-            df_metric_atencao["Avaliação de Risco"] = df_metric_atencao.apply(classificar_risco, axis=1)
-            df_metric_atencao = df_metric_atencao.sort_values(by="Desvio Médio (Min)", ascending=False)
-            
-            df_metric_atencao.columns = ["Colaborador", "Volume OS", "Média Real (min)", "Média Plano (min)", "Desvio Médio (min)", "Taxa Aderência", "Avaliação de Risco"]
-            st.dataframe(df_metric_atencao[["Colaborador", "Volume OS", "Desvio Médio (min)", "Taxa Aderência", "Avaliação de Risco"]], width="stretch", hide_index=True)
 
         st.markdown("---")
         
-        # --- CARDS DE SÍNTESE DE GOVERNANÇA ---
+        # Cards de Resumo
         col_card1, col_card2, col_card3, col_card4 = st.columns(4)
         t_real_medio = df_gov["tempo_real_min"].mean() if not df_gov.empty else 0
         t_est_medio = df_gov["tempo_estimado_min"].mean() if not df_gov.empty else 0
@@ -2657,119 +2687,36 @@ if st.session_state.get("tela_atual") == "governanca":
         with col_card4: st.metric("Volume Analisado", f"{len(df_gov)} OS")
 
         st.markdown("---")
+        st.markdown("#### 📋 Planilha de Auditoria e Rastreabilidade de Logs (GPS)")
+        
+        status_col = next((c for c in df_gov.columns if c.lower() in ["status", "status da operação", "status_os"]), None)
+        if status_col:
+            df_concluidas = df_gov[df_gov[status_col].astype(str).str.lower().isin(["concluída", "concluida", "baixada", "finalizada", "encerrada", "realizado", "realizado fora da data de programação"])]
+        else:
+            df_concluidas = df_gov[df_gov["tempo_real_min"] > 0] 
+        
+        if df_concluidas.empty:
+            st.info("💡 Nenhuma OS Concluída encontrada para auditar.")
+        else:
+            def buscar_col(termos, dataframe):
+                return next((col for col in dataframe.columns if col.lower() in termos), None)
 
-        with st.spinner("Processando painéis estatísticos..."):
-            col_g1, col_g2 = st.columns(2)
+            df_exibir = pd.DataFrame()
+            c_os = buscar_col(["os", "id_os", "ordem servico"], df_concluidas)
+            c_ativo = buscar_col(["ativo", "tag", "equipamento", "local_instalacao"], df_concluidas)
+            c_dataprog = buscar_col(["data inicial programada", "dt_programada", "data_prog"], df_concluidas)
+            c_concluido = buscar_col(["data/hora realizado", "hora_real_fim", "realizado_em"], df_concluidas)
+            c_gps = buscar_col(["geolocalizacao_baixa", "geolocalização de baixa", "gps"], df_concluidas)
 
-            with col_g1:
-                st.markdown("#### 🎯 Matriz de Eficiência do Mantenedor")
-                if col_user and not df_gov.empty:
-                    df_maint = df_gov.groupby(col_user).agg(volume=("tempo_real_min", "count"), tempo_medio=("tempo_real_min", "mean")).reset_index()
-                    scatter_data = [[row["volume"], round(row["tempo_medio"], 1), row[col_user]] for _, row in df_maint.iterrows()]
-                else:
-                    scatter_data = []
+            df_exibir["OS"] = df_concluidas[c_os] if c_os else df_concluidas.index
+            df_exibir["Ativo"] = df_concluidas[c_ativo] if c_ativo else "Não Mapeado"
+            df_exibir["Data Programada"] = df_concluidas[c_dataprog] if c_dataprog else "---"
+            df_exibir["Tempo Gasto"] = df_concluidas["tempo_real_min"].round(1).astype(str) + " min"
+            df_exibir["Horário Conclusão"] = df_concluidas[c_concluido] if c_concluido else "---"
+            df_exibir["Local do GPS"] = df_concluidas[c_gps] if c_gps else "---"
 
-                options_scatter = {
-                    "backgroundColor": "#FFFFFF",
-                    "tooltip": {"trigger": "item", "formatter": JsCode("function (p) { return '<b>' + (p.data[2] || '') + '</b><br>OS Concluídas: ' + p.data[0] + '<br>Tempo Médio: ' + p.data[1] + ' min'; }")},
-                    "grid": {"top": "15%", "bottom": "15%", "left": "10%", "right": "10%"},
-                    "xAxis": {"type": "value", "name": "Volume de OS", "nameLocation": "middle", "nameGap": 25, "splitLine": {"lineStyle": {"type": "dashed"}}},
-                    "yAxis": {"type": "value", "name": "Tempo Médio (min)", "nameLocation": "middle", "nameGap": 35, "splitLine": {"lineStyle": {"type": "dashed"}}},
-                    "series": [{"type": "scatter", "data": scatter_data, "symbolSize": 14, "itemStyle": {"color": "#2563EB"}}]
-                }
-                st_echarts(options=options_scatter, height="320px", key="gov_scatter_eficiencia")
-
-            with col_g2:
-                st.markdown("#### 📈 Produtividade Acumulada (Tracking)")
-                col_data = "dia_realizado" if "dia_realizado" in df_gov.columns else ("Data/Hora Realizado" if "Data/Hora Realizado" in df_gov.columns else None)
-                if col_data and not df_gov.empty:
-                    df_gov["data_formatada"] = pd.to_datetime(df_gov[col_data], errors="coerce").dt.strftime("%d/%m")
-                    df_prod = df_gov.groupby("data_formatada").size().cumsum().reset_index(name="acumulado")
-                    options_area = {
-                        "backgroundColor": "#FFFFFF",
-                        "tooltip": {"trigger": "axis"},
-                        "grid": {"top": "15%", "bottom": "15%", "left": "10%", "right": "5%"},
-                        "xAxis": {"type": "category", "data": df_prod["data_formatada"].tolist(), "boundaryGap": False},
-                        "yAxis": {"type": "value"},
-                        "series": [{"name": "OS Acumuladas", "data": df_prod["acumulado"].tolist(), "type": "line", "areaStyle": {"color": "rgba(16, 185, 129, 0.2)"}, "itemStyle": {"color": "#10B981"}, "smooth": True}]
-                    }
-                    st_echarts(options=options_area, height="320px", key="gov_area_produtividade")
-                else:
-                    st.info("Aguardando dados temporais válidos.")
-
-            col_g3, col_g4 = st.columns(2)
-
-            with col_g3:
-                st.markdown("#### 📉 Calibração de Planejamento (Subsistema)")
-                if "subsistema" in df_gov.columns and not df_gov.empty:
-                    df_sub = df_gov.groupby("subsistema").agg(est=("tempo_estimado_min", "mean"), real=("tempo_real_min", "mean")).reset_index()
-                    options_bar_comp = {
-                        "backgroundColor": "#FFFFFF",
-                        "tooltip": {"trigger": "axis"},
-                        "legend": {"data": ["Tempo Estimado", "Tempo Real"], "bottom": "0%"},
-                        "grid": {"top": "10%", "bottom": "15%", "left": "12%", "right": "5%"},
-                        "xAxis": {"type": "category", "data": df_sub["subsistema"].tolist()},
-                        "yAxis": {"type": "value"},
-                        "series": [
-                            {"name": "Tempo Estimado", "type": "bar", "data": [round(v,1) for v in df_sub["est"]], "itemStyle": {"color": "#94A3B8"}},
-                            {"name": "Tempo Real", "type": "bar", "data": [round(v,1) for v in df_sub["real"]], "itemStyle": {"color": "#F59E0B"}}
-                        ]
-                    }
-                    st_echarts(options=options_bar_comp, height="320px", key="gov_bar_subsistema")
-                else:
-                    st.info("Coluna subsistema ausente.")
-
-            with col_g4:
-                st.markdown("#### ⏱️ Aderência: Login vs Início de Atividade")
-                st.caption("Gap de tempo entre o Primeiro Login no App e a abertura da 1ª OS.")
-                cat_gap = ["< 15 min (Ideal)", "15-30 min", "30-60 min", "> 60 min (Alerta)"]
-                total_g = len(df_gov)
-                options_gap = {
-                    "backgroundColor": "#FFFFFF",
-                    "tooltip": {"trigger": "axis"},
-                    "grid": {"top": "15%", "bottom": "15%", "left": "15%", "right": "5%"},
-                    "xAxis": {"type": "value"},
-                    "yAxis": {"type": "category", "data": cat_gap[::-1]},
-                    "series": [{"name": "Qtd", "type": "bar", "data": [int(total_g*0.1), int(total_g*0.15), int(total_g*0.3), int(total_g*0.45)], "itemStyle": {"color": "#8B5CF6"}, "label": {"show": True, "position": "right"}}]
-                }
-                st_echarts(options=options_gap, height="320px", key="gov_bar_login_gap")
-
-            # =========================================================
-            # PLANILHA DE AUDITORIA FILTRADA (APENAS OS CONCLUÍDAS)
-            # =========================================================
-            st.markdown("---")
-            st.markdown("#### 📋 Planilha de Auditoria e Rastreabilidade de Logs (GPS)")
-            st.caption("Exibindo de forma transparente apenas as ordens de serviço concluídas (No prazo e em atraso).")
+            st.dataframe(df_exibir, use_container_width=True, hide_index=True)
             
-            status_col = next((c for c in df_gov.columns if c.lower() in ["status", "status da operação", "status_os"]), None)
-            if status_col:
-                df_concluidas = df_gov[df_gov[status_col].astype(str).str.lower().isin(["concluída", "concluida", "baixada", "finalizada", "encerrada", "realizado", "realizado fora da data de programação"])]
-            else:
-                df_concluidas = df_gov[df_gov["tempo_real_min"] > 0] 
-            
-            if df_concluidas.empty:
-                st.info("💡 Nenhuma OS Concluída encontrada para os filtros aplicados.")
-            else:
-                df_exibir = pd.DataFrame()
-                
-                def buscar_col(termos, dataframe):
-                    return next((col for col in dataframe.columns if col.lower() in termos), None)
-
-                c_os = buscar_col(["os", "id_os", "ordem servico"], df_concluidas)
-                c_ativo = buscar_col(["ativo", "tag", "equipamento", "local_instalacao"], df_concluidas)
-                c_dataprog = buscar_col(["data inicial programada", "dt_programada", "data_programada", "data_prog"], df_concluidas)
-                c_desc = buscar_col(["descrição longa", "descricao_longa", "desc_longa", "descricao"], df_concluidas)
-                c_concluido = buscar_col(["data/hora realizado", "hora real fim", "hora_real_fim", "data/hora concluido a os", "realizado_em"], df_concluidas)
-
-                df_exibir["OS"] = df_concluidas[c_os] if c_os else df_concluidas.index
-                df_exibir["Ativo"] = df_concluidas[c_ativo] if c_ativo else "Não Mapeado"
-                df_exibir["Data Programada"] = df_concluidas[c_dataprog].dt.strftime("%d/%m/%Y") if c_dataprog and pd.api.types.is_datetime64_any_dtype(df_concluidas[c_dataprog]) else df_concluidas[c_dataprog] if c_dataprog else "---"
-                df_exibir["Descrição Longa"] = df_concluidas[c_desc] if c_desc else "---"
-                df_exibir["Tempo Realizado"] = df_concluidas["tempo_real_min"].round(1).astype(str) + " min"
-                df_exibir["Data/Hora Concluído"] = df_concluidas[c_concluido] if c_concluido else "---"
-
-                st.dataframe(df_exibir, width="stretch", height=350, hide_index=True)
-                
-    st.stop() # 🛑 Impede que o Dashboard normal e o Mapa sejam desenhados embaixo da Governança!
+#endregion
 #endregion
 #endregion
