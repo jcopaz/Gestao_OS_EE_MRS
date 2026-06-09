@@ -7,9 +7,7 @@ import os
 import shutil
 import hashlib
 import json
-from pathlib import Path
-from streamlit_calendar import calendar
-
+import psycopg2
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -19,8 +17,9 @@ from geopy.geocoders import Nominatim
 from streamlit_js_eval import get_geolocation
 from streamlit_echarts import st_echarts, JsCode
 from datetime import datetime, timezone, timedelta
-
-import psycopg2
+from pathlib import Path
+from streamlit_calendar import calendar
+from psycopg2.extras import execute_values
 from psycopg2 import pool
 
 # --- CONFIGURAÇÕES GLOBAIS ---
@@ -996,6 +995,7 @@ def resumir_conclusoes_por_turno_data(
 #endregion
 #endregion
 
+
 #region SESSÃO 2.7 ===== Administração de Dados =====
 
 def render_tela_admin():
@@ -1030,62 +1030,137 @@ def render_tela_admin():
                         return
                     
                     df = df.fillna("")
+                    total_linhas_arquivo = len(df)
+                    
+                    def conversor_brasileiro(obj):
+                        if isinstance(obj, (pd.Timestamp, datetime)):
+                            return obj.strftime('%d/%m/%Y')
+                        return str(obj)
+                    
+                    # --- FASE 1: Preparar registros em memória ---
+                    barra = st.progress(0, text="Preparando dados...")
+                    registros = []
+                    for idx, (_, row) in enumerate(df.iterrows()):
+                        os_num = str(row["Ordem servico"]).strip()
+                        if os_num:
+                            dados_json = json.dumps(row.to_dict(), default=conversor_brasileiro)
+                            registros.append((os_num, mes_ref, coord_upload, dados_json))
+                        if (idx + 1) % 200 == 0 or (idx + 1) == total_linhas_arquivo:
+                            pct = min((idx + 1) / total_linhas_arquivo, 0.5)
+                            barra.progress(pct, text=f"Preparando... {idx + 1}/{total_linhas_arquivo} linhas")
+                    
+                    # --- FASE 2: Gravar no banco em lotes ---
+                    barra.progress(0.5, text="Gravando no banco de dados...")
                     conn = get_connection()
                     try:
                         cur = conn.cursor()
-                        sucesso_count = 0
+                        lote_size = 500
+                        for i in range(0, len(registros), lote_size):
+                            lote = registros[i:i + lote_size]
+                            execute_values(
+                                cur,
+                                """
+                                INSERT INTO os_programadas (os, mes_referencia, coordenacao, dados_completos)
+                                VALUES %s
+                                ON CONFLICT (os) DO UPDATE 
+                                SET mes_referencia = EXCLUDED.mes_referencia,
+                                    coordenacao = EXCLUDED.coordenacao,
+                                    dados_completos = EXCLUDED.dados_completos,
+                                    data_upload = CURRENT_TIMESTAMP
+                                """,
+                                lote,
+                                page_size=lote_size
+                            )
+                            pct = min(0.5 + (i + len(lote)) / len(registros) * 0.5, 1.0)
+                            barra.progress(pct, text=f"Gravando... {min(i + lote_size, len(registros))}/{len(registros)} registros")
                         
-                        comando_sql = """
-                            INSERT INTO os_programadas (os, mes_referencia, coordenacao, dados_completos)
-                            VALUES (%s, %s, %s, %s)
-                            ON CONFLICT (os) DO UPDATE 
-                            SET mes_referencia = EXCLUDED.mes_referencia,
-                                coordenacao = EXCLUDED.coordenacao,
-                                dados_completos = EXCLUDED.dados_completos,
-                                data_upload = CURRENT_TIMESTAMP;
-                        """
-                        
-                        def conversor_brasileiro(obj):
-                            if isinstance(obj, (pd.Timestamp, datetime)):
-                                return obj.strftime('%d/%m/%Y')
-                            return str(obj)
-                        
-                        total_linhas = len(df)
-                        barra = st.progress(0, text="Processando...")
-
-                        for idx, (_, row) in enumerate(df.iterrows()):
-                            os_num = str(row["Ordem servico"]).strip()
-                            if os_num:
-                                cur.execute(comando_sql, (os_num, mes_ref, coord_upload, json.dumps(row.to_dict(), default=conversor_brasileiro)))
-                                sucesso_count += 1
-
-                            if (idx + 1) % 50 == 0 or (idx + 1) == total_linhas:
-                                pct = min((idx + 1) / total_linhas, 1.0)
-                                barra.progress(pct, text=f"Processando... {idx + 1}/{total_linhas} linhas")
-
                         conn.commit()
                         cur.close()
-                        barra.progress(1.0, text="Concluído!")
-                        st.success(f"✅ Sucesso! {sucesso_count} Ordens de Serviço foram atualizadas.")
                     finally:
                         release_connection(conn)
-
+                    
+                    barra.progress(1.0, text="Concluído!")
+                    st.success(f"✅ Sucesso! {len(registros)} de {total_linhas_arquivo} linhas foram processadas.")
+                    
                 except Exception as e:
                     st.error(f"❌  Ocorreu um erro ao processar o arquivo: {e}")
     elif arquivo_upload is not None:
         st.warning("⚠️ Preencha o Mês e a Coordenação antes de processar.")
 
-# --- SESSÃO DE EXPORTAÇÃO SAP ---
+    # ==============================================
+    # HISTÓRICO DE UPLOADS (aba recolhível)
+    # ==============================================
+    st.markdown("---")
+    with st.expander("📋 Histórico de Uploads", expanded=False):
+        perfil_user = st.session_state.get("perfil", "")
+        escopo_user = st.session_state.get("escopo", "")
+        
+        # Define o filtro de visão baseado no perfil
+        ver_tudo = perfil_user in ("Gerência",) or escopo_user == "Todas"
+        
+        conn = get_connection()
+        try:
+            if ver_tudo:
+                query_hist = """
+                    SELECT 
+                        coordenacao AS "Coordenação",
+                        MAX(data_upload) AS "Último Upload",
+                        COUNT(*) AS "Linhas Carregadas"
+                    FROM os_programadas
+                    GROUP BY coordenacao
+                    ORDER BY MAX(data_upload) DESC
+                """
+                df_hist = pd.read_sql_query(query_hist, conn)
+            else:
+                # Filtra pela coordenação do usuário
+                filtro_coord = escopo_user if escopo_user else "Paranapiacaba"
+                query_hist = """
+                    SELECT 
+                        coordenacao AS "Coordenação",
+                        MAX(data_upload) AS "Último Upload",
+                        COUNT(*) AS "Linhas Carregadas"
+                    FROM os_programadas
+                    WHERE coordenacao = %s
+                    GROUP BY coordenacao
+                    ORDER BY MAX(data_upload) DESC
+                """
+                df_hist = pd.read_sql_query(query_hist, conn, params=(filtro_coord,))
+        finally:
+            release_connection(conn)
+        
+        if not df_hist.empty:
+            # Formata a data para o padrão brasileiro
+            df_hist["Último Upload"] = pd.to_datetime(df_hist["Último Upload"]).dt.strftime("%d/%m/%Y %H:%M")
+            df_hist["Linhas Carregadas"] = df_hist["Linhas Carregadas"].astype(int)
+            
+            if ver_tudo:
+                st.caption("📊 **Visão Consolidada** (todas as coordenações)")
+            else:
+                st.caption(f"📊 Visão restrita à coordenação **{escopo_user}**")
+            
+            st.dataframe(
+                df_hist.style.set_properties(**{'text-align': 'center'}).set_table_styles(
+                    [{'selector': 'th', 'props': [('text-align', 'center')]}]
+                ),
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # Totalizador
+            total_geral = int(df_hist["Linhas Carregadas"].sum())
+            st.info(f"📦 **Total de OS na base:** {total_geral:,} registros".replace(",", "."))
+        else:
+            st.info("Nenhum upload realizado até o momento.")
+
+    # --- SESSÃO DE EXPORTAÇÃO SAP ---
     if "Exportar SAP" in st.session_state.get("governanca", ""):
         st.markdown("---")
         st.subheader("⬇️ Exportação SAP")
         st.markdown("Gere o arquivo consolidado com os apontamentos de campo para importação no SAP.")
-        
         with st.spinner("Preparando base de dados para exportação..."):
-            # Puxa a base atualizada para garantir que pegará as últimas baixas
             df_bruto = carregar_base_sem_overlay(
-                usar_sim=False, qtd_sim=0, seed_sim=0, 
-                escopo_usuario=st.session_state.get("escopo", "Todas"), 
+                usar_sim=False, qtd_sim=0, seed_sim=0,
+                escopo_usuario=st.session_state.get("escopo", "Todas"),
                 etl_version=ETL_VERSION
             )
             df_completo = aplicar_overlay_baixas(
@@ -1093,11 +1168,9 @@ def render_tela_admin():
                 escopo_usuario=st.session_state.get("escopo", "Todas"),
                 baixas_mtime=time.time()
             )
-            
             if not df_completo.empty:
                 df_completo["Status_norm"] = df_completo["Status da Operação"].astype(str).str.strip().str.upper()
                 tem_concluida = df_completo["Status_norm"].isin(_status_prazo | _status_atraso).any()
-                
                 if tem_concluida:
                     arquivo_sap = gerar_excel_sap_bytes(df_completo)
                     if arquivo_sap:
