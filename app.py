@@ -2013,15 +2013,14 @@ st.markdown("---")
 
 #region SESSÃO 8: Abas e Renderização dos Gráficos
 
-# ==========================================
-# ROTEAMENTO PRINCIPAL (CONTROLE DE TELAS)
-# ==========================================
+#region 8.1 - ROTEAMENTO PRINCIPAL (CONTROLE DE TELAS)
 if st.session_state.get("tela_atual", "dashboard") == "dashboard":
     
     # Apenas 2 Abas! A Governança agora é uma tela separada.
     tab1, tab2 = st.tabs(["📊 Visão Gerencial", "🗺️ Roteirização e Mapa de Campo"])
+#endregion
 
-    #region 8.2: ABA 1 — Visão Gerencial (Indicadores)
+#region 8.2: ABA 1 — Visão Gerencial (Indicadores)
     with tab1:
         if st.session_state["perfil"] == "Técnico":
             st.info("🔒 Seu perfil (Técnico) tem foco operacional. Por favor, utilize a aba 'Roteirização e Mapa de Campo'.")
@@ -2248,795 +2247,796 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 #endregion
 
 #region 8.3: ABA 2 — Roteirização e Mapa de Campo
-with tab2:
-    # 0. Inicialização de segurança da variável para evitar NameError
-    df_recomendado = pd.DataFrame()
-    
-    # 8.3.1 Calendário mensal
-    st.markdown("### 📅 Agenda Mensal de Demanda por Pátio")
-    
-    # CSS: Fontes e Cartões da Aba 2 com dimensões limpas e elegantes
-    st.markdown(
-        """
-        <style>
-        .kpi-wrapper { font-family: "Source Sans Pro", sans-serif; }
-
-        /* Card 1: Azul */
-        .kpi-card-blue {
-            background: linear-gradient(135deg, #EFF6FF 0%, #DBEAFE 100%);
-            border-left: 5px solid #3B82F6; 
-            border-radius: 12px;
-            padding: 16px 20px;
-            box-shadow: 0 4px 6px rgba(59, 130, 246, 0.15);
-            height: 140px; 
-            margin-bottom: 16px;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            box-sizing: border-box;
-        }
-        .kpi-title-blue { color: #1E3A8A; font-size: 14px; font-weight: 700; margin-bottom: 6px; text-transform: uppercase; }
-        .kpi-val-blue { color: #1E40AF; font-size: 32px; font-weight: 400; line-height: 1; }
-        .kpi-sub-blue { color: #3B82F6; font-size: 12px; font-weight: 400; margin-top: 8px;}
-
-        /* Card 2: Verde */
-        .kpi-card-green {
-            background: linear-gradient(135deg, #F0FDF4 0%, #D1FAE5 100%);
-            border-left: 5px solid #10B981; 
-            border-radius: 12px;
-            padding: 16px 20px;
-            box-shadow: 0 4px 6px rgba(16, 185, 129, 0.15);
-            height: 140px; 
-            margin-bottom: 16px;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            box-sizing: border-box;
-        }
-        .kpi-title-green { color: #064E3B; font-size: 14px; font-weight: 700; margin-bottom: 6px; text-transform: uppercase; }
-        .kpi-val-green { color: #065F46; font-size: 32px; font-weight: 400; line-height: 1; }
-        .kpi-badge { 
-            font-size: 12px; font-weight: 400; padding: 4px 10px; border-radius: 20px; 
-            display: inline-block; margin-top: 10px; width: fit-content; 
-        }
-
-        /* Card 3: Vermelho */
-        .kpi-card-red {
-            background: linear-gradient(135deg, #FEF2F2 0%, #FEE2E2 100%);
-            border-left: 5px solid #FF4B4B; 
-            border-radius: 12px;
-            padding: 16px 20px;
-            box-shadow: 0 4px 6px rgba(255, 75, 75, 0.15);
-            height: 140px; 
-            margin-bottom: 16px;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            box-sizing: border-box;
-        }
-        .kpi-title-red { color: #7F1D1D; font-size: 14px; font-weight: 700; margin-bottom: 6px; text-transform: uppercase; }
-        .kpi-val-red { color: #991B1B; font-size: 24px; font-weight: 400; line-height: 1.2; margin-top: 4px;} 
-        .kpi-sub-red { color: #EF4444; font-size: 12px; font-weight: 400; margin-top: 8px;}
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
-
-    hoje_ref = datetime.now()
-
-    # Garantir que as variáveis de estado existam
-    if "cal_ref_mes" not in st.session_state: st.session_state["cal_ref_mes"] = int(hoje_ref.month)
-    if "cal_ref_ano" not in st.session_state: st.session_state["cal_ref_ano"] = int(hoje_ref.year)
-
-    # Colunas criadas FORA do IF para não quebrar o layout da árvore do Streamlit
-    col_cal_ctrl_1, col_cal_ctrl_2, _ = st.columns([1, 1, 4])
-
-    is_tecnico = st.session_state.get("perfil") == "Técnico"
-
-    if is_tecnico:
-        st.session_state["cal_ref_mes"] = int(hoje_ref.month)
-        st.session_state["cal_ref_ano"] = int(hoje_ref.year)
-        with col_cal_ctrl_1: 
-            st.info(f"Mês: {hoje_ref.strftime('%m')}")
-        with col_cal_ctrl_2: 
-            st.info(f"Ano: {hoje_ref.year}")
-        st.caption(f"📌 **Visão Operacional de Campo:** Calendário fixado no mês vigente ({hoje_ref.strftime('%m/%Y')})")
-        st.markdown("<div style='margin-bottom: -10px;'></div>", unsafe_allow_html=True)
-    else:
-        with col_cal_ctrl_1:
-            mes_opcao = st.selectbox(
-                "Mês",
-                list(range(1, 13)),
-                index=int(st.session_state["cal_ref_mes"]) - 1,
-                format_func=lambda x: f"{x:02d}",
-                key="cal_mes_ref_select"
-            )
-
-        with col_cal_ctrl_2:
-            ano_atual = hoje_ref.year
-            ano_opcao = st.number_input(
-                "Ano",
-                min_value=ano_atual - 2,
-                max_value=ano_atual + 2,
-                value=int(st.session_state["cal_ref_ano"]),
-                step=1,
-                key="cal_ano_ref_input"
-            )
-
-        st.session_state["cal_ref_mes"] = int(mes_opcao)
-        st.session_state["cal_ref_ano"] = int(ano_opcao)
-
-    # Preparação dos dados do calendário
-    df_calendario = df_visao.copy()
-    
-    # Tratamento seguro caso os filtros não existam no escopo local
-    if "patios_selecionados" in locals() and "classif_selecionadas" in locals():
-        df_calendario = df_calendario[
-            (df_calendario["Patio"].isin(patios_selecionados)) &
-            (df_calendario["Classificacao"].isin(classif_selecionadas))
-        ].copy()
-
-    hoje_real = datetime.now().date()
-    if (
-        int(st.session_state["cal_ref_ano"]) == hoje_real.year and
-        int(st.session_state["cal_ref_mes"]) == hoje_real.month
-    ):
-        dia_ref_default = hoje_real
-    else:
-        dia_ref_default = datetime(
-            int(st.session_state["cal_ref_ano"]),
-            int(st.session_state["cal_ref_mes"]),
-            1
-        ).date()
-
-    user_limpo = str(st.session_state.get('username', 'usr')).replace(" ", "_").lower()
-    # Key fixa para técnico previne re-renders desnecessários
-    cal_key = f"cal_fixo_tecnico_{user_limpo}" if is_tecnico else f"cal_dinamico_{user_limpo}"
-
-    cal_state = st.session_state.get(cal_key)
-    data_ref_card = dia_ref_default
-    
-    if cal_state and isinstance(cal_state, dict):
-        if cal_state.get("callback") == "dateClick":
-            data_ref_card = pd.to_datetime(cal_state["dateClick"]["date"]).date()
-        elif cal_state.get("callback") == "eventClick":
-            data_ref_card = pd.to_datetime(cal_state["eventClick"]["event"]["start"]).date()
+        with tab2:
+            # 0. Inicialização de segurança da variável para evitar NameError
+            df_recomendado = pd.DataFrame()
             
-    if data_ref_card.year != int(st.session_state["cal_ref_ano"]) or data_ref_card.month != int(st.session_state["cal_ref_mes"]):
-        data_ref_card = dia_ref_default
+            # 8.3.1 Calendário mensal
+            st.markdown("### 📅 Agenda Mensal de Demanda por Pátio")
+            
+            # CSS: Fontes e Cartões da Aba 2 com dimensões limpas e elegantes
+            st.markdown(
+                """
+                <style>
+                .kpi-wrapper { font-family: "Source Sans Pro", sans-serif; }
 
-# === APLICAÇÃO DE PERFORMANCE (VERDADEIRO LAZY LOADING) ===
-    mostrar_calendario = st.toggle("📅 Mostrar Agenda Mensal de Demanda por Pátio e Turno", value=False)
-
-    if mostrar_calendario:
-        with st.spinner("Carregando agenda..."):
-            calendar_events = montar_eventos_calendario_patios(
-                df_base_cal=df_calendario,
-                ano=int(st.session_state["cal_ref_ano"]),
-                mes=int(st.session_state["cal_ref_mes"]),
-                max_patios_visiveis=2
-            )
-
-            calendar_options = {
-                "initialView": "dayGridMonth",
-                "initialDate": f"{int(st.session_state['cal_ref_ano']):04d}-{int(st.session_state['cal_ref_mes']):02d}-01",
-                "locale": "pt-br",
-                "height": "auto",
-                "contentHeight": "auto",
-                "headerToolbar": { "left": "", "center": "title", "right": "" },
-                "dayMaxEvents": 2,
-                "eventOrder": "displayOrder,title",
-                "fixedWeekCount": False,
-                "showNonCurrentDates": True,
-                "expandRows": True,
-                "handleWindowResize": True,
-            }
-
-            calendar_css_base = """
-            .fc { font-size: 14px; background: #FFFFFF; border-radius: 12px; padding: 6px; box-shadow: 0 1px 8px rgba(15, 23, 42, 0.08); }
-            .fc .fc-toolbar { margin-bottom: 0.25rem !important; }
-            .fc .fc-toolbar-title { font-size: 1.4rem !important; font-weight: 800; text-align: center; text-transform: capitalize; color: #1E293B; }
-            .fc .fc-scrollgrid { border-radius: 10px; overflow: hidden; border: 1px solid #E2E8F0; }
-            .fc .fc-scroller, .fc .fc-scroller-liquid-absolute { overflow: hidden !important; }
-            .fc .fc-col-header-cell { background-color: #F8FAFC; }
-            .fc .fc-col-header-cell-cushion { font-size: 14px; font-weight: 800; color: #334155; padding: 6px 2px !important; text-transform: capitalize; }
-            .fc .fc-daygrid-day-number { font-size: 1.1rem; font-weight: 800; padding: 4px 6px !important; color: #334155; }
-            .fc .fc-daygrid-day-frame { min-height: 62px !important; cursor: pointer; transition: background-color 0.2s; }
-            .fc .fc-daygrid-day-frame:hover { background-color: #F8FAFC !important; }
-            .fc .fc-daygrid-event { border-radius: 6px; padding: 3px 5px; font-size: 12.5px !important; line-height: 1.15; font-weight: 800; margin-top: 1px !important; cursor: pointer; }
-            .fc .fc-daygrid-event .fc-event-title { white-space: nowrap !important; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0.2px; }
-            .fc .fc-theme-standard td, .fc .fc-theme-standard th { border-color: #E2E8F0; }
-            """
-
-            calendar_css_dinamico = f"""
-            {calendar_css_base}
-            .fc-daygrid-day[data-date="{data_ref_card.strftime('%Y-%m-%d')}"] {{
-                background-color: #EFF6FF !important;
-                box-shadow: inset 0 0 0 3px #3B82F6 !important;
-            }}
-            .fc-daygrid-day[data-date="{data_ref_card.strftime('%Y-%m-%d')}"] .fc-daygrid-day-number {{
-                color: #1D4ED8 !important;
-                background-color: #DBEAFE !important;
-                border-radius: 6px;
-                padding: 2px 6px !important;
-            }}
-            """
-
-            col_calendario, col_cards, col_turno = st.columns([5.8, 2.0, 2.2], gap="large")
-
-            with col_calendario:
-                calendar_state = calendar(
-                    events=calendar_events,
-                    options=calendar_options,
-                    custom_css=calendar_css_dinamico,
-                    callbacks=["dateClick", "eventClick"],
-                    key=f"cal_dinamico_{cal_key}_{st.session_state.get('cal_ref_mes')}"
-                )
-
-            resumo_card = resumir_demanda_calendario(
-                df_base_cal=df_calendario, ano=data_ref_card.year, mes=data_ref_card.month, dia_ref=data_ref_card.day
-            )
-            resumo_turno = resumir_conclusoes_por_turno_data(df_base_cal=df_calendario, data_ref=data_ref_card)
-
-            with col_cards:
-                st.markdown(
-                    f"""
-                    <div class="kpi-wrapper kpi-card-blue">
-                        <div class="kpi-title-blue">Pátios do Dia</div>
-                        <div class="kpi-val-blue">{resumo_card['qtd_patios']} <span style='font-size: 22px;'>📌</span></div>
-                        <div class="kpi-sub-blue">Referência: {data_ref_card.strftime('%d/%m/%Y')}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-
-                dia_idx = data_ref_card.day - 1
-                serie_mes = resumo_card["serie_total_os_mes"]
-                hoje_total = serie_mes[dia_idx] if dia_idx < len(serie_mes) else 0
-                ontem_total = serie_mes[dia_idx - 1] if dia_idx > 0 else hoje_total
-
-                if ontem_total > 0: delta_pct = ((hoje_total - ontem_total) / ontem_total) * 100
-                else: delta_pct = 0.0
-
-                if delta_pct > 0: seta, cor_badge, bg_badge, sinal = "↑", "#065F46", "#A7F3D0", "+"
-                elif delta_pct < 0: seta, cor_badge, bg_badge, sinal = "↓", "#991B1B", "#FECACA", ""
-                else: seta, cor_badge, bg_badge, sinal = "→", "#475569", "#E2E8F0", ""
-
-                total_os_options = {
-                    "backgroundColor": "transparent", "animation": False,
-                    "graphic": [
-                        {"type": "rect", "left": 0, "top": 0, "shape": {"x": 0, "y": 0, "width": 320, "height": 140, "r": 18}, "style": {"fill": "#F0FDF4"}},
-                        {"type": "rect", "left": 0, "top": 0, "shape": {"x": 0, "y": 0, "width": 5, "height": 140, "r": [18, 0, 0, 18]}, "style": {"fill": "#10B981"}},
-                        {"type": "text", "left": "6%", "top": "16%", "style": {"text": "TOTAL DE OS DO DIA", "fill": "#064E3B", "font": "700 14px 'Source Sans Pro', sans-serif"}},
-                        {"type": "text", "left": "6%", "top": "40%", "style": {"text": f"{hoje_total} 🎯", "fill": "#065F46", "font": "400 32px 'Source Sans Pro', sans-serif"}},
-                        {"type": "text", "left": "6%", "top": "72%", "style": {"text": f"{seta} {sinal}{delta_pct:.1f}% vs ontem", "fill": "#10B981", "font": "400 12px 'Source Sans Pro', sans-serif"}}
-                    ]
+                /* Card 1: Azul */
+                .kpi-card-blue {
+                    background: linear-gradient(135deg, #EFF6FF 0%, #DBEAFE 100%);
+                    border-left: 5px solid #3B82F6; 
+                    border-radius: 12px;
+                    padding: 16px 20px;
+                    box-shadow: 0 4px 6px rgba(59, 130, 246, 0.15);
+                    height: 140px; 
+                    margin-bottom: 16px;
+                    display: flex;
+                    flex-direction: column;
+                    justify-content: center;
+                    box-sizing: border-box;
                 }
-                st_echarts(options=total_os_options, height="140px", key="card_total_os_dia")
-                st.markdown("<div style='margin-bottom: 16px;'></div>", unsafe_allow_html=True)
+                .kpi-title-blue { color: #1E3A8A; font-size: 14px; font-weight: 700; margin-bottom: 6px; text-transform: uppercase; }
+                .kpi-val-blue { color: #1E40AF; font-size: 32px; font-weight: 400; line-height: 1; }
+                .kpi-sub-blue { color: #3B82F6; font-size: 12px; font-weight: 400; margin-top: 8px;}
 
-                st.markdown(
-                    f"""
-                    <div class="kpi-wrapper kpi-card-red">
-                        <div class="kpi-title-red">Pátio Prioritário</div>
-                        <div class="kpi-val-red">{resumo_card['patio_prioritario']}</div>
-                        <div class="kpi-sub-red">Critério: backlog + prioridade</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
+                /* Card 2: Verde */
+                .kpi-card-green {
+                    background: linear-gradient(135deg, #F0FDF4 0%, #D1FAE5 100%);
+                    border-left: 5px solid #10B981; 
+                    border-radius: 12px;
+                    padding: 16px 20px;
+                    box-shadow: 0 4px 6px rgba(16, 185, 129, 0.15);
+                    height: 140px; 
+                    margin-bottom: 16px;
+                    display: flex;
+                    flex-direction: column;
+                    justify-content: center;
+                    box-sizing: border-box;
+                }
+                .kpi-title-green { color: #064E3B; font-size: 14px; font-weight: 700; margin-bottom: 6px; text-transform: uppercase; }
+                .kpi-val-green { color: #065F46; font-size: 32px; font-weight: 400; line-height: 1; }
+                .kpi-badge { 
+                    font-size: 12px; font-weight: 400; padding: 4px 10px; border-radius: 20px; 
+                    display: inline-block; margin-top: 10px; width: fit-content; 
+                }
 
-            with col_turno:
-                _cor_turno_aba2 = { "00h-07h": "#4F46E5", "07h-16h": "#3B82F6", "16h-00h": "#06B6D4" }
-                dados_formatados_turno = [
-                    {"value": val, "itemStyle": { "color": _cor_turno_aba2.get(lbl, "#3B82F6"), "borderRadius": [0, 6, 6, 0] }}
-                    for lbl, val in zip(resumo_turno["labels"], resumo_turno["valores"])
-                ]
-                with st.container(border=True):
-                    concl_turno_options = {
-                        "title": {"text": resumo_turno["titulo"], "subtext": resumo_turno["subtitulo"], "left": "center", "top": "5%", "textStyle": { "fontSize": 14, "fontWeight": "bold", "color": "#1E293B", "fontFamily": '"Source Sans Pro", sans-serif' }, "subtextStyle": { "fontSize": 12, "color": "#64748B", "fontFamily": '"Source Sans Pro", sans-serif' }},
-                        "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
-                        "grid": { "left": "18%", "right": "10%", "bottom": "12%", "top": "24%", "containLabel": True },
-                        "xAxis": { "type": "value", "minInterval": 1, "splitLine": { "lineStyle": { "type": "dashed", "color": "#E2E8F0" } } },
-                        "yAxis": { "type": "category", "data": resumo_turno["labels"], "axisLabel": { "fontSize": 12, "fontWeight": "600", "color": "#475569", "fontFamily": '"Source Sans Pro", sans-serif' }, "axisLine": { "show": False }, "axisTick": { "show": False }},
-                        "series": [{"name": "OS Concluídas", "type": "bar", "data": dados_formatados_turno, "barWidth": "42%", "label": { "show": True, "position": "right", "color": "#1E293B", "fontWeight": "bold", "fontSize": 13, "fontFamily": '"Source Sans Pro", sans-serif' }}]
-                    }
-                    st_echarts(options=concl_turno_options, height="435px", theme="streamlit", key="chart_conclusoes_turno_data")
+                /* Card 3: Vermelho */
+                .kpi-card-red {
+                    background: linear-gradient(135deg, #FEF2F2 0%, #FEE2E2 100%);
+                    border-left: 5px solid #FF4B4B; 
+                    border-radius: 12px;
+                    padding: 16px 20px;
+                    box-shadow: 0 4px 6px rgba(255, 75, 75, 0.15);
+                    height: 140px; 
+                    margin-bottom: 16px;
+                    display: flex;
+                    flex-direction: column;
+                    justify-content: center;
+                    box-sizing: border-box;
+                }
+                .kpi-title-red { color: #7F1D1D; font-size: 14px; font-weight: 700; margin-bottom: 6px; text-transform: uppercase; }
+                .kpi-val-red { color: #991B1B; font-size: 24px; font-weight: 400; line-height: 1.2; margin-top: 4px;} 
+                .kpi-sub-red { color: #EF4444; font-size: 12px; font-weight: 400; margin-top: 8px;}
+                </style>
+                """,
+                unsafe_allow_html=True
+            )
 
-    st.markdown("---")
+            hoje_ref = datetime.now()
 
-# 8.3.2 Navegação geográfica operacional   # 8.3.2 Navegação geográfica operacional
-    st.markdown("### 🗺️ Navegação Geográfica Operacional")
+            # Garantir que as variáveis de estado existam
+            if "cal_ref_mes" not in st.session_state: st.session_state["cal_ref_mes"] = int(hoje_ref.month)
+            if "cal_ref_ano" not in st.session_state: st.session_state["cal_ref_ano"] = int(hoje_ref.year)
 
-    col_mapa, col_acao = st.columns([6, 4], gap="large")
+            # Colunas criadas FORA do IF para não quebrar o layout da árvore do Streamlit
+            col_cal_ctrl_1, col_cal_ctrl_2, _ = st.columns([1, 1, 4])
 
-    # Proteção caso df_filtrado não esteja no escopo
-    if "df_filtrado" in locals():
-        df_pendentes_f = df_filtrado[df_filtrado["Status_norm"].isin(_status_aberto)].copy()
-    else:
-        df_pendentes_f = df_visao[df_visao["Status_norm"].isin(_status_aberto)].copy()
+            is_tecnico = st.session_state.get("perfil") == "Técnico"
 
-    # Inicialização de segurança
-    df_recomendado = pd.DataFrame()
-
-    with col_acao:
-        st.markdown("#### ⚙️ Ferramentas de Campo")
-
-        # Estado inicial da origem
-        if "lat_partida" not in st.session_state:
-            lat_base, lon_base, nome_base = obter_base_padrao_usuario()
-            st.session_state["lat_partida"] = lat_base
-            st.session_state["lon_partida"] = lon_base
-            st.session_state["local_nome"] = nome_base
-            st.session_state["origem_tipo"] = "BASE"
-
-        if "gps_pending" not in st.session_state:
-            st.session_state["gps_pending"] = False
-
-        if "gps_trials" not in st.session_state:
-            st.session_state["gps_trials"] = 0
-
-        if "origem_tipo" not in st.session_state:
-            st.session_state["origem_tipo"] = "BASE"
-
-        GPS_MAX_TRIALS = 25
-
-        c1, c2 = st.columns(2)
-
-        with c1:
-            if st.button("📍 Minha Localização", use_container_width=True, key="btn_gps_localizacao"):
-                st.session_state["gps_pending"] = True
-                st.session_state["gps_trials"] = 0
-                st.rerun()
-
-        with c2:
-            if st.button("🏠 Minha Base", use_container_width=True, key="btn_minha_base"):
-                lat_base, lon_base, nome_base = obter_base_padrao_usuario()
-                st.session_state["lat_partida"] = lat_base
-                st.session_state["lon_partida"] = lon_base
-                st.session_state["local_nome"] = nome_base
-                st.session_state["origem_tipo"] = "BASE"
-                st.session_state["gps_pending"] = False
-                st.session_state["gps_trials"] = 0
-                st.rerun()
-
-        # Captura do GPS
-        if st.session_state.get("gps_pending"):
-            st.info("Aguardando autorização do navegador e captura do GPS...")
-            loc = get_geolocation()
-
-            if loc and isinstance(loc, dict) and "coords" in loc:
-                coords = loc.get("coords", {})
-                lat = coords.get("latitude")
-                lon = coords.get("longitude")
-
-                if lat is not None and lon is not None:
-                    st.session_state["lat_partida"] = float(lat)
-                    st.session_state["lon_partida"] = float(lon)
-                    st.session_state["local_nome"] = reverse_geocode_coordenada(float(lat), float(lon))
-                    st.session_state["origem_tipo"] = "GPS"
-                    st.session_state["gps_pending"] = False
-                    st.session_state["gps_trials"] = 0
-                    st.success("GPS ativado com sucesso!")
-                    st.rerun()
-
-            elif loc and isinstance(loc, dict) and "error" in loc:
-                st.session_state["gps_pending"] = False
-                st.session_state["gps_trials"] = 0
-                st.error(f"GPS falhou: {loc['error'].get('message', 'Erro desconhecido')}")
-
+            if is_tecnico:
+                st.session_state["cal_ref_mes"] = int(hoje_ref.month)
+                st.session_state["cal_ref_ano"] = int(hoje_ref.year)
+                with col_cal_ctrl_1: 
+                    st.info(f"Mês: {hoje_ref.strftime('%m')}")
+                with col_cal_ctrl_2: 
+                    st.info(f"Ano: {hoje_ref.year}")
+                st.caption(f"📌 **Visão Operacional de Campo:** Calendário fixado no mês vigente ({hoje_ref.strftime('%m/%Y')})")
+                st.markdown("<div style='margin-bottom: -10px;'></div>", unsafe_allow_html=True)
             else:
-                st.session_state["gps_trials"] += 1
-                if st.session_state["gps_trials"] < GPS_MAX_TRIALS:
-                    st.info("Aguardando permissão do navegador...")
-                    time.sleep(0.3)
-                    st.rerun()
-                else:
-                    st.session_state["gps_pending"] = False
-                    st.session_state["gps_trials"] = 0
-                    st.error("Tempo do GPS esgotado. Tente novamente ou use a opção Minha Base.")
+                with col_cal_ctrl_1:
+                    mes_opcao = st.selectbox(
+                        "Mês",
+                        list(range(1, 13)),
+                        index=int(st.session_state["cal_ref_mes"]) - 1,
+                        format_func=lambda x: f"{x:02d}",
+                        key="cal_mes_ref_select"
+                    )
 
-        st.markdown("---")
-        raio_busca_km = st.slider("📏 Raio de Atuação Visual (km):", 0, 50, 10, 5, key="slider_raio_atuacao")
+                with col_cal_ctrl_2:
+                    ano_atual = hoje_ref.year
+                    ano_opcao = st.number_input(
+                        "Ano",
+                        min_value=ano_atual - 2,
+                        max_value=ano_atual + 2,
+                        value=int(st.session_state["cal_ref_ano"]),
+                        step=1,
+                        key="cal_ano_ref_input"
+                    )
 
-        origem_label = "📍 GPS" if st.session_state.get("origem_tipo") == "GPS" else "🏠 Base"
-        st.caption(f"{origem_label}: **{st.session_state['local_nome']}**")
+                st.session_state["cal_ref_mes"] = int(mes_opcao)
+                st.session_state["cal_ref_ano"] = int(ano_opcao)
 
-        lat_origem = float(st.session_state["lat_partida"])
-        lon_origem = float(st.session_state["lon_partida"])
-
-        if not df_pendentes_f.empty:
-            df_calc = df_pendentes_f.copy()
-            df_calc["lat_patio"] = df_calc["Patio"].map(
-                lambda p: COORDENADAS_FIXAS.get(str(p).strip().upper(), [np.nan, np.nan])[0]
-            )
-            df_calc["lon_patio"] = df_calc["Patio"].map(
-                lambda p: COORDENADAS_FIXAS.get(str(p).strip().upper(), [np.nan, np.nan])[1]
-            )
-            com_coord = df_calc.dropna(subset=["lat_patio", "lon_patio"]).copy()
-
-            if not com_coord.empty:
-                hoje_atual = datetime.now().date()
-                com_coord["Ordem_Prazo"] = com_coord["dt_prog_filtro"].apply(
-                    lambda dt: 1 if pd.notna(dt) and dt.date() < hoje_atual
-                    else (2 if pd.notna(dt) and dt.date() == hoje_atual else 3)
-                )
-                com_coord["Distancia_km"] = haversine_vectorized(
-                    lat_origem,
-                    lon_origem,
-                    com_coord["lat_patio"],
-                    com_coord["lon_patio"]
-                )
-                df_recomendado = com_coord[
-                    com_coord["Distancia_km"] <= raio_busca_km
-                ].sort_values(by=["Ordem_Prazo", "Criticidade_rank", "Distancia_km"])
-
-        st.info(f"**{len(df_recomendado)} OS pendentes** encontradas no raio de {raio_busca_km} km.")
-
-        if not df_recomendado.empty:
+            # Preparação dos dados do calendário
+            df_calendario = df_visao.copy()
             
-            # === NOVA APLICAÇÃO DE PERFORMANCE: FRAGMENTO DE APONTAMENTO ===
-            @st.fragment
-            def renderizar_bloco_apontamento():
-                st.markdown("---")
-                st.markdown("#### ✅ Apontamento e Conclusão de OS")
-                
-                lista_os_unicas = df_recomendado["Ordem servico"].astype(str).unique().tolist()
-                
-                os_selecionadas = st.multiselect(
-                    "1. Selecione as OSs que deseja baixar:",
-                    lista_os_unicas
-                )
+            # Tratamento seguro caso os filtros não existam no escopo local
+            if "patios_selecionados" in locals() and "classif_selecionadas" in locals():
+                df_calendario = df_calendario[
+                    (df_calendario["Patio"].isin(patios_selecionados)) &
+                    (df_calendario["Classificacao"].isin(classif_selecionadas))
+                ].copy()
 
-                if os_selecionadas:
-                    # --- 🛑 GEOFENCING: TRAVA DE RAIO DE 5 KM ---
-                    os_distantes = []
-                    for os_id in os_selecionadas:
-                        # Puxa a distância exata da OS selecionada
-                        dist = df_recomendado.loc[df_recomendado["Ordem servico"].astype(str) == str(os_id), "Distancia_km"].iloc[0]
-                        if dist > 5.0:
-                            os_distantes.append(f"{os_id} (a {dist:.1f} km)")
-                            
-                    if os_distantes:
-                        st.error(f"🛑 **Bloqueio Geográfico:** O sistema exige que você esteja em um raio máximo de **5 km** do local da manutenção para registrar a execução.")
-                        st.warning(f"Você está muito longe das seguintes OSs: **{', '.join(os_distantes)}**.")
-                        st.info("💡 Aproxime-se do pátio e atualize sua posição no botão '📍 Minha Localização' acima para liberar o apontamento.")
-                        return  # ⬅️ O código "morre" aqui. O formulário de apontamento nem sequer aparece na tela!
-                    # --------------------------------------------
+            hoje_real = datetime.now().date()
+            if (
+                int(st.session_state["cal_ref_ano"]) == hoje_real.year and
+                int(st.session_state["cal_ref_mes"]) == hoje_real.month
+            ):
+                dia_ref_default = hoje_real
+            else:
+                dia_ref_default = datetime(
+                    int(st.session_state["cal_ref_ano"]),
+                    int(st.session_state["cal_ref_mes"]),
+                    1
+                ).date()
 
-                    conn = get_connection()
-                    df_users_equipe = pd.read_sql_query("SELECT username FROM usuarios", conn)
-                    release_connection(conn)
-                    lista_equipe_disp = df_users_equipe["username"].tolist()
+            user_limpo = str(st.session_state.get('username', 'usr')).replace(" ", "_").lower()
+            # Key fixa para técnico previne re-renders desnecessários
+            cal_key = f"cal_fixo_tecnico_{user_limpo}" if is_tecnico else f"cal_dinamico_{user_limpo}"
+
+            cal_state = st.session_state.get(cal_key)
+            data_ref_card = dia_ref_default
+            
+            if cal_state and isinstance(cal_state, dict):
+                if cal_state.get("callback") == "dateClick":
+                    data_ref_card = pd.to_datetime(cal_state["dateClick"]["date"]).date()
+                elif cal_state.get("callback") == "eventClick":
+                    data_ref_card = pd.to_datetime(cal_state["eventClick"]["event"]["start"]).date()
                     
-                    usr_logado = st.session_state.get("username", "")
-                    if usr_logado in lista_equipe_disp:
-                        lista_equipe_disp.remove(usr_logado)
-                    
-                    with st.form("form_apontamento_os"):
-                        equipe_selecionada = st.multiselect(
-                            "2. Selecione a sua equipe (Co-executantes presentes):", 
-                            lista_equipe_disp, help="Deixe em branco se estiver trabalhando sozinho."
+            if data_ref_card.year != int(st.session_state["cal_ref_ano"]) or data_ref_card.month != int(st.session_state["cal_ref_mes"]):
+                data_ref_card = dia_ref_default
+
+            # === APLICAÇÃO DE PERFORMANCE (VERDADEIRO LAZY LOADING) ===
+            mostrar_calendario = st.toggle("📅 Mostrar Agenda Mensal de Demanda por Pátio e Turno", value=False)
+
+            if mostrar_calendario:
+                with st.spinner("Carregando agenda..."):
+                    calendar_events = montar_eventos_calendario_patios(
+                        df_base_cal=df_calendario,
+                        ano=int(st.session_state["cal_ref_ano"]),
+                        mes=int(st.session_state["cal_ref_mes"]),
+                        max_patios_visiveis=2
+                    )
+
+                    calendar_options = {
+                        "initialView": "dayGridMonth",
+                        "initialDate": f"{int(st.session_state['cal_ref_ano']):04d}-{int(st.session_state['cal_ref_mes']):02d}-01",
+                        "locale": "pt-br",
+                        "height": "auto",
+                        "contentHeight": "auto",
+                        "headerToolbar": { "left": "", "center": "title", "right": "" },
+                        "dayMaxEvents": 2,
+                        "eventOrder": "displayOrder,title",
+                        "fixedWeekCount": False,
+                        "showNonCurrentDates": True,
+                        "expandRows": True,
+                        "handleWindowResize": True,
+                    }
+
+                    calendar_css_base = """
+                    .fc { font-size: 14px; background: #FFFFFF; border-radius: 12px; padding: 6px; box-shadow: 0 1px 8px rgba(15, 23, 42, 0.08); }
+                    .fc .fc-toolbar { margin-bottom: 0.25rem !important; }
+                    .fc .fc-toolbar-title { font-size: 1.4rem !important; font-weight: 800; text-align: center; text-transform: capitalize; color: #1E293B; }
+                    .fc .fc-scrollgrid { border-radius: 10px; overflow: hidden; border: 1px solid #E2E8F0; }
+                    .fc .fc-scroller, .fc .fc-scroller-liquid-absolute { overflow: hidden !important; }
+                    .fc .fc-col-header-cell { background-color: #F8FAFC; }
+                    .fc .fc-col-header-cell-cushion { font-size: 14px; font-weight: 800; color: #334155; padding: 6px 2px !important; text-transform: capitalize; }
+                    .fc .fc-daygrid-day-number { font-size: 1.1rem; font-weight: 800; padding: 4px 6px !important; color: #334155; }
+                    .fc .fc-daygrid-day-frame { min-height: 62px !important; cursor: pointer; transition: background-color 0.2s; }
+                    .fc .fc-daygrid-day-frame:hover { background-color: #F8FAFC !important; }
+                    .fc .fc-daygrid-event { border-radius: 6px; padding: 3px 5px; font-size: 12.5px !important; line-height: 1.15; font-weight: 800; margin-top: 1px !important; cursor: pointer; }
+                    .fc .fc-daygrid-event .fc-event-title { white-space: nowrap !important; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0.2px; }
+                    .fc .fc-theme-standard td, .fc .fc-theme-standard th { border-color: #E2E8F0; }
+                    """
+
+                    calendar_css_dinamico = f"""
+                    {calendar_css_base}
+                    .fc-daygrid-day[data-date="{data_ref_card.strftime('%Y-%m-%d')}"] {{
+                        background-color: #EFF6FF !important;
+                        box-shadow: inset 0 0 0 3px #3B82F6 !important;
+                    }}
+                    .fc-daygrid-day[data-date="{data_ref_card.strftime('%Y-%m-%d')}"] .fc-daygrid-day-number {{
+                        color: #1D4ED8 !important;
+                        background-color: #DBEAFE !important;
+                        border-radius: 6px;
+                        padding: 2px 6px !important;
+                    }}
+                    """
+
+                    col_calendario, col_cards, col_turno = st.columns([5.8, 2.0, 2.2], gap="large")
+
+                    with col_calendario:
+                        calendar_state = calendar(
+                            events=calendar_events,
+                            options=calendar_options,
+                            custom_css=calendar_css_dinamico,
+                            callbacks=["dateClick", "eventClick"],
+                            key=f"cal_dinamico_{cal_key}_{st.session_state.get('cal_ref_mes')}"
                         )
 
-                        st.markdown("---")
-                        st.markdown("#### ⏳ Apontamento de Tempos Individuais")
-                        
-                        apontamentos = {}
-                        todos_preenchidos = True
-                        
-                        for os_id in set(os_selecionadas):
-                            st.markdown(f"<b style='color: #3B82F6;'>OS: {os_id}</b>", unsafe_allow_html=True)
-                            c1, c2 = st.columns(2)
-                            with c1:
-                                h_ini = st.time_input(f"Horário Início", key=f"time_ini_{os_id}", value=None)
-                            with c2:
-                                h_fim = st.time_input(f"Horário Fim", key=f"time_fim_{os_id}", value=None)
-                                
-                            apontamentos[os_id] = {"inicio": h_ini, "fim": h_fim}
-                            if h_ini is None or h_fim is None:
-                                todos_preenchidos = False
-                            st.markdown("<hr style='margin: 8px 0; border-color: #333D4E;'>", unsafe_allow_html=True)
+                    resumo_card = resumir_demanda_calendario(
+                        df_base_cal=df_calendario, ano=data_ref_card.year, mes=data_ref_card.month, dia_ref=data_ref_card.day
+                    )
+                    resumo_turno = resumir_conclusoes_por_turno_data(df_base_cal=df_calendario, data_ref=data_ref_card)
 
-                        origem = st.session_state.get("origem_tipo", "BASE")
-                        
-                        submit_baixa = st.form_submit_button("🚀 Concluir e Gravar OS(s)", use_container_width=True)
-                        
-                        if submit_baixa:
-                            if origem != "GPS":
-                                st.warning("📍 **Atenção:** A geolocalização é obrigatória. Role para cima e clique em '📍 Minha Localização'.")
-                            elif not todos_preenchidos:
-                                st.warning("⚠️ Preencha os horários de **início e fim** de todas as OSs.")
-                            else:
-                                geo_baixa = f"{st.session_state.get('local_nome', 'Local')} (Lat: {st.session_state.get('lat_partida')}, Lon: {st.session_state.get('lon_partida')})"
-                                equipe_str = ", ".join(equipe_selecionada) if equipe_selecionada else "Sozinho"
-                                data_hoje_br = datetime.now().strftime("%d/%m/%Y")
-                                realizado_dt = agora_dt()
-                                
-                                for os_id in set(os_selecionadas):
-                                    hora_ini_str = apontamentos[os_id]["inicio"].strftime("%H:%M:%S")
-                                    hora_fim_str = apontamentos[os_id]["fim"].strftime("%H:%M:%S")
-                                    
-                                    mask = (st.session_state["df_os"]["Ordem servico"].astype(str) == str(os_id))
-                                    dt_prog = st.session_state["df_os"].loc[mask, "Data inicial programada"].iloc[0] if len(st.session_state["df_os"].loc[mask]) > 0 else pd.NaT
-                                    coord = st.session_state["df_os"].loc[mask, "Coordenacao"].iloc[0] if len(st.session_state["df_os"].loc[mask]) > 0 else "Campo"
+                    with col_cards:
+                        st.markdown(
+                            f"""
+                            <div class="kpi-wrapper kpi-card-blue">
+                                <div class="kpi-title-blue">Pátios do Dia</div>
+                                <div class="kpi-val-blue">{resumo_card['qtd_patios']} <span style='font-size: 22px;'>📌</span></div>
+                                <div class="kpi-sub-blue">Referência: {data_ref_card.strftime('%d/%m/%Y')}</div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
 
-                                    novo_status = determinar_status_execucao(pd.to_datetime(dt_prog, errors="coerce"), realizado_dt)
+                        dia_idx = data_ref_card.day - 1
+                        serie_mes = resumo_card["serie_total_os_mes"]
+                        hoje_total = serie_mes[dia_idx] if dia_idx < len(serie_mes) else 0
+                        ontem_total = serie_mes[dia_idx - 1] if dia_idx > 0 else hoje_total
 
-                                    upsert_baixa(
-                                        os_id=str(os_id), status=novo_status, realizado_em_str=formatar_dt_br(realizado_dt),
-                                        coordenacao=coord, concluido_por=usr_logado, geolocalizacao_baixa=geo_baixa,
-                                        equipe=equipe_str, data_inicio=data_hoje_br, hora_inicio=hora_ini_str,
-                                        data_fim=data_hoje_br, hora_fim=hora_fim_str
-                                    )
-                                
-                                st.success(f"✅ Execução de {len(set(os_selecionadas))} OS(s) registrada com sucesso!")
-                                time.sleep(2)
-                                st.rerun()
+                        if ontem_total > 0: delta_pct = ((hoje_total - ontem_total) / ontem_total) * 100
+                        else: delta_pct = 0.0
 
-            # Chama a função fragmentada para renderizar na tela
-            renderizar_bloco_apontamento()
+                        if delta_pct > 0: seta, cor_badge, bg_badge, sinal = "↑", "#065F46", "#A7F3D0", "+"
+                        elif delta_pct < 0: seta, cor_badge, bg_badge, sinal = "↓", "#991B1B", "#FECACA", ""
+                        else: seta, cor_badge, bg_badge, sinal = "→", "#475569", "#E2E8F0", ""
+
+                        total_os_options = {
+                            "backgroundColor": "transparent", "animation": False,
+                            "graphic": [
+                                {"type": "rect", "left": 0, "top": 0, "shape": {"x": 0, "y": 0, "width": 320, "height": 140, "r": 18}, "style": {"fill": "#F0FDF4"}},
+                                {"type": "rect", "left": 0, "top": 0, "shape": {"x": 0, "y": 0, "width": 5, "height": 140, "r": [18, 0, 0, 18]}, "style": {"fill": "#10B981"}},
+                                {"type": "text", "left": "6%", "top": "16%", "style": {"text": "TOTAL DE OS DO DIA", "fill": "#064E3B", "font": "700 14px 'Source Sans Pro', sans-serif"}},
+                                {"type": "text", "left": "6%", "top": "40%", "style": {"text": f"{hoje_total} 🎯", "fill": "#065F46", "font": "400 32px 'Source Sans Pro', sans-serif"}},
+                                {"type": "text", "left": "6%", "top": "72%", "style": {"text": f"{seta} {sinal}{delta_pct:.1f}% vs ontem", "fill": "#10B981", "font": "400 12px 'Source Sans Pro', sans-serif"}}
+                            ]
+                        }
+                        st_echarts(options=total_os_options, height="140px", key="card_total_os_dia")
+                        st.markdown("<div style='margin-bottom: 16px;'></div>", unsafe_allow_html=True)
+
+                        st.markdown(
+                            f"""
+                            <div class="kpi-wrapper kpi-card-red">
+                                <div class="kpi-title-red">Pátio Prioritário</div>
+                                <div class="kpi-val-red">{resumo_card['patio_prioritario']}</div>
+                                <div class="kpi-sub-red">Critério: backlog + prioridade</div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+
+                    with col_turno:
+                        _cor_turno_aba2 = { "00h-07h": "#4F46E5", "07h-16h": "#3B82F6", "16h-00h": "#06B6D4" }
+                        dados_formatados_turno = [
+                            {"value": val, "itemStyle": { "color": _cor_turno_aba2.get(lbl, "#3B82F6"), "borderRadius": [0, 6, 6, 0] }}
+                            for lbl, val in zip(resumo_turno["labels"], resumo_turno["valores"])
+                        ]
+                        with st.container(border=True):
+                            concl_turno_options = {
+                                "title": {"text": resumo_turno["titulo"], "subtext": resumo_turno["subtitulo"], "left": "center", "top": "5%", "textStyle": { "fontSize": 14, "fontWeight": "bold", "color": "#1E293B", "fontFamily": '"Source Sans Pro", sans-serif' }, "subtextStyle": { "fontSize": 12, "color": "#64748B", "fontFamily": '"Source Sans Pro", sans-serif' }},
+                                "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
+                                "grid": { "left": "18%", "right": "10%", "bottom": "12%", "top": "24%", "containLabel": True },
+                                "xAxis": { "type": "value", "minInterval": 1, "splitLine": { "lineStyle": { "type": "dashed", "color": "#E2E8F0" } } },
+                                "yAxis": { "type": "category", "data": resumo_turno["labels"], "axisLabel": { "fontSize": 12, "fontWeight": "600", "color": "#475569", "fontFamily": '"Source Sans Pro", sans-serif' }, "axisLine": { "show": False }, "axisTick": { "show": False }},
+                                "series": [{"name": "OS Concluídas", "type": "bar", "data": dados_formatados_turno, "barWidth": "42%", "label": { "show": True, "position": "right", "color": "#1E293B", "fontWeight": "bold", "fontSize": 13, "fontFamily": '"Source Sans Pro", sans-serif' }}]
+                            }
+                            st_echarts(options=concl_turno_options, height="435px", theme="streamlit", key="chart_conclusoes_turno_data")
+
             st.markdown("---")
 
-    with col_mapa:
-        SP_MIN_LAT, SP_MAX_LAT = -25.50, -19.50
-        SP_MIN_LON, SP_MAX_LON = -53.50, -44.00
+            # 8.3.2 Navegação geográfica operacional
+            st.markdown("### 🗺️ Navegação Geográfica Operacional")
 
-        lat_centro = min(max(lat_origem, SP_MIN_LAT), SP_MAX_LAT)
-        lon_centro = min(max(lon_origem, SP_MIN_LON), SP_MAX_LON)
+            col_mapa, col_acao = st.columns([6, 4], gap="large")
 
-        def calcular_zoom_por_raio(raio_km: float, latitude_ref: float) -> int:
-            raio_km = max(float(raio_km), 0.5)
-            lat_rad = math.radians(float(latitude_ref))
-            km_por_grau_lon = 111.320 * max(math.cos(lat_rad), 0.20)
-            largura_graus = (2.0 * raio_km) / km_por_grau_lon
-            zoom = math.log2(360.0 / max(largura_graus, 1e-6))
-            return int(min(18, max(6, round(zoom))))
+            # Proteção caso df_filtrado não esteja no escopo
+            if "df_filtrado" in locals():
+                df_pendentes_f = df_filtrado[df_filtrado["Status_norm"].isin(_status_aberto)].copy()
+            else:
+                df_pendentes_f = df_visao[df_visao["Status_norm"].isin(_status_aberto)].copy()
 
-        zoom_mapa = calcular_zoom_por_raio(raio_busca_km, lat_centro)
+            # Inicialização de segurança
+            df_recomendado = pd.DataFrame()
 
-        mapa = folium.Map(
-            location=[lat_centro, lon_centro],
-            zoom_start=zoom_mapa,
-            max_bounds=True,
-            min_lat=SP_MIN_LAT,
-            max_lat=SP_MAX_LAT,
-            min_lon=SP_MIN_LON,
-            max_lon=SP_MAX_LON,
-            control_scale=True,
-            tiles="CartoDB positron",
-            prefer_canvas=True,
-        )
+            with col_acao:
+                st.markdown("#### ⚙️ Ferramentas de Campo")
 
-        # Traçado real da ferrovia
-        try:
-            import geopandas as gpd
-            from shapely.geometry import LineString, MultiLineString
+                # Estado inicial da origem
+                if "lat_partida" not in st.session_state:
+                    lat_base, lon_base, nome_base = obter_base_padrao_usuario()
+                    st.session_state["lat_partida"] = lat_base
+                    st.session_state["lon_partida"] = lon_base
+                    st.session_state["local_nome"] = nome_base
+                    st.session_state["origem_tipo"] = "BASE"
 
-            caminho_kml = "malha_mrs.kml"
-            if os.path.exists(caminho_kml):
-                gdf_malha = gpd.read_file(caminho_kml, driver="KML")
+                if "gps_pending" not in st.session_state:
+                    st.session_state["gps_pending"] = False
 
-                def adicionar_trecho_ferrovia(geom_trecho):
-                    estilo = {
-                        "color": "#2563EB",
-                        "weight": 2,
-                        "opacity": 0.70,
-                    }
-                    folium.GeoJson(
-                        geom_trecho.__geo_interface__,
-                        style_function=lambda x, estilo=estilo: estilo,
-                        control=False,
-                    ).add_to(mapa)
+                if "gps_trials" not in st.session_state:
+                    st.session_state["gps_trials"] = 0
 
-                for _, row in gdf_malha.iterrows():
-                    geom = row.geometry
-                    if geom is None or geom.is_empty:
-                        continue
-                    if isinstance(geom, LineString):
-                        adicionar_trecho_ferrovia(geom)
-                    elif isinstance(geom, MultiLineString):
-                        for subgeom in geom.geoms:
-                            adicionar_trecho_ferrovia(subgeom)
-        except Exception as e:
-            st.warning(f"Não foi possível carregar o traçado da ferrovia: {e}")
+                if "origem_tipo" not in st.session_state:
+                    st.session_state["origem_tipo"] = "BASE"
 
-        folium.Marker(
-            location=[lat_origem, lon_origem],
-            tooltip=f"Origem: {st.session_state['local_nome']}",
-            icon=folium.Icon(
-                color="red",
-                icon="home" if st.session_state.get("origem_tipo") != "GPS" else "map-marker",
-                prefix="fa"
-            )
-        ).add_to(mapa)
+                GPS_MAX_TRIALS = 25
 
-        folium.Circle(
-            radius=raio_busca_km * 1000,
-            location=[lat_origem, lon_origem],
-            color="#3B82F6",
-            fill=True,
-            fill_opacity=0.08,
-            weight=2,
-            tooltip=f"Raio de atuação: {raio_busca_km} km"
-        ).add_to(mapa)
+                c1, c2 = st.columns(2)
 
-        if not df_recomendado.empty:
-            agg_map = (
-                df_recomendado.groupby("Patio", as_index=False)
-                .agg(
-                    lat_patio=("lat_patio", "first"),
-                    lon_patio=("lon_patio", "first"),
-                    qtd_os=("Ordem servico", "count"),
-                    menor_dist=("Distancia_km", "min")
+                with c1:
+                    if st.button("📍 Minha Localização", use_container_width=True, key="btn_gps_localizacao"):
+                        st.session_state["gps_pending"] = True
+                        st.session_state["gps_trials"] = 0
+                        st.rerun()
+
+                with c2:
+                    if st.button("🏠 Minha Base", use_container_width=True, key="btn_minha_base"):
+                        lat_base, lon_base, nome_base = obter_base_padrao_usuario()
+                        st.session_state["lat_partida"] = lat_base
+                        st.session_state["lon_partida"] = lon_base
+                        st.session_state["local_nome"] = nome_base
+                        st.session_state["origem_tipo"] = "BASE"
+                        st.session_state["gps_pending"] = False
+                        st.session_state["gps_trials"] = 0
+                        st.rerun()
+
+                # Captura do GPS
+                if st.session_state.get("gps_pending"):
+                    st.info("Aguardando autorização do navegador e captura do GPS...")
+                    loc = get_geolocation()
+
+                    if loc and isinstance(loc, dict) and "coords" in loc:
+                        coords = loc.get("coords", {})
+                        lat = coords.get("latitude")
+                        lon = coords.get("longitude")
+
+                        if lat is not None and lon is not None:
+                            st.session_state["lat_partida"] = float(lat)
+                            st.session_state["lon_partida"] = float(lon)
+                            st.session_state["local_nome"] = reverse_geocode_coordenada(float(lat), float(lon))
+                            st.session_state["origem_tipo"] = "GPS"
+                            st.session_state["gps_pending"] = False
+                            st.session_state["gps_trials"] = 0
+                            st.success("GPS ativado com sucesso!")
+                            st.rerun()
+
+                    elif loc and isinstance(loc, dict) and "error" in loc:
+                        st.session_state["gps_pending"] = False
+                        st.session_state["gps_trials"] = 0
+                        st.error(f"GPS falhou: {loc['error'].get('message', 'Erro desconhecido')}")
+
+                    else:
+                        st.session_state["gps_trials"] += 1
+                        if st.session_state["gps_trials"] < GPS_MAX_TRIALS:
+                            st.info("Aguardando permissão do navegador...")
+                            time.sleep(0.3)
+                            st.rerun()
+                        else:
+                            st.session_state["gps_pending"] = False
+                            st.session_state["gps_trials"] = 0
+                            st.error("Tempo do GPS esgotado. Tente novamente ou use a opção Minha Base.")
+
+                st.markdown("---")
+                raio_busca_km = st.slider("📏 Raio de Atuação Visual (km):", 0, 50, 10, 5, key="slider_raio_atuacao")
+
+                origem_label = "📍 GPS" if st.session_state.get("origem_tipo") == "GPS" else "🏠 Base"
+                st.caption(f"{origem_label}: **{st.session_state['local_nome']}**")
+
+                lat_origem = float(st.session_state["lat_partida"])
+                lon_origem = float(st.session_state["lon_partida"])
+
+                if not df_pendentes_f.empty:
+                    df_calc = df_pendentes_f.copy()
+                    df_calc["lat_patio"] = df_calc["Patio"].map(
+                        lambda p: COORDENADAS_FIXAS.get(str(p).strip().upper(), [np.nan, np.nan])[0]
+                    )
+                    df_calc["lon_patio"] = df_calc["Patio"].map(
+                        lambda p: COORDENADAS_FIXAS.get(str(p).strip().upper(), [np.nan, np.nan])[1]
+                    )
+                    com_coord = df_calc.dropna(subset=["lat_patio", "lon_patio"]).copy()
+
+                    if not com_coord.empty:
+                        hoje_atual = datetime.now().date()
+                        com_coord["Ordem_Prazo"] = com_coord["dt_prog_filtro"].apply(
+                            lambda dt: 1 if pd.notna(dt) and dt.date() < hoje_atual
+                            else (2 if pd.notna(dt) and dt.date() == hoje_atual else 3)
+                        )
+                        com_coord["Distancia_km"] = haversine_vectorized(
+                            lat_origem,
+                            lon_origem,
+                            com_coord["lat_patio"],
+                            com_coord["lon_patio"]
+                        )
+                        df_recomendado = com_coord[
+                            com_coord["Distancia_km"] <= raio_busca_km
+                        ].sort_values(by=["Ordem_Prazo", "Criticidade_rank", "Distancia_km"])
+
+                st.info(f"**{len(df_recomendado)} OS pendentes** encontradas no raio de {raio_busca_km} km.")
+
+                if not df_recomendado.empty:
+                    
+                    # === NOVA APLICAÇÃO DE PERFORMANCE: FRAGMENTO DE APONTAMENTO ===
+                    @st.fragment
+                    def renderizar_bloco_apontamento():
+                        st.markdown("---")
+                        st.markdown("#### ✅ Apontamento e Conclusão de OS")
+                        
+                        lista_os_unicas = df_recomendado["Ordem servico"].astype(str).unique().tolist()
+                        
+                        os_selecionadas = st.multiselect(
+                            "1. Selecione as OSs que deseja baixar:",
+                            lista_os_unicas
+                        )
+
+                        if os_selecionadas:
+                            # --- 🛑 GEOFENCING: TRAVA DE RAIO DE 5 KM ---
+                            os_distantes = []
+                            for os_id in os_selecionadas:
+                                # Puxa a distância exata da OS selecionada
+                                dist = df_recomendado.loc[df_recomendado["Ordem servico"].astype(str) == str(os_id), "Distancia_km"].iloc[0]
+                                if dist > 5.0:
+                                    os_distantes.append(f"{os_id} (a {dist:.1f} km)")
+                                    
+                            if os_distantes:
+                                st.error(f"🛑 **Bloqueio Geográfico:** O sistema exige que você esteja em um raio máximo de **5 km** do local da manutenção para registrar a execução.")
+                                st.warning(f"Você está muito longe das seguintes OSs: **{', '.join(os_distantes)}**.")
+                                st.info("💡 Aproxime-se do pátio e atualize sua posição no botão '📍 Minha Localização' acima para liberar o apontamento.")
+                                return  # ⬅️ O código "morre" aqui. O formulário de apontamento nem sequer aparece na tela!
+                            # --------------------------------------------
+
+                            conn = get_connection()
+                            df_users_equipe = pd.read_sql_query("SELECT username FROM usuarios", conn)
+                            release_connection(conn)
+                            lista_equipe_disp = df_users_equipe["username"].tolist()
+                            
+                            usr_logado = st.session_state.get("username", "")
+                            if usr_logado in lista_equipe_disp:
+                                lista_equipe_disp.remove(usr_logado)
+                            
+                            with st.form("form_apontamento_os"):
+                                equipe_selecionada = st.multiselect(
+                                    "2. Selecione a sua equipe (Co-executantes presentes):", 
+                                    lista_equipe_disp, help="Deixe em branco se estiver trabalhando sozinho."
+                                )
+
+                                st.markdown("---")
+                                st.markdown("#### ⏳ Apontamento de Tempos Individuais")
+                                
+                                apontamentos = {}
+                                todos_preenchidos = True
+                                
+                                for os_id in set(os_selecionadas):
+                                    st.markdown(f"<b style='color: #3B82F6;'>OS: {os_id}</b>", unsafe_allow_html=True)
+                                    c1, c2 = st.columns(2)
+                                    with c1:
+                                        h_ini = st.time_input(f"Horário Início", key=f"time_ini_{os_id}", value=None)
+                                    with c2:
+                                        h_fim = st.time_input(f"Horário Fim", key=f"time_fim_{os_id}", value=None)
+                                        
+                                    apontamentos[os_id] = {"inicio": h_ini, "fim": h_fim}
+                                    if h_ini is None or h_fim is None:
+                                        todos_preenchidos = False
+                                    st.markdown("<hr style='margin: 8px 0; border-color: #333D4E;'>", unsafe_allow_html=True)
+
+                                origem = st.session_state.get("origem_tipo", "BASE")
+                                
+                                submit_baixa = st.form_submit_button("🚀 Concluir e Gravar OS(s)", use_container_width=True)
+                                
+                                if submit_baixa:
+                                    if origem != "GPS":
+                                        st.warning("📍 **Atenção:** A geolocalização é obrigatória. Role para cima e clique em '📍 Minha Localização'.")
+                                    elif not todos_preenchidos:
+                                        st.warning("⚠️ Preencha os horários de **início e fim** de todas as OSs.")
+                                    else:
+                                        geo_baixa = f"{st.session_state.get('local_nome', 'Local')} (Lat: {st.session_state.get('lat_partida')}, Lon: {st.session_state.get('lon_partida')})"
+                                        equipe_str = ", ".join(equipe_selecionada) if equipe_selecionada else "Sozinho"
+                                        data_hoje_br = datetime.now().strftime("%d/%m/%Y")
+                                        realizado_dt = agora_dt()
+                                        
+                                        for os_id in set(os_selecionadas):
+                                            hora_ini_str = apontamentos[os_id]["inicio"].strftime("%H:%M:%S")
+                                            hora_fim_str = apontamentos[os_id]["fim"].strftime("%H:%M:%S")
+                                            
+                                            mask = (st.session_state["df_os"]["Ordem servico"].astype(str) == str(os_id))
+                                            dt_prog = st.session_state["df_os"].loc[mask, "Data inicial programada"].iloc[0] if len(st.session_state["df_os"].loc[mask]) > 0 else pd.NaT
+                                            coord = st.session_state["df_os"].loc[mask, "Coordenacao"].iloc[0] if len(st.session_state["df_os"].loc[mask]) > 0 else "Campo"
+
+                                            novo_status = determinar_status_execucao(pd.to_datetime(dt_prog, errors="coerce"), realizado_dt)
+
+                                            upsert_baixa(
+                                                os_id=str(os_id), status=novo_status, realizado_em_str=formatar_dt_br(realizado_dt),
+                                                coordenacao=coord, concluido_por=usr_logado, geolocalizacao_baixa=geo_baixa,
+                                                equipe=equipe_str, data_inicio=data_hoje_br, hora_inicio=hora_ini_str,
+                                                data_fim=data_hoje_br, hora_fim=hora_fim_str
+                                            )
+                                        
+                                        st.success(f"✅ Execução de {len(set(os_selecionadas))} OS(s) registrada com sucesso!")
+                                        time.sleep(2)
+                                        st.rerun()
+
+                    # Chama a função fragmentada para renderizar na tela
+                    renderizar_bloco_apontamento()
+                    st.markdown("---")
+
+            with col_mapa:
+                SP_MIN_LAT, SP_MAX_LAT = -25.50, -19.50
+                SP_MIN_LON, SP_MAX_LON = -53.50, -44.00
+
+                lat_centro = min(max(lat_origem, SP_MIN_LAT), SP_MAX_LAT)
+                lon_centro = min(max(lon_origem, SP_MIN_LON), SP_MAX_LON)
+
+                def calcular_zoom_por_raio(raio_km: float, latitude_ref: float) -> int:
+                    raio_km = max(float(raio_km), 0.5)
+                    lat_rad = math.radians(float(latitude_ref))
+                    km_por_grau_lon = 111.320 * max(math.cos(lat_rad), 0.20)
+                    largura_graus = (2.0 * raio_km) / km_por_grau_lon
+                    zoom = math.log2(360.0 / max(largura_graus, 1e-6))
+                    return int(min(18, max(6, round(zoom))))
+
+                zoom_mapa = calcular_zoom_por_raio(raio_busca_km, lat_centro)
+
+                mapa = folium.Map(
+                    location=[lat_centro, lon_centro],
+                    zoom_start=zoom_mapa,
+                    max_bounds=True,
+                    min_lat=SP_MIN_LAT,
+                    max_lat=SP_MAX_LAT,
+                    min_lon=SP_MIN_LON,
+                    max_lon=SP_MAX_LON,
+                    control_scale=True,
+                    tiles="CartoDB positron",
+                    prefer_canvas=True,
                 )
-                .sort_values(["menor_dist", "Patio"])
-            )
 
-            for _, row in agg_map.iterrows():
-                folium.CircleMarker(
-                    location=[row["lat_patio"], row["lon_patio"]],
-                    radius=6,
-                    color="#1D4ED8",
-                    weight=1.5,
-                    fill=True,
-                    fill_color="#3B82F6",
-                    fill_opacity=0.95,
-                    tooltip=(
-                        f"Pátio: {row['Patio']}<br>"
-                        f"OS no raio: {row['qtd_os']}<br>"
-                        f"Menor distância: {row['menor_dist']:.1f} km"
+                # Traçado real da ferrovia
+                try:
+                    import geopandas as gpd
+                    from shapely.geometry import LineString, MultiLineString
+
+                    caminho_kml = "malha_mrs.kml"
+                    if os.path.exists(caminho_kml):
+                        gdf_malha = gpd.read_file(caminho_kml, driver="KML")
+
+                        def adicionar_trecho_ferrovia(geom_trecho):
+                            estilo = {
+                                "color": "#2563EB",
+                                "weight": 2,
+                                "opacity": 0.70,
+                            }
+                            folium.GeoJson(
+                                geom_trecho.__geo_interface__,
+                                style_function=lambda x, estilo=estilo: estilo,
+                                control=False,
+                            ).add_to(mapa)
+
+                        for _, row in gdf_malha.iterrows():
+                            geom = row.geometry
+                            if geom is None or geom.is_empty:
+                                continue
+                            if isinstance(geom, LineString):
+                                adicionar_trecho_ferrovia(geom)
+                            elif isinstance(geom, MultiLineString):
+                                for subgeom in geom.geoms:
+                                    adicionar_trecho_ferrovia(subgeom)
+                except Exception as e:
+                    st.warning(f"Não foi possível carregar o traçado da ferrovia: {e}")
+
+                folium.Marker(
+                    location=[lat_origem, lon_origem],
+                    tooltip=f"Origem: {st.session_state['local_nome']}",
+                    icon=folium.Icon(
+                        color="red",
+                        icon="home" if st.session_state.get("origem_tipo") != "GPS" else "map-marker",
+                        prefix="fa"
                     )
                 ).add_to(mapa)
 
-        st_folium(mapa, height=650, use_container_width=True, returned_objects=[], key="mapa_final_limpo")
+                folium.Circle(
+                    radius=raio_busca_km * 1000,
+                    location=[lat_origem, lon_origem],
+                    color="#3B82F6",
+                    fill=True,
+                    fill_opacity=0.08,
+                    weight=2,
+                    tooltip=f"Raio de atuação: {raio_busca_km} km"
+                ).add_to(mapa)
 
-    st.markdown("---")
-
-    # 8.3.4 Cronograma de Execução de Campo
-    if not df_recomendado.empty:
-        df_tabela_campo = df_recomendado.copy()
-        df_tabela_campo = df_tabela_campo.rename(columns={"Ordem servico": "OS", "Patio": "Patio", "Classificacao": "Classificação"})
-        df_tabela_campo["Data da Programação"] = df_tabela_campo["dt_prog_filtro"].dt.strftime("%d/%m/%Y")
-
-        colunas_exibir = ["OS", "Data da Programação", "Patio", "Ativo", "Criticidade", "Classificação", "Descrição Longa"]
-
-        col_tit_crono, col_btn_crono = st.columns([7.5, 2.5])
-
-        with col_tit_crono:
-            st.markdown("#### 📋 Cronograma de Execução de Campo")
-            st.caption("OS Pendentes recomendadas no raio de atuação visual por prioridade")
-
-        with col_btn_crono:
-            st.markdown("<div style='margin-top: 5px;'></div>", unsafe_allow_html=True)
-
-            def exportar_cronograma_pdf(dataframe, usuario_logado):
-                try:
-                    from reportlab.lib.pagesizes import letter, landscape
-                    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
-                    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-                    from reportlab.lib import colors
-                    import io
-
-                    pdf_buffer = io.BytesIO()
-                    doc = SimpleDocTemplate(
-                        pdf_buffer,
-                        pagesize=landscape(letter),
-                        rightMargin=20,
-                        leftMargin=20,
-                        topMargin=20,
-                        bottomMargin=20,
-                    )
-                    elements = []
-
-                    styles = getSampleStyleSheet()
-                    title_style = ParagraphStyle(
-                        'TitleStyle',
-                        parent=styles['Heading1'],
-                        fontName='Helvetica-Bold',
-                        fontSize=18,
-                        textColor=colors.HexColor('#1A202C'),
-                        spaceAfter=6,
-                    )
-                    sub_style = ParagraphStyle(
-                        'SubStyle',
-                        fontName='Helvetica',
-                        fontSize=10,
-                        textColor=colors.HexColor('#475569'),
-                        spaceAfter=15,
-                    )
-                    cell_style = ParagraphStyle(
-                        'CellStyle',
-                        fontName='Helvetica',
-                        fontSize=9,
-                        leading=11,
-                        textColor=colors.HexColor('#1E293B'),
-                    )
-                    header_style = ParagraphStyle(
-                        'HeaderStyle',
-                        fontName='Helvetica-Bold',
-                        fontSize=10,
-                        leading=12,
-                        textColor=colors.white,
+                if not df_recomendado.empty:
+                    agg_map = (
+                        df_recomendado.groupby("Patio", as_index=False)
+                        .agg(
+                            lat_patio=("lat_patio", "first"),
+                            lon_patio=("lon_patio", "first"),
+                            qtd_os=("Ordem servico", "count"),
+                            menor_dist=("Distancia_km", "min")
+                        )
+                        .sort_values(["menor_dist", "Patio"])
                     )
 
-                    elements.append(Paragraph("⚡ MRS LOGÍSTICA — CRONOGRAMA OPERACIONAL DE CAMPO", title_style))
-                    elements.append(Paragraph(
-                        f"Emitido em: {datetime.now().strftime('%d/%m/%Y %H:%M')} | Operador responsável: {usuario_logado.upper()}",
-                        sub_style,
-                    ))
+                    for _, row in agg_map.iterrows():
+                        folium.CircleMarker(
+                            location=[row["lat_patio"], row["lon_patio"]],
+                            radius=6,
+                            color="#1D4ED8",
+                            weight=1.5,
+                            fill=True,
+                            fill_color="#3B82F6",
+                            fill_opacity=0.95,
+                            tooltip=(
+                                f"Pátio: {row['Patio']}<br>"
+                                f"OS no raio: {row['qtd_os']}<br>"
+                                f"Menor distância: {row['menor_dist']:.1f} km"
+                            )
+                        ).add_to(mapa)
 
-                    dados_pdf = [[Paragraph(col, header_style) for col in colunas_exibir]]
+                st_folium(mapa, height=650, use_container_width=True, returned_objects=[], key="mapa_final_limpo")
 
-                    for _, row in dataframe[colunas_exibir].iterrows():
-                        linha = []
-                        for col in colunas_exibir:
-                            texto_limpo = str(row[col]).replace('<br>', ' ').replace('<br/>', ' ')
-                            linha.append(Paragraph(texto_limpo, cell_style))
-                        dados_pdf.append(linha)
+            st.markdown("---")
 
-                    larguras_colunas = [65, 80, 50, 110, 75, 120, 252]
-                    tabela_pdf = Table(dados_pdf, colWidths=larguras_colunas, repeatRows=1)
+            # 8.3.4 Cronograma de Execução de Campo
+            if not df_recomendado.empty:
+                df_tabela_campo = df_recomendado.copy()
+                df_tabela_campo = df_tabela_campo.rename(columns={"Ordem servico": "OS", "Patio": "Patio", "Classificacao": "Classificação"})
+                df_tabela_campo["Data da Programação"] = df_tabela_campo["dt_prog_filtro"].dt.strftime("%d/%m/%Y")
 
-                    tabela_style = TableStyle([
-                        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1A202C')),
-                        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-                        ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
-                        ('TOPPADDING', (0, 0), (-1, 0), 8),
-                        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#CBD5E1')),
-                    ])
+                colunas_exibir = ["OS", "Data da Programação", "Patio", "Ativo", "Criticidade", "Classificação", "Descrição Longa"]
 
-                    for i in range(1, len(dados_pdf)):
-                        if i % 2 == 0:
-                            tabela_style.add('BACKGROUND', (0, i), (-1, i), colors.HexColor('#F8FAFC'))
+                col_tit_crono, col_btn_crono = st.columns([7.5, 2.5])
 
-                    tabela_pdf.setStyle(tabela_style)
-                    elements.append(tabela_pdf)
-                    doc.build(elements)
-                    pdf_buffer.seek(0)
-                    return pdf_buffer.read()
-                except Exception:
-                    return None
+                with col_tit_crono:
+                    st.markdown("#### 📋 Cronograma de Execução de Campo")
+                    st.caption("OS Pendentes recomendadas no raio de atuação visual por prioridade")
 
-            pdf_bytes = exportar_cronograma_pdf(df_tabela_campo, st.session_state.get('username', 'técnico'))
+                with col_btn_crono:
+                    st.markdown("<div style='margin-top: 5px;'></div>", unsafe_allow_html=True)
 
-            if pdf_bytes:
-                st.download_button(
-                    "📄 Gerar PDF para Impressão",
-                    data=pdf_bytes,
-                    file_name=f"Cronograma_MRS_{datetime.now().strftime('%d%m%Y_%H%M')}.pdf",
-                    mime="application/pdf",
+                    def exportar_cronograma_pdf(dataframe, usuario_logado):
+                        try:
+                            from reportlab.lib.pagesizes import letter, landscape
+                            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+                            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+                            from reportlab.lib import colors
+                            import io
+
+                            pdf_buffer = io.BytesIO()
+                            doc = SimpleDocTemplate(
+                                pdf_buffer,
+                                pagesize=landscape(letter),
+                                rightMargin=20,
+                                leftMargin=20,
+                                topMargin=20,
+                                bottomMargin=20,
+                            )
+                            elements = []
+
+                            styles = getSampleStyleSheet()
+                            title_style = ParagraphStyle(
+                                'TitleStyle',
+                                parent=styles['Heading1'],
+                                fontName='Helvetica-Bold',
+                                fontSize=18,
+                                textColor=colors.HexColor('#1A202C'),
+                                spaceAfter=6,
+                            )
+                            sub_style = ParagraphStyle(
+                                'SubStyle',
+                                fontName='Helvetica',
+                                fontSize=10,
+                                textColor=colors.HexColor('#475569'),
+                                spaceAfter=15,
+                            )
+                            cell_style = ParagraphStyle(
+                                'CellStyle',
+                                fontName='Helvetica',
+                                fontSize=9,
+                                leading=11,
+                                textColor=colors.HexColor('#1E293B'),
+                            )
+                            header_style = ParagraphStyle(
+                                'HeaderStyle',
+                                fontName='Helvetica-Bold',
+                                fontSize=10,
+                                leading=12,
+                                textColor=colors.white,
+                            )
+
+                            elements.append(Paragraph("⚡ MRS LOGÍSTICA — CRONOGRAMA OPERACIONAL DE CAMPO", title_style))
+                            elements.append(Paragraph(
+                                f"Emitido em: {datetime.now().strftime('%d/%m/%Y %H:%M')} | Operador responsável: {usuario_logado.upper()}",
+                                sub_style,
+                            ))
+
+                            dados_pdf = [[Paragraph(col, header_style) for col in colunas_exibir]]
+
+                            for _, row in dataframe[colunas_exibir].iterrows():
+                                linha = []
+                                for col in colunas_exibir:
+                                    texto_limpo = str(row[col]).replace('<br>', ' ').replace('<br/>', ' ')
+                                    linha.append(Paragraph(texto_limpo, cell_style))
+                                dados_pdf.append(linha)
+
+                            larguras_colunas = [65, 80, 50, 110, 75, 120, 252]
+                            tabela_pdf = Table(dados_pdf, colWidths=larguras_colunas, repeatRows=1)
+
+                            tabela_style = TableStyle([
+                                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1A202C')),
+                                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                                ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+                                ('TOPPADDING', (0, 0), (-1, 0), 8),
+                                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#CBD5E1')),
+                            ])
+
+                            for i in range(1, len(dados_pdf)):
+                                if i % 2 == 0:
+                                    tabela_style.add('BACKGROUND', (0, i), (-1, i), colors.HexColor('#F8FAFC'))
+
+                            tabela_pdf.setStyle(tabela_style)
+                            elements.append(tabela_pdf)
+                            doc.build(elements)
+                            pdf_buffer.seek(0)
+                            return pdf_buffer.read()
+                        except Exception:
+                            return None
+
+                    pdf_bytes = exportar_cronograma_pdf(df_tabela_campo, st.session_state.get('username', 'técnico'))
+
+                    if pdf_bytes:
+                        st.download_button(
+                            "📄 Gerar PDF para Impressão",
+                            data=pdf_bytes,
+                            file_name=f"Cronograma_MRS_{datetime.now().strftime('%d%m%Y_%H%M')}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                        )
+                    else:
+                        st.button("📄 Erro ao estruturar PDF", disabled=True, use_container_width=True)
+
+                def aplicar_cor_prazo(row):
+                    dt = row["dt_prog_filtro"]
+                    if pd.isna(dt):
+                        return [""] * len(row)
+                    d = dt.date()
+                    hoje_ref = datetime.now().date()
+                    if d < hoje_ref:
+                        return ["background-color: #FEE2E2; color: #7F1D1D; font-weight: 500;"] * len(row)
+                    elif d == hoje_ref:
+                        return ["background-color: #FEF3C7; color: #78350F; font-weight: 500;"] * len(row)
+                    return [""] * len(row)
+
+                df_estilizado = df_tabela_campo.style.apply(aplicar_cor_prazo, axis=1)
+                st.dataframe(
+                    df_estilizado,
                     use_container_width=True,
+                    height=350,
+                    hide_index=True,
+                    column_order=colunas_exibir,
                 )
             else:
-                st.button("📄 Erro ao estruturar PDF", disabled=True, use_container_width=True)
-
-        def aplicar_cor_prazo(row):
-            dt = row["dt_prog_filtro"]
-            if pd.isna(dt):
-                return [""] * len(row)
-            d = dt.date()
-            hoje_ref = datetime.now().date()
-            if d < hoje_ref:
-                return ["background-color: #FEE2E2; color: #7F1D1D; font-weight: 500;"] * len(row)
-            elif d == hoje_ref:
-                return ["background-color: #FEF3C7; color: #78350F; font-weight: 500;"] * len(row)
-            return [""] * len(row)
-
-        df_estilizado = df_tabela_campo.style.apply(aplicar_cor_prazo, axis=1)
-        st.dataframe(
-            df_estilizado,
-            use_container_width=True,
-            height=350,
-            hide_index=True,
-            column_order=colunas_exibir,
-        )
-    else:
-        st.markdown("#### 📋 Cronograma de Execução de Campo")
-        st.caption("OS Pendentes recomendadas no raio de atuação visual por prioridade")
-        st.info("Nenhuma OS pendente localizada dentro do raio de atuação selecionado.")
-#endregion
+                st.markdown("#### 📋 Cronograma de Execução de Campo")
+                st.caption("OS Pendentes recomendadas no raio de atuação visual por prioridade")
+                st.info("Nenhuma OS pendente localizada dentro do raio de atuação selecionado.")
+        #endregion
+#endregion (Fim da Sessão 8)
 
 #region SESSÃO 9: Tela Isolada de Governança e Auditoria
 # ==========================================
@@ -3160,6 +3160,4 @@ if st.session_state.get("tela_atual") == "governanca":
 
             st.dataframe(df_exibir, use_container_width=True, hide_index=True)
             
-#endregion
-#endregion
 #endregion
