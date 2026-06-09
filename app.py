@@ -2985,14 +2985,17 @@ if st.session_state.get("tela_atual") == "governanca":
         st.caption("Volume diário executado vs total de OS planejadas + backlog do dia.")
         st_echarts(options={
             "tooltip": {"trigger": "axis"},
-            "legend": {"data": ["Volume Diário", "Planejado + Backlog"]},
+            "legend": {"data": ["Volume Diário", "Planejado + Backlog"], "bottom": "0%"},
+            "toolbox": {"show": True, "feature": {"magicType": {"type": ["line", "bar"], "title": {"line": "Linha", "bar": "Barra"}}, "restore": {"title": "Restaurar"}, "saveAsImage": {"title": "Salvar Imagem"}}},
+            "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}],
+            "grid": {"left": "5%", "right": "5%", "bottom": "25%", "top": "15%", "containLabel": True},
             "xAxis": {"type": "category", "data": eixo_x_l1},
             "yAxis": {"type": "value"},
             "series": [
                 {"name": "Volume Diário", "type": "bar", "data": df_merge_vol["Realizado"].tolist(), "itemStyle": {"color": "#3B82F6"}},
-                {"name": "Planejado + Backlog", "type": "line", "data": df_merge_vol["Planejado_Backlog"].tolist(), "smooth": True, "lineStyle": {"type": "dashed", "color": "#64748B"}}
+                {"name": "Planejado + Backlog", "type": "line", "data": df_merge_vol["Planejado_Backlog"].tolist(), "smooth": True, "lineStyle": {"type": "dashed", "color": "#64748B", "width": 3}, "itemStyle": {"color": "#64748B"}}
             ]
-        }, height="320px", key="gov_vol_diario_new")
+        }, height="350px", theme="streamlit", key="gov_vol_diario_new")
 
     with col_l1_c2:
         st.markdown("#### 📈 Produtividade Acumulada")
@@ -3001,14 +3004,17 @@ if st.session_state.get("tela_atual") == "governanca":
         df_merge_vol["Plan_Acum"] = df_merge_vol["Planejado_Backlog"].cumsum()
         st_echarts(options={
             "tooltip": {"trigger": "axis"},
-            "legend": {"data": ["Realizado Acumulado", "Planejado Acumulado"]},
+            "legend": {"data": ["Realizado Acumulado", "Planejado Acumulado"], "bottom": "0%"},
+            "toolbox": {"show": True, "feature": {"magicType": {"type": ["line", "bar"], "title": {"line": "Linha", "bar": "Barra"}}, "restore": {"title": "Restaurar"}, "saveAsImage": {"title": "Salvar Imagem"}}},
+            "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}],
+            "grid": {"left": "5%", "right": "5%", "bottom": "25%", "top": "15%", "containLabel": True},
             "xAxis": {"type": "category", "data": eixo_x_l1},
             "yAxis": {"type": "value"},
             "series": [
-                {"name": "Realizado Acumulado", "type": "line", "smooth": True, "data": df_merge_vol["Real_Acum"].tolist(), "areaStyle": {"color": "rgba(59,130,246,0.15)"}, "lineStyle": {"color": "#3B82F6", "width": 3}},
-                {"name": "Planejado Acumulado", "type": "line", "smooth": True, "data": df_merge_vol["Plan_Acum"].tolist(), "lineStyle": {"type": "dashed", "color": "#64748B", "width": 2}}
+                {"name": "Realizado Acumulado", "type": "line", "smooth": True, "data": df_merge_vol["Real_Acum"].tolist(), "areaStyle": {"color": "rgba(59,130,246,0.15)"}, "lineStyle": {"color": "#3B82F6", "width": 3}, "itemStyle": {"color": "#3B82F6"}},
+                {"name": "Planejado Acumulado", "type": "line", "smooth": True, "data": df_merge_vol["Plan_Acum"].tolist(), "lineStyle": {"type": "dashed", "color": "#64748B", "width": 3}, "itemStyle": {"color": "#64748B"}}
             ]
-        }, height="320px", key="gov_prod_acum_new")
+        }, height="350px", theme="streamlit", key="gov_prod_acum_new")
 
     # ==========================================
     # LINHA 2: Produtividade Individual (Criticidade) + Esforço + Heatmap
