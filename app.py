@@ -2938,6 +2938,7 @@ if st.session_state.get("tela_atual") == "governanca":
 
 #region 9.3: Gráficos de Governança e Auditoria
 
+    # ==========================================
     # LINHA 1: Volume Diário vs Produtividade Acumulada
     # ==========================================
     col_l1_c1, col_l1_c2 = st.columns(2, gap="large")
@@ -2946,7 +2947,18 @@ if st.session_state.get("tela_atual") == "governanca":
     df_real_dia = df_gov_f.groupby("Data_Real").size().reset_index(name="Realizado")
     df_os_base["Data_Prog_Pure"] = pd.to_datetime(df_os_base["Data inicial programada"], errors="coerce").dt.date
     df_plan_dia = df_os_base.groupby("Data_Prog_Pure").size().reset_index(name="Planejado_Backlog")
-    df_merge_vol = pd.merge(df_real_dia, df_plan_dia, left_on="Data_Real", right_on="Data_Prog_Pure", how="outer").fillna(0)
+    
+    # 1. Faz o merge sem o fillna(0) global para não corromper as datas
+    df_merge_vol = pd.merge(df_real_dia, df_plan_dia, left_on="Data_Real", right_on="Data_Prog_Pure", how="outer")
+    
+    # 2. Unifica a coluna de data (pega do Planejado se o Realizado for vazio)
+    df_merge_vol["Data_Real"] = df_merge_vol["Data_Real"].combine_first(df_merge_vol["Data_Prog_Pure"])
+    
+    # 3. Preenche apenas as colunas numéricas com 0
+    df_merge_vol["Realizado"] = df_merge_vol["Realizado"].fillna(0)
+    df_merge_vol["Planejado_Backlog"] = df_merge_vol["Planejado_Backlog"].fillna(0)
+    
+    # 4. Ordena com segurança
     df_merge_vol = df_merge_vol.sort_values(by="Data_Real")
     eixo_x_l1 = [d.strftime("%d/%m") if hasattr(d, "strftime") else str(d) for d in df_merge_vol["Data_Real"]]
 
