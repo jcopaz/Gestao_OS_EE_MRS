@@ -1515,15 +1515,31 @@ def tratar_df_os(df: pd.DataFrame):
     df["PRIORIDADE_CAN"] = df[col_prioridade].astype(str).str.strip()
     df["HXH_CAN"] = pd.to_numeric(df[col_hxh], errors="coerce").fillna(0) if col_hxh else 0.0
     
-    # --- RESOLUÇÃO INTELIGENTE DE PÁTIO (lookup + fallback 3 letras) ---
+    # --- RESOLUÇÃO INTELIGENTE DE PÁTIO (lookup + scan + fallback) ---
     _mapa_patios = carregar_mapeamento_patios()
-    if _mapa_patios:
-        df["PATIO_CAN"] = df["ATIVO_CAN"].str.strip().str.upper().map(_mapa_patios)
-        _sem_patio = df["PATIO_CAN"].isna()
-        if _sem_patio.any():
-            df.loc[_sem_patio, "PATIO_CAN"] = df.loc[_sem_patio, "ATIVO_CAN"].str[:3].str.upper()
-    else:
-        df["PATIO_CAN"] = df["ATIVO_CAN"].str[:3].str.upper()
+    _patios_validos = set(COORDENADAS_FIXAS.keys())
+
+    def _resolver_patio(ativo_str: str) -> str:
+        ativo_upper = str(ativo_str).strip().upper()
+
+        # 1) Busca exata no mapeamento do banco
+        if _mapa_patios and ativo_upper in _mapa_patios:
+            return _mapa_patios[ativo_upper]
+
+        # 2) Tenta as 3 primeiras letras
+        prefixo = ativo_upper[:3]
+        if prefixo in _patios_validos:
+            return prefixo
+
+        # 3) Scan: procura qualquer pátio válido dentro do texto do ativo
+        for patio_candidato in sorted(_patios_validos, key=len, reverse=True):
+            if patio_candidato in ativo_upper:
+                return patio_candidato
+
+        # 4) Nada encontrado
+        return "N/D"
+
+    df["PATIO_CAN"] = df["ATIVO_CAN"].apply(_resolver_patio)
 
     df["DATA_PROG_CAN"] = df[col_data_prog].apply(parse_data_programada)
     df["DESC_LONGA_CAN"] = df[col_desc].astype(str).str.strip() if col_desc else ""
