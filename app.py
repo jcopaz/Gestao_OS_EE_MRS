@@ -2044,7 +2044,7 @@ else:
     min_date = datetime.now().date() - pd.Timedelta(days=30)
     max_date = datetime.now().date()
 
-if st.session_state["perfil"] != "Técnico":
+if st.session_state.get("perfil", "") != "Técnico":
     data_selecionada = st.sidebar.date_input(
         "Período de Programação",
         value=(min_date, max_date),
