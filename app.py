@@ -2295,11 +2295,13 @@ with col_acoes:
         st.session_state["reset_user"] = usr_atual
         st.rerun()
         
-    if st.button("🚪 Sair", use_container_width=True):
-        st.session_state.clear() 
-        st.session_state["logged_in"] = False
-        st.rerun()
-
+        if st.button("🚪 Sair", use_container_width=True):
+            keys_manter = {"gps_pending", "gps_trials", "origem_tipo"}
+            for key in list(st.session_state.keys()):
+                if key not in keys_manter:
+                    del st.session_state[key]
+            st.session_state["logged_in"] = False
+            st.rerun()
 st.markdown("---")
 
 # CÁLCULO DOS KPIS PARA A SESSÃO 7
