@@ -2153,108 +2153,118 @@ if "Gestão de Usuários" in st.session_state.get("governanca", ""):
             if st.button("🔄 Recarregar dados (ETL)", use_container_width=True):
                 st.cache_data.clear(); st.rerun()
 
-        st.markdown("<div style='background-color: #FF4B4B; color: #FFFFFF; font-weight: bold; text-align: center; padding: 8px; border-radius: 6px; margin-top: 15px; margin-bottom: 10px;'>Gestão de Usuários</div>", unsafe_allow_html=True)
+        # ======================================================
+        # GESTÃO DE USUÁRIOS (Fragmento isolado - sem rerun global)
+        # ======================================================
+        @st.fragment
+        def fragmento_gestao_usuarios():
+            st.markdown("<div style='background-color: #FF4B4B; color: #FFFFFF; font-weight: bold; text-align: center; padding: 8px; border-radius: 6px; margin-top: 15px; margin-bottom: 10px;'>Gestão de Usuários</div>", unsafe_allow_html=True)
 
-        if "msg_sucesso_user" in st.session_state:
-            st.success(st.session_state["msg_sucesso_user"])
-            del st.session_state["msg_sucesso_user"]
+            if "msg_sucesso_user" in st.session_state:
+                st.success(st.session_state["msg_sucesso_user"])
+                del st.session_state["msg_sucesso_user"]
 
-        def sedes_por_escopo(escopo: str):
-            if escopo == "Paranapiacaba": return ["Sede IPA"]
-            elif escopo == "Piaçaguera": return ["Sede IPG"]
-            return ["Sede IPA", "Sede IPG"]
+            def sedes_por_escopo(escopo: str):
+                if escopo == "Paranapiacaba": return ["Sede IPA"]
+                elif escopo == "Piaçaguera": return ["Sede IPG"]
+                return ["Sede IPA", "Sede IPG"]
 
-        with st.form("form_novo_user", clear_on_submit=True):
-            n_user = st.text_input("Login (Nova conta)", key="novo_user_login")
-            n_perf = st.selectbox("Perfil", ["Técnico", "Assistente", "Coordenador", "Gerência"], key="novo_user_perfil")
-            n_esco = st.selectbox("Escopo (Base)", ["Paranapiacaba", "Piaçaguera", "Todas"], key="novo_user_escopo")
-            
-            sedes_validas = sedes_por_escopo(n_esco)
-            n_sede = st.selectbox("Sede Física", sedes_validas, key="novo_user_sede", format_func=lambda x: x.replace("Sede ", ""))
-            
-            st.markdown("---")
-            st.markdown("**Governança (O que o usuário pode ver/fazer?)**")
-            
-            # Define marcações automáticas inteligentes com base no perfil escolhido
-            if n_perf == "Técnico":
-                def_gov = ["Mapa de Campo"]
-            elif n_perf == "Assistente":
-                def_gov = ["Painel Gerencial", "Upload de Dados", "Exportar SAP"]
-            elif n_perf == "Coordenador":
-                def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Exportar SAP", "Governança"]
-            else:
-                def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Gestão de Usuários", "Exportar SAP", "Governança"]
-            
             opcoes_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Gestão de Usuários", "Exportar SAP", "Governança"]
-            n_gov = st.multiselect("Permissões de Acesso:", opcoes_gov, default=def_gov, key="novo_user_gov")
 
-            if st.form_submit_button("Salvar Novo Usuário"):
-                if n_user:
-                    conn = get_connection()
-                    cur = conn.cursor()
-                    try:
-                        cur.execute(
-                            """
-                            INSERT INTO usuarios
-                            (username, senha_hash, perfil, escopo, palavra_recuperacao, dica_recuperacao, coordenacao_padrao, reset_obrigatorio, governanca)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            """,
-                            (n_user.strip(), hash_senha("mrs123"), n_perf, n_esco, "PENDENTE", "PENDENTE", n_sede, 1, ",".join(n_gov))
-                        )
-                        conn.commit()
-                        st.session_state["msg_sucesso_user"] = f"Usuário '{n_user}' criado com sucesso!"
-                        st.rerun()
-                    except psycopg2.IntegrityError:
-                        conn.rollback(); st.error("Erro: Este usuário já existe.")
-                    finally:
-                        cur.close(); release_connection(conn)
-                else: st.warning("Preencha o login do usuário.")
+            with st.form("form_novo_user", clear_on_submit=True):
+                n_user = st.text_input("Login (Nova conta)", key="novo_user_login")
+                n_perf = st.selectbox("Perfil", ["Técnico", "Assistente", "Coordenador", "Gerência"], key="novo_user_perfil")
+                n_esco = st.selectbox("Escopo (Base)", ["Paranapiacaba", "Piaçaguera", "Todas"], key="novo_user_escopo")
 
-        st.markdown("<br><b style='color: #F8FAFC;'>👥 Gerenciar Usuários</b>", unsafe_allow_html=True)
-        conn = get_connection()
-        df_usuarios = pd.read_sql_query("SELECT username, perfil, escopo, coordenacao_padrao, governanca FROM usuarios", conn)
-        release_connection(conn)
+                sedes_validas = sedes_por_escopo(n_esco)
+                n_sede = st.selectbox("Sede Física", sedes_validas, key="novo_user_sede", format_func=lambda x: x.replace("Sede ", ""))
 
-        usr_sel = st.selectbox("Selecione um usuário:", [""] + df_usuarios["username"].tolist())
+                st.markdown("---")
+                st.markdown("**Governança (O que o usuário pode ver/fazer?)**")
 
-        if usr_sel != "":
-            dados_usr = df_usuarios[df_usuarios["username"] == usr_sel].iloc[0]
-            gov_atual_lista = str(dados_usr["governanca"]).split(",") if pd.notna(dados_usr["governanca"]) else []
+                if n_perf == "Técnico":
+                    def_gov = ["Mapa de Campo"]
+                elif n_perf == "Assistente":
+                    def_gov = ["Painel Gerencial", "Upload de Dados", "Exportar SAP"]
+                elif n_perf == "Coordenador":
+                    def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Exportar SAP", "Governança"]
+                else:
+                    def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Gestão de Usuários", "Exportar SAP", "Governança"]
 
-            st.caption(f"**Perfil:** {dados_usr['perfil']} | **Visão:** {dados_usr['escopo']} | **Sede:** {str(dados_usr['coordenacao_padrao']).replace('Sede ', '')}")
+                n_gov = st.multiselect("Permissões de Acesso:", opcoes_gov, default=def_gov, key="novo_user_gov")
 
-            acao = st.radio("Ação:", ["✏️ Editar Acesso", "🔑 Resetar Senha", "🗑️ Excluir"], horizontal=True)
+                if st.form_submit_button("Salvar Novo Usuário"):
+                    if n_user:
+                        conn = get_connection()
+                        cur = conn.cursor()
+                        try:
+                            cur.execute(
+                                """
+                                INSERT INTO usuarios
+                                (username, senha_hash, perfil, escopo, palavra_recuperacao, dica_recuperacao, coordenacao_padrao, reset_obrigatorio, governanca)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                """,
+                                (n_user.strip(), hash_senha("mrs123"), n_perf, n_esco, "PENDENTE", "PENDENTE", n_sede, 1, ",".join(n_gov))
+                            )
+                            conn.commit()
+                            st.session_state["msg_sucesso_user"] = f"Usuário '{n_user}' criado com sucesso!"
+                            st.rerun(scope="fragment")
+                        except psycopg2.IntegrityError:
+                            conn.rollback(); st.error("Erro: Este usuário já existe.")
+                        finally:
+                            cur.close(); release_connection(conn)
+                    else:
+                        st.warning("Preencha o login do usuário.")
 
-            if acao == "✏️ Editar Acesso":
-                with st.form(f"form_edit_{usr_sel}"):
-                    n_perf_edit = st.selectbox("Novo Perfil", ["Técnico", "Assistente", "Coordenador", "Gerência"], index=["Técnico", "Assistente", "Coordenador", "Gerência"].index(dados_usr["perfil"]))
-                    n_esco_edit = st.selectbox("Nova Visão", ["Paranapiacaba", "Piaçaguera", "Todas"], index=["Paranapiacaba", "Piaçaguera", "Todas"].index(dados_usr["escopo"]))
-                    n_sede_edit = st.selectbox("Sede", sedes_por_escopo(n_esco_edit), format_func=lambda x: x.replace("Sede ", ""))
-                    
-                    gov_editadas = st.multiselect("Governança:", opcoes_gov, default=[g for g in gov_atual_lista if g in opcoes_gov])
+            st.markdown("<br><b style='color: #F8FAFC;'>👥 Gerenciar Usuários</b>", unsafe_allow_html=True)
+            conn = get_connection()
+            df_usuarios = pd.read_sql_query("SELECT username, perfil, escopo, coordenacao_padrao, governanca FROM usuarios", conn)
+            release_connection(conn)
 
-                    if st.form_submit_button("Salvar Alterações"):
+            usr_sel = st.selectbox("Selecione um usuário:", [""] + df_usuarios["username"].tolist(), key="sel_usr_frag")
+
+            if usr_sel != "":
+                dados_usr = df_usuarios[df_usuarios["username"] == usr_sel].iloc[0]
+                gov_atual_lista = str(dados_usr["governanca"]).split(",") if pd.notna(dados_usr["governanca"]) else []
+
+                st.caption(f"**Perfil:** {dados_usr['perfil']} | **Visão:** {dados_usr['escopo']} | **Sede:** {str(dados_usr['coordenacao_padrao']).replace('Sede ', '')}")
+
+                acao = st.radio("Ação:", ["✏️ Editar Acesso", "🔑 Resetar Senha", "🗑️ Excluir"], horizontal=True, key="radio_acao_frag")
+
+                if acao == "✏️ Editar Acesso":
+                    with st.form(f"form_edit_{usr_sel}"):
+                        n_perf_edit = st.selectbox("Novo Perfil", ["Técnico", "Assistente", "Coordenador", "Gerência"], index=["Técnico", "Assistente", "Coordenador", "Gerência"].index(dados_usr["perfil"]))
+                        n_esco_edit = st.selectbox("Nova Visão", ["Paranapiacaba", "Piaçaguera", "Todas"], index=["Paranapiacaba", "Piaçaguera", "Todas"].index(dados_usr["escopo"]))
+                        n_sede_edit = st.selectbox("Sede", sedes_por_escopo(n_esco_edit), format_func=lambda x: x.replace("Sede ", ""))
+                        gov_editadas = st.multiselect("Governança:", opcoes_gov, default=[g for g in gov_atual_lista if g in opcoes_gov])
+
+                        if st.form_submit_button("Salvar Alterações"):
+                            conn = get_connection(); cur = conn.cursor()
+                            cur.execute(
+                                "UPDATE usuarios SET perfil=%s, escopo=%s, coordenacao_padrao=%s, governanca=%s WHERE username=%s",
+                                (n_perf_edit, n_esco_edit, n_sede_edit, ",".join(gov_editadas), usr_sel)
+                            )
+                            conn.commit(); cur.close(); release_connection(conn)
+                            st.session_state["msg_sucesso_user"] = f"Acessos de {usr_sel} atualizados!"
+                            st.rerun(scope="fragment")
+
+                elif acao == "🔑 Resetar Senha":
+                    if st.button("Confirmar Reset", key="btn_reset_frag"):
                         conn = get_connection(); cur = conn.cursor()
-                        cur.execute(
-                            "UPDATE usuarios SET perfil=%s, escopo=%s, coordenacao_padrao=%s, governanca=%s WHERE username=%s",
-                            (n_perf_edit, n_esco_edit, n_sede_edit, ",".join(gov_editadas), usr_sel)
-                        )
+                        cur.execute("UPDATE usuarios SET senha_hash = %s, reset_obrigatorio = 1 WHERE username = %s", (hash_senha("mrs123"), usr_sel))
                         conn.commit(); cur.close(); release_connection(conn)
-                        st.session_state["msg_sucesso_user"] = f"Acessos de {usr_sel} atualizados!"; st.rerun()
+                        st.session_state["msg_sucesso_user"] = f"Senha de {usr_sel} resetada!"
+                        st.rerun(scope="fragment")
 
-            elif acao == "🔑 Resetar Senha":
-                if st.button("Confirmar Reset"):
-                    conn = get_connection(); cur = conn.cursor()
-                    cur.execute("UPDATE usuarios SET senha_hash = %s, reset_obrigatorio = 1 WHERE username = %s", (hash_senha("mrs123"), usr_sel))
-                    conn.commit(); cur.close(); release_connection(conn)
-                    st.session_state["msg_sucesso_user"] = f"Senha de {usr_sel} resetada!"; st.rerun()
+                elif acao == "🗑️ Excluir":
+                    if st.button("Confirmar Exclusão", type="primary", key="btn_excluir_frag"):
+                        conn = get_connection(); cur = conn.cursor()
+                        cur.execute("DELETE FROM usuarios WHERE username = %s", (usr_sel,))
+                        conn.commit(); cur.close(); release_connection(conn)
+                        st.session_state["msg_sucesso_user"] = f"Usuário {usr_sel} excluído."
+                        st.rerun(scope="fragment")
 
-            elif acao == "🗑️ Excluir":
-                if st.button("Confirmar Exclusão", type="primary"):
-                    conn = get_connection(); cur = conn.cursor()
-                    cur.execute("DELETE FROM usuarios WHERE username = %s", (usr_sel,))
-                    conn.commit(); cur.close(); release_connection(conn)
-                    st.session_state["msg_sucesso_user"] = f"Usuário {usr_sel} excluído."; st.rerun()
+        fragmento_gestao_usuarios()
 #endregion
 
 #region SESSÃO 7: DASHBOARD HEADER E KPI METRICS
