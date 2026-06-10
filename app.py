@@ -272,8 +272,6 @@ if not st.session_state["logged_in"]:
 
 #region SESSÃO 2: Funções (Lógica, Utilidades, GPS, Distância, Persistência, Export)
 # ==========================================
-# SESSÃO 2: Funções (Lógica, Utilidades, GPS, Distância, Persistência, Export)
-# ==========================================
 
 #region SESSÃO 2.1 ===== Lógica =====
 def normalize_cols(df: pd.DataFrame) -> pd.DataFrame:
@@ -2928,7 +2926,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     st.session_state["lon_partida"] = lon_base
                     st.session_state["local_nome"] = nome_base
 
-                GPS_MAX_TRIALS = 25
+                GPS_MAX_TRIALS = 10
 
                 c1, c2 = st.columns(2)
                 with c1:
@@ -3026,16 +3024,17 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 
                             st.markdown("---")
                             st.markdown("#### 📷 Evidências Fotográficas")
-                            st.caption("Registre a evidência de **cada OS**. Use a câmera ou selecione da galeria.")
+                            st.caption("Registre a evidência de **cada OS**. Tire a foto ou selecione da galeria.")
                             fotos_por_os = {}
                             for os_id_ev in os_selecionadas:
                                 with st.expander(f"📷 Foto da OS: {os_id_ev}", expanded=True):
-                                    col_cam, col_gal = st.columns(2)
-                                    with col_cam:
-                                        foto_cam = st.camera_input("📸 Câmera", key=f"cam_{os_id_ev}")
-                                    with col_gal:
-                                        foto_gal = st.file_uploader("🖼️ Galeria", type=["jpg", "jpeg", "png"], key=f"gal_{os_id_ev}")
-                                    fotos_por_os[os_id_ev] = foto_cam if foto_cam is not None else foto_gal
+                                    foto_up = st.file_uploader(
+                                        "📸 Tirar Foto ou 🖼️ Selecionar da Galeria",
+                                        type=["jpg", "jpeg", "png"],
+                                        key=f"foto_{os_id_ev}",
+                                        accept_multiple_files=False
+                                    )
+                                    fotos_por_os[os_id_ev] = foto_up
 
                             conn = get_connection()
                             try:
