@@ -3249,9 +3249,9 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 
 #region SESSÃO 9: Tela Isolada de Governança e Auditoria
 
-#region 9.1: Controle de acesso
+#region 9.1: Controle de acesso e segurança
 if st.session_state.get("tela_atual") == "governanca":
-    
+
     col_gov_t1, col_gov_t2 = st.columns([8, 2])
     with col_gov_t1:
         st.title("🛡️ Motor de Governança e Auditoria")
@@ -3259,7 +3259,7 @@ if st.session_state.get("tela_atual") == "governanca":
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("⬅️ Voltar ao Painel", use_container_width=True):
             st.session_state["tela_atual"] = "dashboard"
-            st.session_state["gov_auth_ok"] = False 
+            st.session_state["gov_auth_ok"] = False
             st.rerun()
     st.markdown("Análise estatística de eficiência, variabilidade de cronograma, aderência de login e rastreabilidade de campo.")
     st.markdown("---")
@@ -3285,10 +3285,9 @@ if st.session_state.get("tela_atual") == "governanca":
                     else:
                         st.error("❌ Senha incorreta. Acesso negado.")
         st.stop()
-#endregion
+    #endregion 9.1
 
-#region 9.2: Lógica de Auditoria
-    # --- LÓGICA DE AUDITORIA E GRÁFICOS ---
+    #region 9.2: Carregamento de dados de auditoria
     with st.spinner("Compilando logs de auditoria e telemetria..."):
         if st.session_state.get("chk_sim", False):
             df_baixas_full = st.session_state.get("df_baixas_sim", pd.DataFrame())
@@ -3298,326 +3297,330 @@ if st.session_state.get("tela_atual") == "governanca":
             df_baixas_full = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim FROM baixas", conn)
             df_logs = pd.read_sql_query("SELECT username, data_hora_login FROM logs_acesso", conn)
             release_connection(conn)
-        
+
         df_os_base = st.session_state.get("df_os", pd.DataFrame())
-        
+
         if df_baixas_full.empty or df_os_base.empty:
             st.warning("Não há dados de execução suficientes para gerar os painéis de auditoria.")
             st.stop()
-            
+
         df_gov = df_baixas_full.merge(
-            df_os_base[["Ordem servico", "Patio", "Ativo", "Classificacao", "Criticidade_rank", "Nivel_Prioridade", "Criticidade"]], 
+            df_os_base[["Ordem servico", "Patio", "Ativo", "Classificacao", "Criticidade_rank", "Nivel_Prioridade", "Criticidade"]],
             left_on="os", right_on="Ordem servico", how="inner"
         )
         df_gov = df_gov[df_gov["status"].str.upper().isin(["REALIZADO", "REALIZADO FORA DA DATA DE PROGRAMAÇÃO", "REALIZADO FORA DO PRAZO"])]
-        
+
         def calc_duracao(row):
             try:
                 ini = pd.to_datetime(row['hora_inicio'], format='%H:%M:%S')
                 fim = pd.to_datetime(row['hora_fim'], format='%H:%M:%S')
                 diff = (fim - ini).total_seconds() / 60.0
-                if diff < 0: diff += 24 * 60 
+                if diff < 0: diff += 24 * 60
                 return diff
             except: return 0.0
-            
+
         df_gov["Tempo_Minutos"] = df_gov.apply(calc_duracao, axis=1)
         df_gov["Data_Real"] = pd.to_datetime(df_gov["data_inicio"], format="%d/%m/%Y", errors="coerce").dt.date
         df_gov["Via_GPS"] = df_gov["geolocalizacao_baixa"].apply(lambda x: 0 if "Base" in str(x) or "Sede" in str(x) else 1)
         df_gov["Alta_Prioridade"] = df_gov["Criticidade_rank"].apply(lambda x: 1 if x in [1, 2] else 0)
+    #endregion 9.2
 
-    col_f1, col_f2, col_f3 = st.columns(3)
-    with col_f1:
-        tecnicos_disp = sorted(df_gov["concluido_por"].dropna().unique().tolist())
-        tec_selecionado = st.multiselect("👤 Filtrar Colaborador(es):", tecnicos_disp, default=tecnicos_disp)
-    with col_f2:
-        patios_gov = sorted(df_gov["Patio"].dropna().unique().tolist())
-        patio_selecionado = st.multiselect("📍 Filtrar Pátio(s):", patios_gov, default=patios_gov)
-    with col_f3:
-        min_d, max_d = df_gov["Data_Real"].min(), df_gov["Data_Real"].max()
-        if pd.isna(min_d): min_d = datetime.now().date()
-        if pd.isna(max_d): max_d = datetime.now().date()
-        data_gov = st.date_input("📅 Período de Execução:", value=(min_d, max_d), min_value=min_d, max_value=max_d, format="DD/MM/YYYY")
+    #region 9.3: Fragmento de Governança (filtros + KPIs + gráficos)
+    @st.fragment
+    def fragmento_governanca():
 
-    d_inicio, d_fim = data_gov if isinstance(data_gov, tuple) and len(data_gov) == 2 else (data_gov[0] if isinstance(data_gov, tuple) else data_gov, data_gov[0] if isinstance(data_gov, tuple) else data_gov)
-    df_gov_f = df_gov[(df_gov["concluido_por"].isin(tec_selecionado)) & (df_gov["Patio"].isin(patio_selecionado)) & (df_gov["Data_Real"] >= d_inicio) & (df_gov["Data_Real"] <= d_fim)].copy()
+        #region 9.3.1: Filtros de auditoria
+        col_f1, col_f2, col_f3 = st.columns(3)
+        with col_f1:
+            tecnicos_disp = sorted(df_gov["concluido_por"].dropna().unique().tolist())
+            tec_selecionado = st.multiselect("👤 Filtrar Colaborador(es):", tecnicos_disp, default=tecnicos_disp)
+        with col_f2:
+            patios_gov = sorted(df_gov["Patio"].dropna().unique().tolist())
+            patio_selecionado = st.multiselect("📍 Filtrar Pátio(s):", patios_gov, default=patios_gov)
+        with col_f3:
+            min_d, max_d = df_gov["Data_Real"].min(), df_gov["Data_Real"].max()
+            if pd.isna(min_d): min_d = datetime.now().date()
+            if pd.isna(max_d): max_d = datetime.now().date()
+            data_gov = st.date_input("📅 Período de Execução:", value=(min_d, max_d), min_value=min_d, max_value=max_d, format="DD/MM/YYYY")
 
-    if df_gov_f.empty:
-        st.info("Nenhuma execução encontrada para os filtros selecionados.")
-        st.stop()
+        d_inicio, d_fim = data_gov if isinstance(data_gov, tuple) and len(data_gov) == 2 else (data_gov[0] if isinstance(data_gov, tuple) else data_gov, data_gov[0] if isinstance(data_gov, tuple) else data_gov)
+        df_gov_f = df_gov[(df_gov["concluido_por"].isin(tec_selecionado)) & (df_gov["Patio"].isin(patio_selecionado)) & (df_gov["Data_Real"] >= d_inicio) & (df_gov["Data_Real"] <= d_fim)].copy()
 
-    total_os_gov = len(df_gov_f)
-    tme_minutos = df_gov_f["Tempo_Minutos"].mean()
-    taxa_gps = (df_gov_f["Via_GPS"].sum() / total_os_gov) * 100 if total_os_gov > 0 else 0
-    taxa_prio = (df_gov_f["Alta_Prioridade"].sum() / total_os_gov) * 100 if total_os_gov > 0 else 0
+        if df_gov_f.empty:
+            st.info("Nenhuma execução encontrada para os filtros selecionados.")
+            return
+        #endregion 9.3.1
 
-    c_k1, c_k2, c_k3, c_k4 = st.columns(4)
-    c_k1.metric("🔧 Volume de Execução", f"{total_os_gov} OS")
-    c_k2.metric("⏱️ Tempo Médio / OS (TME)", f"{int(tme_minutos // 60)}h {int(tme_minutos % 60):02d}m" if not pd.isna(tme_minutos) else "0h 00m")
-    c_k3.metric("🎯 Aderência à Prioridade", f"{taxa_prio:.1f}%")
-    c_k4.metric("📍 Integridade de GPS", f"{taxa_gps:.1f}%")
-    
-    st.markdown("---")
-#endregion
+        #region 9.3.2: KPIs de auditoria
+        total_os_gov = len(df_gov_f)
+        tme_minutos = df_gov_f["Tempo_Minutos"].mean()
+        taxa_gps = (df_gov_f["Via_GPS"].sum() / total_os_gov) * 100 if total_os_gov > 0 else 0
+        taxa_prio = (df_gov_f["Alta_Prioridade"].sum() / total_os_gov) * 100 if total_os_gov > 0 else 0
 
-#region 9.3: Gráficos de Governança e Auditoria
-    # ==========================================
-    # LINHA 1: Volume Diário vs Produtividade Acumulada
-    # ==========================================
-    col_l1_c1, col_l1_c2 = st.columns(2, gap="large")
+        c_k1, c_k2, c_k3, c_k4 = st.columns(4)
+        c_k1.metric("🔧 Volume de Execução", f"{total_os_gov} OS")
+        c_k2.metric("⏱️ Tempo Médio / OS (TME)", f"{int(tme_minutos // 60)}h {int(tme_minutos % 60):02d}m" if not pd.isna(tme_minutos) else "0h 00m")
+        c_k3.metric("🎯 Aderência à Prioridade", f"{taxa_prio:.1f}%")
+        c_k4.metric("📍 Integridade de GPS", f"{taxa_gps:.1f}%")
 
-    # Cruzamento para obter o Planejado + Backlog da base mestre
-    df_real_dia = df_gov_f.groupby("Data_Real").size().reset_index(name="Realizado")
-    df_os_base["Data_Prog_Pure"] = pd.to_datetime(df_os_base["Data inicial programada"], errors="coerce").dt.date
-    df_plan_dia = df_os_base.groupby("Data_Prog_Pure").size().reset_index(name="Planejado_Backlog")
+        st.markdown("---")
+        #endregion 9.3.2
 
-    df_merge_vol = pd.merge(df_real_dia, df_plan_dia, left_on="Data_Real", right_on="Data_Prog_Pure", how="outer")
-    df_merge_vol["Data_Real"] = df_merge_vol["Data_Real"].combine_first(df_merge_vol["Data_Prog_Pure"])
-    df_merge_vol["Realizado"] = df_merge_vol["Realizado"].fillna(0)
-    df_merge_vol["Planejado_Backlog"] = df_merge_vol["Planejado_Backlog"].fillna(0)
-    df_merge_vol = df_merge_vol.sort_values(by="Data_Real")
+        #region 9.4: Volume Diário e Produtividade Acumulada
+        col_l1_c1, col_l1_c2 = st.columns(2, gap="large")
 
-    eixo_x_l1 = [d.strftime("%d/%m") if hasattr(d, "strftime") else str(d) for d in df_merge_vol["Data_Real"]]
+        df_real_dia = df_gov_f.groupby("Data_Real").size().reset_index(name="Realizado")
+        df_os_base["Data_Prog_Pure"] = pd.to_datetime(df_os_base["Data inicial programada"], errors="coerce").dt.date
+        df_plan_dia = df_os_base.groupby("Data_Prog_Pure").size().reset_index(name="Planejado_Backlog")
 
-    with col_l1_c1:
-        st.markdown("#### 📈 Volume Diário")
-        st.caption("Volume diário executado vs total de OS planejadas + backlog do dia.")
-        st_echarts(options={
-            "tooltip": {"trigger": "axis"},
-            "legend": {"data": ["Volume Diário", "Planejado + Backlog"], "bottom": "0%"},
-            "toolbox": {"show": True, "feature": {"magicType": {"type": ["line", "bar"], "title": {"line": "Linha", "bar": "Barra"}}, "restore": {"title": "Restaurar"}, "saveAsImage": {"title": "Salvar Imagem"}}},
-            "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}],
-            "grid": {"left": "5%", "right": "5%", "bottom": "25%", "top": "15%", "containLabel": True},
-            "xAxis": {"type": "category", "data": eixo_x_l1},
-            "yAxis": {"type": "value"},
-            "series": [
-                {"name": "Volume Diário", "type": "bar", "data": df_merge_vol["Realizado"].tolist(), "itemStyle": {"color": "#3B82F6"}},
-                {"name": "Planejado + Backlog", "type": "line", "data": df_merge_vol["Planejado_Backlog"].tolist(), "smooth": True, "lineStyle": {"type": "dashed", "color": "#64748B", "width": 3}, "itemStyle": {"color": "#64748B"}}
-            ]
-        }, height="350px", theme="streamlit", key="gov_vol_diario_new")
+        df_merge_vol = pd.merge(df_real_dia, df_plan_dia, left_on="Data_Real", right_on="Data_Prog_Pure", how="outer")
+        df_merge_vol["Data_Real"] = df_merge_vol["Data_Real"].combine_first(df_merge_vol["Data_Prog_Pure"])
+        df_merge_vol["Realizado"] = df_merge_vol["Realizado"].fillna(0)
+        df_merge_vol["Planejado_Backlog"] = df_merge_vol["Planejado_Backlog"].fillna(0)
+        df_merge_vol = df_merge_vol.sort_values(by="Data_Real")
 
-    with col_l1_c2:
-        st.markdown("#### 📈 Produtividade Acumulada")
-        st.caption("Curva de entrega acumulada vs planejamento acumulado do período.")
-        df_merge_vol["Real_Acum"] = df_merge_vol["Realizado"].cumsum()
-        df_merge_vol["Plan_Acum"] = df_merge_vol["Planejado_Backlog"].cumsum()
-        st_echarts(options={
-            "tooltip": {"trigger": "axis"},
-            "legend": {"data": ["Realizado Acumulado", "Planejado Acumulado"], "bottom": "0%"},
-            "toolbox": {"show": True, "feature": {"magicType": {"type": ["line", "bar"], "title": {"line": "Linha", "bar": "Barra"}}, "restore": {"title": "Restaurar"}, "saveAsImage": {"title": "Salvar Imagem"}}},
-            "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}],
-            "grid": {"left": "5%", "right": "5%", "bottom": "25%", "top": "15%", "containLabel": True},
-            "xAxis": {"type": "category", "data": eixo_x_l1},
-            "yAxis": {"type": "value"},
-            "series": [
-                {"name": "Realizado Acumulado", "type": "line", "smooth": True, "data": df_merge_vol["Real_Acum"].tolist(), "areaStyle": {"color": "rgba(59,130,246,0.15)"}, "lineStyle": {"color": "#3B82F6", "width": 3}, "itemStyle": {"color": "#3B82F6"}},
-                {"name": "Planejado Acumulado", "type": "line", "smooth": True, "data": df_merge_vol["Plan_Acum"].tolist(), "lineStyle": {"type": "dashed", "color": "#64748B", "width": 3}, "itemStyle": {"color": "#64748B"}}
-            ]
-        }, height="350px", theme="streamlit", key="gov_prod_acum_new")
+        eixo_x_l1 = [d.strftime("%d/%m") if hasattr(d, "strftime") else str(d) for d in df_merge_vol["Data_Real"]]
 
-    # ==========================================
-    # LINHA 2: Produtividade Individual (Criticidade) + Esforço + Heatmap
-    # ==========================================
-    st.markdown("<br>", unsafe_allow_html=True)
-    col_l2_c1, col_l2_c2, col_l2_c3 = st.columns(3, gap="medium")
-
-    with col_l2_c1:
-        st.markdown("#### 👥 Produtividade Individual")
-        st.caption("Distribuição do volume realizado por Criticidade de OS.")
-        df_crit = df_gov_f.groupby("Criticidade").size().reset_index(name="Volume")
-        st_echarts(options={
-            "tooltip": {"trigger": "item"},
-            "legend": {"orient": "horizontal", "bottom": "0%"},
-            "series": [{
-                "type": "pie", "radius": ["40%", "70%"],
-                "data": [{"value": int(r["Volume"]), "name": str(r["Criticidade"])} for _, r in df_crit.iterrows()],
-                "label": {"show": True, "formatter": "{c}"}
-            }]
-        }, height="320px", key="gov_donut_criticidade")
-
-    with col_l2_c2:
-        st.markdown("#### ⏱️ Esforço x Classificação")
-        st.caption("Tempo médio consumido por tipo de classificação.")
-        df_classif = df_gov_f.groupby("Classificacao").agg(Tempo_Medio=("Tempo_Minutos", "mean")).reset_index().sort_values("Tempo_Medio", ascending=True)
-        st_echarts(options={
-            "tooltip": {"trigger": "axis"},
-            "xAxis": {"type": "value"},
-            "yAxis": {"type": "category", "data": df_classif["Classificacao"].tolist()},
-            "series": [{"type": "bar", "data": df_classif["Tempo_Medio"].round(1).tolist(), "itemStyle": {"color": "#F59E0B"}}]
-        }, height="320px", key="gov_esforco_classe_l2")
-
-    with col_l2_c3:
-        st.markdown("#### 🔁 Tipo de OS x Frequência")
-        st.caption("Concentração de ordens por pátio e classificação.")
-        agg_heatmap = df_gov_f.groupby(["Patio", "Classificacao"]).size().reset_index(name="Total")
-        p_list, c_list, h_data, max_v = sorted(df_gov_f["Patio"].unique().tolist()), ["Confiabilidade e Segurança", "Segurança", "Confiabilidade"], [], 0
-        for yi, c_n in enumerate(c_list):
-            for xi, p_n in enumerate(p_list):
-                val = int(agg_heatmap[(agg_heatmap["Patio"] == p_n) & (agg_heatmap["Classificacao"] == c_n)]["Total"].iloc[0]) if not agg_heatmap[(agg_heatmap["Patio"] == p_n) & (agg_heatmap["Classificacao"] == c_n)].empty else 0
-                h_data.append([xi, yi, val])
-                if val > max_v: max_v = val
-        st_echarts(options={
-            "tooltip": {"position": "top"},
-            "grid": {"height": "65%", "top": "5%", "bottom": "20%", "left": "20%"},
-            "xAxis": {"type": "category", "data": p_list, "axisLabel": {"interval": 0, "rotate": 45}},
-            "yAxis": {"type": "category", "data": c_list},
-            "visualMap": {"min": 0, "max": max_v if max_v > 0 else 5, "orient": "horizontal", "left": "center", "bottom": "0%", "inRange": {"color": ["#F8FAFC", "#93C5FD", "#1D4ED8"]}},
-            "series": [{"type": "heatmap", "data": h_data, "label": {"show": True}, "itemStyle": {"borderColor": "#FFFFFF", "borderWidth": 1.5}}]
-        }, height="320px", key="gov_heatmap_l2")
-
-    # ==========================================
-    # ==========================================
-    # LINHA 3: Aderência + Top Técnicos + Variabilidade (3 colunas)
-    # ==========================================
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown("---")
-    col_l3_c1, col_l3_c2, col_l3_c3 = st.columns(3, gap="medium")
-
-    with col_l3_c1:
-        st.markdown("#### \U0001F552 Aderência: Login vs. Apontamento")
-        st.caption("Horário de login (Azul) vs primeira baixa (Verde).")
-        df_logs["Data_Real_Pure"] = pd.to_datetime(df_logs["data_hora_login"]).dt.date
-        df_gov_f["dt_baixa_calc"] = pd.to_datetime(df_gov_f["data_fim"] + " " + df_gov_f["hora_fim"], format="%d/%m/%Y %H:%M:%S", errors="coerce")
-        df_primeira_baixa = df_gov_f.groupby(["concluido_por", "Data_Real"])["dt_baixa_calc"].min().reset_index(name="dt_baixa_1os")
-        df_aderencia = df_logs.merge(df_primeira_baixa, left_on=["username", "Data_Real_Pure"], right_on=["concluido_por", "Data_Real"])
-
-        if not df_aderencia.empty:
-            df_aderencia["x_date"] = pd.to_datetime(df_aderencia["data_hora_login"]).dt.strftime("%d/%m")
-            dt_login = pd.to_datetime(df_aderencia["data_hora_login"])
-            df_aderencia["y_login_frac"] = dt_login.dt.hour + dt_login.dt.minute / 60.0
-            dt_baixa = pd.to_datetime(df_aderencia["dt_baixa_1os"])
-            df_aderencia["y_baixa_frac"] = dt_baixa.dt.hour + dt_baixa.dt.minute / 60.0
-            df_aderencia = df_aderencia.sort_values("Data_Real_Pure")
-            dates_list = sorted(df_aderencia["x_date"].unique().tolist())
-            login_data = [[row["x_date"], round(row["y_login_frac"], 2), row["username"]] for _, row in df_aderencia.iterrows()]
-            baixa_data = [[row["x_date"], round(row["y_baixa_frac"], 2), row["username"]] for _, row in df_aderencia.iterrows()]
+        with col_l1_c1:
+            st.markdown("#### 📈 Volume Diário")
+            st.caption("Volume diário executado vs total de OS planejadas + backlog do dia.")
             st_echarts(options={
-                "tooltip": {
-                    "trigger": "item",
-                    "formatter": JsCode("""function (p) {
-                        var hh = Math.floor(p.data[1]);
-                        var mm = Math.round((p.data[1] - hh) * 60);
-                        if (mm == 60) { hh += 1; mm = 0; }
-                        var timeStr = (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm;
-                        return '<b>' + p.data[2] + '</b><br>' + p.seriesName + ': ' + timeStr + '<br>Data: ' + p.data[0];
-                    }""")
-                },
-                "legend": {"data": ["Login", "Primeira Baixa"], "bottom": "0%"},
-                "toolbox": {"show": True, "feature": {
-                    "dataView": {"show": True, "readOnly": True, "title": "Ver Dados",
-                        "lang": ["Tabela de Dados", "Fechar", "Atualizar"],
-                        "optionToContent": JsCode("""function(opt) {
-                            var login = opt.series[0].data;
-                            var baixa = opt.series[1].data;
-                            var table = '<table style="width:100%;text-align:center;border-collapse:collapse;font-size:12px;"><thead><tr style="background:#F1F5F9;"><th style="padding:6px;border:1px solid #E2E8F0;">Data</th><th style="padding:6px;border:1px solid #E2E8F0;">Login</th><th style="padding:6px;border:1px solid #E2E8F0;">Primeira Baixa</th></tr></thead><tbody>';
-                            var map = {};
-                            function fmt(v) { var h=Math.floor(v); var m=Math.round((v-h)*60); if(m==60){h++;m=0;} return (h<10?'0':'')+h+':'+(m<10?'0':'')+m; }
-                            for (var i=0; i<login.length; i++) { var d=login[i][0]; if(!map[d]) map[d]={l:'-',b:'-'}; map[d].l=fmt(login[i][1]); }
-                            for (var i=0; i<baixa.length; i++) { var d=baixa[i][0]; if(!map[d]) map[d]={l:'-',b:'-'}; map[d].b=fmt(baixa[i][1]); }
-                            for (var d in map) { table+='<tr><td style="padding:4px;border:1px solid #E2E8F0;">'+d+'</td><td style="padding:4px;border:1px solid #E2E8F0;">'+map[d].l+'</td><td style="padding:4px;border:1px solid #E2E8F0;">'+map[d].b+'</td></tr>'; }
-                            table+='</tbody></table>'; return table;
+                "tooltip": {"trigger": "axis"},
+                "legend": {"data": ["Volume Diário", "Planejado + Backlog"], "bottom": "0%"},
+                "toolbox": {"show": True, "feature": {"magicType": {"type": ["line", "bar"], "title": {"line": "Linha", "bar": "Barra"}}, "restore": {"title": "Restaurar"}, "saveAsImage": {"title": "Salvar Imagem"}}},
+                "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}],
+                "grid": {"left": "5%", "right": "5%", "bottom": "25%", "top": "15%", "containLabel": True},
+                "xAxis": {"type": "category", "data": eixo_x_l1},
+                "yAxis": {"type": "value"},
+                "series": [
+                    {"name": "Volume Diário", "type": "bar", "data": df_merge_vol["Realizado"].tolist(), "itemStyle": {"color": "#3B82F6"}},
+                    {"name": "Planejado + Backlog", "type": "line", "data": df_merge_vol["Planejado_Backlog"].tolist(), "smooth": True, "lineStyle": {"type": "dashed", "color": "#64748B", "width": 3}, "itemStyle": {"color": "#64748B"}}
+                ]
+            }, height="350px", theme="streamlit", key="gov_vol_diario_new")
+
+        with col_l1_c2:
+            st.markdown("#### 📈 Produtividade Acumulada")
+            st.caption("Curva de entrega acumulada vs planejamento acumulado do período.")
+            df_merge_vol["Real_Acum"] = df_merge_vol["Realizado"].cumsum()
+            df_merge_vol["Plan_Acum"] = df_merge_vol["Planejado_Backlog"].cumsum()
+            st_echarts(options={
+                "tooltip": {"trigger": "axis"},
+                "legend": {"data": ["Realizado Acumulado", "Planejado Acumulado"], "bottom": "0%"},
+                "toolbox": {"show": True, "feature": {"magicType": {"type": ["line", "bar"], "title": {"line": "Linha", "bar": "Barra"}}, "restore": {"title": "Restaurar"}, "saveAsImage": {"title": "Salvar Imagem"}}},
+                "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}],
+                "grid": {"left": "5%", "right": "5%", "bottom": "25%", "top": "15%", "containLabel": True},
+                "xAxis": {"type": "category", "data": eixo_x_l1},
+                "yAxis": {"type": "value"},
+                "series": [
+                    {"name": "Realizado Acumulado", "type": "line", "smooth": True, "data": df_merge_vol["Real_Acum"].tolist(), "areaStyle": {"color": "rgba(59,130,246,0.15)"}, "lineStyle": {"color": "#3B82F6", "width": 3}, "itemStyle": {"color": "#3B82F6"}},
+                    {"name": "Planejado Acumulado", "type": "line", "smooth": True, "data": df_merge_vol["Plan_Acum"].tolist(), "lineStyle": {"type": "dashed", "color": "#64748B", "width": 3}, "itemStyle": {"color": "#64748B"}}
+                ]
+            }, height="350px", theme="streamlit", key="gov_prod_acum_new")
+        #endregion 9.4
+
+        #region 9.5: Produtividade Individual, Esforço e Heatmap
+        st.markdown("<br>", unsafe_allow_html=True)
+        col_l2_c1, col_l2_c2, col_l2_c3 = st.columns(3, gap="medium")
+
+        with col_l2_c1:
+            st.markdown("#### 👥 Produtividade Individual")
+            st.caption("Distribuição do volume realizado por Criticidade de OS.")
+            df_crit = df_gov_f.groupby("Criticidade").size().reset_index(name="Volume")
+            st_echarts(options={
+                "tooltip": {"trigger": "item"},
+                "legend": {"orient": "horizontal", "bottom": "0%"},
+                "series": [{
+                    "type": "pie", "radius": ["40%", "70%"],
+                    "data": [{"value": int(r["Volume"]), "name": str(r["Criticidade"])} for _, r in df_crit.iterrows()],
+                    "label": {"show": True, "formatter": "{c}"}
+                }]
+            }, height="320px", key="gov_donut_criticidade")
+
+        with col_l2_c2:
+            st.markdown("#### ⏱️ Esforço x Classificação")
+            st.caption("Tempo médio consumido por tipo de classificação.")
+            df_classif = df_gov_f.groupby("Classificacao").agg(Tempo_Medio=("Tempo_Minutos", "mean")).reset_index().sort_values("Tempo_Medio", ascending=True)
+            st_echarts(options={
+                "tooltip": {"trigger": "axis"},
+                "xAxis": {"type": "value"},
+                "yAxis": {"type": "category", "data": df_classif["Classificacao"].tolist()},
+                "series": [{"type": "bar", "data": df_classif["Tempo_Medio"].round(1).tolist(), "itemStyle": {"color": "#F59E0B"}}]
+            }, height="320px", key="gov_esforco_classe_l2")
+
+        with col_l2_c3:
+            st.markdown("#### 🔁 Tipo de OS x Frequência")
+            st.caption("Concentração de ordens por pátio e classificação.")
+            agg_heatmap = df_gov_f.groupby(["Patio", "Classificacao"]).size().reset_index(name="Total")
+            p_list = sorted(df_gov_f["Patio"].unique().tolist())
+            c_list = ["Confiabilidade e Segurança", "Segurança", "Confiabilidade"]
+            h_data = []
+            max_v = 0
+            for yi, c_n in enumerate(c_list):
+                for xi, p_n in enumerate(p_list):
+                    val = int(agg_heatmap[(agg_heatmap["Patio"] == p_n) & (agg_heatmap["Classificacao"] == c_n)]["Total"].iloc[0]) if not agg_heatmap[(agg_heatmap["Patio"] == p_n) & (agg_heatmap["Classificacao"] == c_n)].empty else 0
+                    h_data.append([xi, yi, val])
+                    if val > max_v: max_v = val
+            st_echarts(options={
+                "tooltip": {"position": "top"},
+                "grid": {"height": "65%", "top": "5%", "bottom": "20%", "left": "20%"},
+                "xAxis": {"type": "category", "data": p_list, "axisLabel": {"interval": 0, "rotate": 45}},
+                "yAxis": {"type": "category", "data": c_list},
+                "visualMap": {"min": 0, "max": max_v if max_v > 0 else 5, "orient": "horizontal", "left": "center", "bottom": "0%", "inRange": {"color": ["#F8FAFC", "#93C5FD", "#1D4ED8"]}},
+                "series": [{"type": "heatmap", "data": h_data, "label": {"show": True}, "itemStyle": {"borderColor": "#FFFFFF", "borderWidth": 1.5}}]
+            }, height="320px", key="gov_heatmap_l2")
+        #endregion 9.5
+
+        #region 9.6: Aderência, Top Técnicos e Variabilidade
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("---")
+        col_l3_c1, col_l3_c2, col_l3_c3 = st.columns(3, gap="medium")
+
+        with col_l3_c1:
+            st.markdown("#### \U0001F552 Aderência: Login vs. Apontamento")
+            st.caption("Horário de login (Azul) vs primeira baixa (Verde).")
+            df_logs["Data_Real_Pure"] = pd.to_datetime(df_logs["data_hora_login"]).dt.date
+            df_gov_f["dt_baixa_calc"] = pd.to_datetime(df_gov_f["data_fim"] + " " + df_gov_f["hora_fim"], format="%d/%m/%Y %H:%M:%S", errors="coerce")
+            df_primeira_baixa = df_gov_f.groupby(["concluido_por", "Data_Real"])["dt_baixa_calc"].min().reset_index(name="dt_baixa_1os")
+            df_aderencia = df_logs.merge(df_primeira_baixa, left_on=["username", "Data_Real_Pure"], right_on=["concluido_por", "Data_Real"])
+
+            if not df_aderencia.empty:
+                df_aderencia["x_date"] = pd.to_datetime(df_aderencia["data_hora_login"]).dt.strftime("%d/%m")
+                dt_login = pd.to_datetime(df_aderencia["data_hora_login"])
+                df_aderencia["y_login_frac"] = dt_login.dt.hour + dt_login.dt.minute / 60.0
+                dt_baixa = pd.to_datetime(df_aderencia["dt_baixa_1os"])
+                df_aderencia["y_baixa_frac"] = dt_baixa.dt.hour + dt_baixa.dt.minute / 60.0
+                df_aderencia = df_aderencia.sort_values("Data_Real_Pure")
+                dates_list = sorted(df_aderencia["x_date"].unique().tolist())
+                login_data = [[row["x_date"], round(row["y_login_frac"], 2), row["username"]] for _, row in df_aderencia.iterrows()]
+                baixa_data = [[row["x_date"], round(row["y_baixa_frac"], 2), row["username"]] for _, row in df_aderencia.iterrows()]
+                st_echarts(options={
+                    "tooltip": {
+                        "trigger": "item",
+                        "formatter": JsCode("""function (p) {
+                            var hh = Math.floor(p.data[1]);
+                            var mm = Math.round((p.data[1] - hh) * 60);
+                            if (mm == 60) { hh += 1; mm = 0; }
+                            var timeStr = (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm;
+                            return '<b>' + p.data[2] + '</b><br>' + p.seriesName + ': ' + timeStr + '<br>Data: ' + p.data[0];
                         }""")
                     },
-                    "magicType": {"type": ["line", "scatter"], "title": {"line": "Linha", "scatter": "Dispersão"}},
+                    "legend": {"data": ["Login", "Primeira Baixa"], "bottom": "0%"},
+                    "toolbox": {"show": True, "feature": {
+                        "dataView": {"show": True, "readOnly": True, "title": "Ver Dados",
+                            "lang": ["Tabela de Dados", "Fechar", "Atualizar"],
+                            "optionToContent": JsCode("""function(opt) {
+                                var login = opt.series[0].data;
+                                var baixa = opt.series[1].data;
+                                var table = '<table style="width:100%;text-align:center;border-collapse:collapse;font-size:12px;"><thead><tr style="background:#F1F5F9;"><th style="padding:6px;border:1px solid #E2E8F0;">Data</th><th style="padding:6px;border:1px solid #E2E8F0;">Login</th><th style="padding:6px;border:1px solid #E2E8F0;">Primeira Baixa</th></tr></thead><tbody>';
+                                var map = {};
+                                function fmt(v) { var h=Math.floor(v); var m=Math.round((v-h)*60); if(m==60){h++;m=0;} return (h<10?'0':'')+h+':'+(m<10?'0':'')+m; }
+                                for (var i=0; i<login.length; i++) { var d=login[i][0]; if(!map[d]) map[d]={l:'-',b:'-'}; map[d].l=fmt(login[i][1]); }
+                                for (var i=0; i<baixa.length; i++) { var d=baixa[i][0]; if(!map[d]) map[d]={l:'-',b:'-'}; map[d].b=fmt(baixa[i][1]); }
+                                for (var d in map) { table+='<tr><td style="padding:4px;border:1px solid #E2E8F0;">'+d+'</td><td style="padding:4px;border:1px solid #E2E8F0;">'+map[d].l+'</td><td style="padding:4px;border:1px solid #E2E8F0;">'+map[d].b+'</td></tr>'; }
+                                table+='</tbody></table>'; return table;
+                            }""")
+                        },
+                        "magicType": {"type": ["line", "scatter"], "title": {"line": "Linha", "scatter": "Dispersão"}},
+                        "restore": {"title": "Restaurar"},
+                        "saveAsImage": {"title": "Salvar Imagem"}
+                    }},
+                    "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}],
+                    "grid": {"top": "10%", "bottom": "25%", "left": "12%", "right": "5%"},
+                    "xAxis": {"type": "category", "data": dates_list},
+                    "yAxis": {
+                        "type": "value", "name": "Horário", "min": 0, "max": 24, "interval": 4,
+                        "axisLabel": {
+                            "formatter": JsCode("""function(value) {
+                                var hh = Math.floor(value);
+                                return (hh < 10 ? '0' : '') + hh + ':00';
+                            }""")
+                        }
+                    },
+                    "series": [
+                        {"name": "Login", "type": "scatter", "data": login_data, "symbolSize": 10, "itemStyle": {"color": "#3B82F6"}},
+                        {"name": "Primeira Baixa", "type": "scatter", "data": baixa_data, "symbolSize": 10, "itemStyle": {"color": "#10B981"}}
+                    ]
+                }, height="400px", theme="streamlit", key="gov_scatter_aderencia_colors")
+            else:
+                st.info("Dados insuficientes para cruzar login com apontamento.")
+
+        with col_l3_c2:
+            st.markdown("#### \U0001F51D Top Técnicos: OS por Pátio")
+            st.caption("Distribuição da carga de trabalho por técnico e pátio.")
+            df_freq = df_gov_f.groupby(["concluido_por", "Patio"]).size().reset_index(name="Qtd")
+            tecnicos_top = df_freq["concluido_por"].unique().tolist()
+            patios_top = sorted(df_freq["Patio"].unique().tolist())
+            series_top = []
+            for patio in patios_top:
+                vals = []
+                for tec in tecnicos_top:
+                    row_match = df_freq[(df_freq["concluido_por"] == tec) & (df_freq["Patio"] == patio)]
+                    vals.append(int(row_match["Qtd"].iloc[0]) if not row_match.empty else 0)
+                series_top.append({"name": patio, "type": "bar", "stack": "total", "data": vals, "label": {"show": False}})
+
+            st_echarts(options={
+                "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
+                "legend": {"bottom": "0%", "textStyle": {"fontSize": 10}},
+                "toolbox": {"show": True, "feature": {
+                    "dataView": {"show": True, "readOnly": True, "title": "Ver Dados", "lang": ["Tabela de Dados", "Fechar", "Atualizar"],
+                        "optionToContent": JsCode("""function(opt) {
+                            var axisData = opt.xAxis[0].data;
+                            var series = opt.series;
+                            var table = '<table style="width:100%;text-align:center;border-collapse:collapse;font-size:11px;"><thead><tr style="background:#F1F5F9;"><th style="padding:5px;border:1px solid #E2E8F0;">Técnico</th>';
+                            for (var i=0; i<series.length; i++) { table += '<th style="padding:5px;border:1px solid #E2E8F0;">' + series[i].name + '</th>'; }
+                            table += '<th style="padding:5px;border:1px solid #E2E8F0;font-weight:bold;">Total</th></tr></thead><tbody>';
+                            for (var j=0; j<axisData.length; j++) {
+                                table += '<tr><td style="padding:4px;border:1px solid #E2E8F0;font-weight:bold;">' + axisData[j] + '</td>';
+                                var rowTotal = 0;
+                                for (var i=0; i<series.length; i++) { var v = series[i].data[j] || 0; rowTotal += v; table += '<td style="padding:4px;border:1px solid #E2E8F0;">' + v + '</td>'; }
+                                table += '<td style="padding:4px;border:1px solid #E2E8F0;font-weight:bold;">' + rowTotal + '</td></tr>';
+                            }
+                            table += '</tbody></table>'; return table;
+                        }""")
+                    },
                     "restore": {"title": "Restaurar"},
                     "saveAsImage": {"title": "Salvar Imagem"}
                 }},
-                "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}],
-                "grid": {"top": "10%", "bottom": "25%", "left": "12%", "right": "5%"},
-                "xAxis": {"type": "category", "data": dates_list},
-                "yAxis": {
-                    "type": "value", "name": "Horário", "min": 0, "max": 24, "interval": 4,
-                    "axisLabel": {
-                        "formatter": JsCode("""function(value) {
-                            var hh = Math.floor(value);
-                            return (hh < 10 ? '0' : '') + hh + ':00';
-                        }""")
-                    }
-                },
-                "series": [
-                    {"name": "Login", "type": "scatter", "data": login_data, "symbolSize": 10, "itemStyle": {"color": "#3B82F6"}},
-                    {"name": "Primeira Baixa", "type": "scatter", "data": baixa_data, "symbolSize": 10, "itemStyle": {"color": "#10B981"}}
-                ]
-            }, height="400px", theme="streamlit", key="gov_scatter_aderencia_colors")
-        else:
-            st.info("Dados insuficientes para cruzar login com apontamento.")
+                "grid": {"left": "5%", "right": "5%", "bottom": "18%", "top": "10%", "containLabel": True},
+                "xAxis": {"type": "category", "data": tecnicos_top, "axisLabel": {"interval": 0, "rotate": 30, "fontSize": 10}},
+                "yAxis": {"type": "value"},
+                "series": series_top
+            }, height="400px", theme="streamlit", key="gov_top_tec_echarts")
 
-    with col_l3_c2:
-        st.markdown("#### \U0001F51D Top Técnicos: OS por Pátio")
-        st.caption("Distribuição da carga de trabalho por técnico e pátio.")
-        df_freq = df_gov_f.groupby(["concluido_por", "Patio"]).size().reset_index(name="Qtd")
-        tecnicos_top = df_freq["concluido_por"].unique().tolist()
-        patios_top = sorted(df_freq["Patio"].unique().tolist())
-        series_top = []
-        for patio in patios_top:
-            vals = []
-            for tec in tecnicos_top:
-                row_match = df_freq[(df_freq["concluido_por"] == tec) & (df_freq["Patio"] == patio)]
-                vals.append(int(row_match["Qtd"].iloc[0]) if not row_match.empty else 0)
-            series_top.append({"name": patio, "type": "bar", "stack": "total", "data": vals, "label": {"show": False}})
+        with col_l3_c3:
+            st.markdown("#### \U0001F4CA Variabilidade de Execução")
+            st.caption("Tempo médio de execução (min) por colaborador.")
+            df_var = df_gov_f.groupby("concluido_por")["Tempo_Minutos"].mean().reset_index().sort_values("Tempo_Minutos", ascending=True)
+            st_echarts(options={
+                "tooltip": {"trigger": "axis"},
+                "toolbox": {"show": True, "feature": {
+                    "dataView": {"show": True, "readOnly": True, "title": "Ver Dados", "lang": ["Tabela de Dados", "Fechar", "Atualizar"]},
+                    "restore": {"title": "Restaurar"},
+                    "saveAsImage": {"title": "Salvar Imagem"}
+                }},
+                "grid": {"left": "5%", "right": "8%", "bottom": "10%", "top": "10%", "containLabel": True},
+                "xAxis": {"type": "value", "name": "Minutos"},
+                "yAxis": {"type": "category", "data": df_var["concluido_por"].tolist(), "axisLabel": {"fontSize": 10}},
+                "series": [{"type": "bar", "data": df_var["Tempo_Minutos"].round(1).tolist(), "itemStyle": {"color": "#8B5CF6"}, "label": {"show": True, "position": "right", "formatter": "{c} min", "fontSize": 10}}]
+            }, height="400px", theme="streamlit", key="gov_variab_echarts")
+        #endregion 9.6
 
-        st_echarts(options={
-            "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
-            "legend": {"bottom": "0%", "textStyle": {"fontSize": 10}},
-            "toolbox": {"show": True, "feature": {
-                "dataView": {"show": True, "readOnly": True, "title": "Ver Dados", "lang": ["Tabela de Dados", "Fechar", "Atualizar"],
-                    "optionToContent": JsCode("""function(opt) {
-                        var axisData = opt.xAxis[0].data;
-                        var series = opt.series;
-                        var table = '<table style="width:100%;text-align:center;border-collapse:collapse;font-size:11px;"><thead><tr style="background:#F1F5F9;"><th style="padding:5px;border:1px solid #E2E8F0;">Técnico</th>';
-                        for (var i=0; i<series.length; i++) { table += '<th style="padding:5px;border:1px solid #E2E8F0;">' + series[i].name + '</th>'; }
-                        table += '<th style="padding:5px;border:1px solid #E2E8F0;font-weight:bold;">Total</th></tr></thead><tbody>';
-                        for (var j=0; j<axisData.length; j++) {
-                            table += '<tr><td style="padding:4px;border:1px solid #E2E8F0;font-weight:bold;">' + axisData[j] + '</td>';
-                            var rowTotal = 0;
-                            for (var i=0; i<series.length; i++) { var v = series[i].data[j] || 0; rowTotal += v; table += '<td style="padding:4px;border:1px solid #E2E8F0;">' + v + '</td>'; }
-                            table += '<td style="padding:4px;border:1px solid #E2E8F0;font-weight:bold;">' + rowTotal + '</td></tr>';
-                        }
-                        table += '</tbody></table>'; return table;
-                    }""")
-                },
-                "restore": {"title": "Restaurar"},
-                "saveAsImage": {"title": "Salvar Imagem"}
-            }},
-            "grid": {"left": "5%", "right": "5%", "bottom": "18%", "top": "10%", "containLabel": True},
-            "xAxis": {"type": "category", "data": tecnicos_top, "axisLabel": {"interval": 0, "rotate": 30, "fontSize": 10}},
-            "yAxis": {"type": "value"},
-            "series": series_top
-        }, height="400px", theme="streamlit", key="gov_top_tec_echarts")
+        #region 9.7: Tabela de Auditoria GPS
+        st.markdown("---")
+        st.markdown("#### 📍 Tabela de Auditoria de Apontamentos (GPS)")
+        df_auditoria = df_gov_f[["Ordem servico", "concluido_por", "data_inicio", "hora_fim", "geolocalizacao_baixa", "equipe", "Tempo_Minutos"]].copy().sort_values(by=["data_inicio", "hora_fim"], ascending=[False, False]).rename(columns={
+            "Ordem servico": "OS",
+            "concluido_por": "Apontador Principal",
+            "data_inicio": "Data",
+            "hora_fim": "Hora Apontada",
+            "geolocalizacao_baixa": "Localização do Celular",
+            "equipe": "Co-Executantes",
+            "Tempo_Minutos": "Tempo Gasto (min)"
+        })
+        df_auditoria["Tempo Gasto (min)"] = df_auditoria["Tempo Gasto (min)"].round(0).astype(int)
+        st.dataframe(df_auditoria.style.map(lambda v: 'background-color: #FEE2E2; color: #991B1B; font-weight: bold;' if pd.notna(v) and ('Base' in str(v) or 'Sede' in str(v)) else 'color: #065F46;', subset=["Localização do Celular"]), use_container_width=True, height=300, hide_index=True)
+        #endregion 9.7
 
-    with col_l3_c3:
-        st.markdown("#### \U0001F4CA Variabilidade de Execução")
-        st.caption("Tempo médio de execução (min) por colaborador.")
-        df_var = df_gov_f.groupby("concluido_por")["Tempo_Minutos"].mean().reset_index().sort_values("Tempo_Minutos", ascending=True)
-        st_echarts(options={
-            "tooltip": {"trigger": "axis"},
-            "toolbox": {"show": True, "feature": {
-                "dataView": {"show": True, "readOnly": True, "title": "Ver Dados", "lang": ["Tabela de Dados", "Fechar", "Atualizar"]},
-                "restore": {"title": "Restaurar"},
-                "saveAsImage": {"title": "Salvar Imagem"}
-            }},
-            "grid": {"left": "5%", "right": "8%", "bottom": "10%", "top": "10%", "containLabel": True},
-            "xAxis": {"type": "value", "name": "Minutos"},
-            "yAxis": {"type": "category", "data": df_var["concluido_por"].tolist(), "axisLabel": {"fontSize": 10}},
-            "series": [{"type": "bar", "data": df_var["Tempo_Minutos"].round(1).tolist(), "itemStyle": {"color": "#8B5CF6"}, "label": {"show": True, "position": "right", "formatter": "{c} min", "fontSize": 10}}]
-        }, height="400px", theme="streamlit", key="gov_variab_echarts")
-
-
-    # LINHA 5: Tabela de Auditoria de Apontamentos (GPS)
-    # ==========================================
-    st.markdown("---")
-    st.markdown("#### 📍 Tabela de Auditoria de Apontamentos (GPS)")
-    # ✅ CORREÇÃO 3: rename com "concluido_por" (nome real da coluna)
-    df_auditoria = df_gov_f[["Ordem servico", "concluido_por", "data_inicio", "hora_fim", "geolocalizacao_baixa", "equipe", "Tempo_Minutos"]].copy().sort_values(by=["data_inicio", "hora_fim"], ascending=[False, False]).rename(columns={
-        "Ordem servico": "OS",
-        "concluido_por": "Apontador Principal",
-        "data_inicio": "Data",
-        "hora_fim": "Hora Apontada",
-        "geolocalizacao_baixa": "Localização do Celular",
-        "equipe": "Co-Executantes",
-        "Tempo_Minutos": "Tempo Gasto (min)"
-    })
-    df_auditoria["Tempo Gasto (min)"] = df_auditoria["Tempo Gasto (min)"].round(0).astype(int)
-    st.dataframe(df_auditoria.style.map(lambda v: 'background-color: #FEE2E2; color: #991B1B; font-weight: bold;' if pd.notna(v) and ('Base' in str(v) or 'Sede' in str(v)) else 'color: #065F46;', subset=["Localização do Celular"]), use_container_width=True, height=300, hide_index=True)
+    fragmento_governanca()
     st.stop()
-#endregion
-#endregion
+#endregion SESSÃO 9
