@@ -1294,12 +1294,11 @@ def render_tela_admin():
                                     execute_values(
                                         cur,
                                         """
-                                        INSERT INTO mapeamento_patios (ativo_chave, patio, tipo, data_upload)
+                                        INSERT INTO mapeamento_patios (ativo_chave, patio, tipo)
                                         VALUES %s
                                         ON CONFLICT (ativo_chave) DO UPDATE SET
                                             patio = EXCLUDED.patio,
                                             tipo = EXCLUDED.tipo,
-                                            data_upload = CURRENT_TIMESTAMP
                                         """,
                                         lote,
                                         page_size=lote_size
