@@ -2018,13 +2018,13 @@ baixas_mtime = _hash_baixas()
 
 df_base_bruto = carregar_base_sem_overlay(
     usar_sim=usar_sim, qtd_sim=int(qtd_sim), seed_sim=int(seed_sim),
-    escopo_usuario=st.session_state["escopo"],
+    escopo_usuario=st.session_state.get("escopo", "Todas"),
     etl_version=ETL_VERSION
 )
 
 df_base = aplicar_overlay_baixas(
     df_base_bruto=df_base_bruto,
-    escopo_usuario=st.session_state["escopo"],
+    escopo_usuario=st.session_state.get("escopo", "Todas"),
     baixas_mtime=baixas_mtime   # ← agora só invalida quando o banco muda de fato
 )
 
