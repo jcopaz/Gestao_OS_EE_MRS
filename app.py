@@ -1936,13 +1936,10 @@ st.markdown("""
 
 #endregion 5.1.1
 
-
 #region 5.1.2: Logotipo e Cabeçalho da Sidebar
 st.sidebar.image("logo_mrs.png", use_container_width=True)
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
-
 #endregion 5.1.2
-
 
 #region 5.1.3: Navegação Inteligente por Perfil (Botões + Roteamento)
 st.sidebar.markdown("### 🧭 Navegação")
@@ -1985,9 +1982,7 @@ if tem_governanca:
 if st.session_state.get("tela_atual") == "admin":
     render_tela_admin()
     st.stop()
-
 #endregion 5.1.3
-    
 
 #region 5.1.4: Filtro de Visão (Escopo do Usuário)
 if "Painel Gerencial" in gov_usuario:
@@ -2000,9 +1995,109 @@ else:
     filtro_visao = st.session_state.get("escopo", "Todas")
     st.sidebar.info(f"Visão Restrita: {filtro_visao}")
 #endregion 5.1.4
+#endregion
 
+#region SESSÃO 5.2: Carregamento da base operacional
+usar_sim = st.session_state.get("chk_sim", False)
+qtd_sim = st.session_state.get("qtd_sim", 1200)
+seed_sim = st.session_state.get("seed_sim", 42)
 
-#endregion SESSÃO 5.1: Identidade visual, navegação e escopo
+# Gera um hash baseado na quantidade real de baixas (só muda quando há novas baixas)
+def _hash_baixas():
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*), MAX(os) FROM baixas")
+        row = cur.fetchone()
+        cur.close()
+        return f"{row[0]}_{row[1]}"
+    finally:
+        release_connection(conn)
+
+baixas_mtime = _hash_baixas()
+
+df_base_bruto = carregar_base_sem_overlay(
+    usar_sim=usar_sim, qtd_sim=int(qtd_sim), seed_sim=int(seed_sim),
+    escopo_usuario=st.session_state["escopo"],
+    etl_version=ETL_VERSION
+)
+
+df_base = aplicar_overlay_baixas(
+    df_base_bruto=df_base_bruto,
+    escopo_usuario=st.session_state["escopo"],
+    baixas_mtime=baixas_mtime   # ← agora só invalida quando o banco muda de fato
+)
+
+st.session_state["df_os"] = df_base
+df_visao = preparar_df_visao(df_base, filtro_visao)
+#endregion
+
+#region SESSÃO 5.3: Filtros da sidebar
+st.sidebar.markdown("### 📊 Filtros")
+
+valid_dates = df_visao["dt_prog_filtro"].dropna()
+
+if not valid_dates.empty:
+    min_date = valid_dates.min().date()
+    max_date = valid_dates.max().date()
+else:
+    min_date = datetime.now().date() - pd.Timedelta(days=30)
+    max_date = datetime.now().date()
+
+if st.session_state["perfil"] != "Técnico":
+    data_selecionada = st.sidebar.date_input(
+        "Período de Programação",
+        value=(min_date, max_date),
+        min_value=min_date,
+        max_value=max_date,
+        format="DD/MM/YYYY"  # <--- Essa linha mágica resolve a exibição visual!
+    )
+
+    if isinstance(data_selecionada, tuple):
+        if len(data_selecionada) == 2:
+            start_date, end_date = data_selecionada
+        else:
+            start_date = data_selecionada[0]
+            end_date = data_selecionada[0]
+    else:
+        start_date = data_selecionada
+        end_date = data_selecionada
+
+    lista_patios = sorted(df_visao["Patio"].dropna().astype(str).unique().tolist())
+    patios_selecionados = st.sidebar.multiselect("Pátio", lista_patios, default=lista_patios)
+
+    classif_selecionadas = st.sidebar.multiselect(
+        "Classificação",
+        ["Confiabilidade e Segurança", "Segurança", "Confiabilidade"],
+        default=["Confiabilidade e Segurança", "Segurança", "Confiabilidade"]
+    )
+
+    lista_turnos = ["00h-07h", "07h-16h", "16h-00h", "Pendente (Sem Turno)"]
+    turnos_selecionados = st.sidebar.multiselect("Turno", lista_turnos, default=lista_turnos)
+
+    status_sel = st.sidebar.selectbox(
+        "Status da OS",
+        ["Todos", "Todas Concluídas", "Concluídas no Prazo", "Concluídas com Atraso", "Pendentes", "Atrasado"]
+    )
+else:
+    st.sidebar.info("💡 Filtros automáticos aplicados de acordo com o seu escopo operacional de campo.")
+    start_date = min_date
+    end_date = max_date
+    patios_selecionados = sorted(df_visao["Patio"].dropna().astype(str).unique().tolist())
+    classif_selecionadas = ["Confiabilidade e Segurança", "Segurança", "Confiabilidade"]
+    turnos_selecionados = ["00h-07h", "07h-16h", "16h-00h", "Pendente (Sem Turno)"]
+    status_sel = "Todos"
+
+df_filtrado = aplicar_filtros_sidebar(
+    df_visao=df_visao,
+    patios_selecionados=patios_selecionados,
+    classif_selecionadas=classif_selecionadas,
+    turnos_selecionados=turnos_selecionados,
+    start_date=start_date,
+    end_date=end_date,
+    status_sel=status_sel
+)
+#endregion
 #endregion
 
 #region SESSÃO 6: Sistema, dados e gestão de usuários
