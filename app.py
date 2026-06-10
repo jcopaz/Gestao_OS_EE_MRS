@@ -2781,7 +2781,6 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
             with col_acao:
                 st.markdown("#### ⚙️ Ferramentas de Campo")
 
-
                 # --- INICIALIZAÇÃO CENTRALIZADA DE SESSION_STATE ---
 
                 if "lat_partida" not in st.session_state:
@@ -2884,21 +2883,20 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                                 st.error(f"🛑 **Bloqueio Geográfico:** O sistema exige estar em um raio máximo de **5 km** do local.")
                                 st.warning(f"Você está muito longe das OSs: **{', '.join(os_distantes)}**.")
                                 st.info("💡 Aproxime-se do pátio e atualize sua posição em '📍 Minha Localização'.")
-                                return 
+                                return
 
-                    st.markdown("---")
-                    st.markdown("#### 📷 Evidências Fotográficas")
-                    st.caption("Registre a evidência de **cada OS**. Use a câmera ou selecione da galeria.")
-                    fotos_por_os = {}
-                    for os_id_ev in os_selecionadas:
-                        with st.expander(f"📷 Foto da OS: {os_id_ev}", expanded=True):
-                            col_cam, col_gal = st.columns(2)
-                            with col_cam:
-                                foto_cam = st.camera_input("📸 Câmera", key=f"cam_{os_id_ev}")
-                            with col_gal:
-                                foto_gal = st.file_uploader("🖼️ Galeria", type=["jpg", "jpeg", "png"], key=f"gal_{os_id_ev}")
-                            fotos_por_os[os_id_ev] = foto_cam if foto_cam is not None else foto_gal
-
+                            st.markdown("---")
+                            st.markdown("#### 📷 Evidências Fotográficas")
+                            st.caption("Registre a evidência de **cada OS**. Use a câmera ou selecione da galeria.")
+                            fotos_por_os = {}
+                            for os_id_ev in os_selecionadas:
+                                with st.expander(f"📷 Foto da OS: {os_id_ev}", expanded=True):
+                                    col_cam, col_gal = st.columns(2)
+                                    with col_cam:
+                                        foto_cam = st.camera_input("📸 Câmera", key=f"cam_{os_id_ev}")
+                                    with col_gal:
+                                        foto_gal = st.file_uploader("🖼️ Galeria", type=["jpg", "jpeg", "png"], key=f"gal_{os_id_ev}")
+                                    fotos_por_os[os_id_ev] = foto_cam if foto_cam is not None else foto_gal
 
                             conn = get_connection()
                             try:
@@ -2955,6 +2953,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                                                 equipe=equipe_str, data_inicio=data_hoje_br, hora_inicio=hora_ini_str,
                                                 data_fim=data_hoje_br, hora_fim=hora_fim_str
                                             )
+
                                         # --- UPLOAD DE EVIDÊNCIA FOTOGRÁFICA (1 por OS) ---
                                         fotos_enviadas = 0
                                         for os_id_foto in set(os_selecionadas):
@@ -3070,7 +3069,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                 st.markdown("#### 📋 Cronograma de Execução de Campo")
                 st.info("Nenhuma OS pendente localizada dentro do raio de atuação selecionado.")
         #endregion (Fim da Sessão 8.3)
-#endregion (Fim da Sessão 8 Geral)
+    #endregion (Fim da Sessão 8 Geral)
 
 #region SESSÃO 9: Tela Isolada de Governança e Auditoria
 
