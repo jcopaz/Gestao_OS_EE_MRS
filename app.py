@@ -2928,7 +2928,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     st.session_state["lon_partida"] = lon_base
                     st.session_state["local_nome"] = nome_base
 
-                GPS_MAX_TRIALS = 10
+                GPS_MAX_TRIALS = 25
 
                 c1, c2 = st.columns(2)
                 with c1:
@@ -2971,7 +2971,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         st.session_state["gps_trials"] += 1
                         if st.session_state["gps_trials"] < GPS_MAX_TRIALS:
                             st.info("Aguardando permissão do navegador...")
-                            time.sleep(0.1)
+                            time.sleep(0.3)
                             st.rerun()
                         else:
                             st.session_state["gps_pending"] = False
@@ -3150,7 +3150,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 
                 zoom_mapa = calcular_zoom_por_raio(raio_busca_km, lat_centro)
 
-                mapa = folium.Map(location=[lat_centro, lon_centro], zoom_start=zoom_mapa, max_bounds=True, min_lat=SP_MIN_LAT, max_lat=SP_MAX_LAT, min_lon=SP_MIN_LON, max_lon=SP_MAX_LON, control_scale=True, tiles="https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png", attr="CartoDB", prefer_canvas=True)
+                mapa = folium.Map(location=[lat_centro, lon_centro], zoom_start=zoom_mapa, max_bounds=True, min_lat=SP_MIN_LAT, max_lat=SP_MAX_LAT, min_lon=SP_MIN_LON, max_lon=SP_MAX_LON, control_scale=True, tiles="CartoDB positron", prefer_canvas=True)
 
                 try:
                     import geopandas as gpd
@@ -3161,7 +3161,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         gdf_malha = gpd.read_file(caminho_kml, driver="KML")
                         gdf_malha.geometry = gdf_malha.geometry.simplify(tolerance=0.001, preserve_topology=True)
                         def adicionar_trecho_ferrovia(geom_trecho):
-                            folium.GeoJson(geom_trecho.__geo_interface__, style_function=lambda x: {"color": "#2563EB", "weight": 1.5, "opacity": 0.50, "interactive": False}, control=False).add_to(mapa)
+                            folium.GeoJson(geom_trecho.__geo_interface__, style_function=lambda x: {"color": "#2563EB", "weight": 2, "opacity": 0.70}, control=False).add_to(mapa)
 
                         for _, row in gdf_malha.iterrows():
                             geom = row.geometry
