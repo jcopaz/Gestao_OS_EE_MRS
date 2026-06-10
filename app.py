@@ -1081,7 +1081,14 @@ def resumir_conclusoes_por_turno_data(
 #region SESSÃO 2.7 ===== Administração de Dados =====
 
 def render_tela_admin():
-    st.title("⚙️ Administração de Dados")
+    col_adm_t1, col_adm_t2 = st.columns([8, 2])
+    with col_adm_t1:
+        st.title("⚙️ Administração de Dados")
+    with col_adm_t2:
+        st.markdown("<div style='margin-top: 16px;'></div>", unsafe_allow_html=True)
+        if st.button("⬅️ Voltar ao Painel", use_container_width=True):
+            st.session_state["tela_atual"] = "dashboard"
+            st.rerun()
     st.markdown("Faça o upload da base de **OS Programadas** para atualizar o sistema central.")
     
     col_up1, col_up2 = st.columns(2)
@@ -1977,22 +1984,33 @@ if "tela_atual" not in st.session_state:
 
 gov_usuario = st.session_state.get("governanca", "")
 
-# Cria os botões dependendo do que o usuário tem acesso
-col_nav1, col_nav2 = st.sidebar.columns(2)
-with col_nav1:
-    if "Painel Gerencial" in gov_usuario or "Mapa de Campo" in gov_usuario:
-        if st.button("📊 Painel", use_container_width=True): 
+# --- NAVEGAÇÃO INTELIGENTE POR PERFIL ---
+tem_painel = "Painel Gerencial" in gov_usuario or "Mapa de Campo" in gov_usuario
+tem_dados = "Upload de Dados" in gov_usuario
+tem_governanca = "Gestão de Usuários" in gov_usuario or "Governança" in gov_usuario
+
+if tem_painel and tem_dados:
+    col_nav1, col_nav2 = st.sidebar.columns(2)
+    with col_nav1:
+        if st.button("📊 Painel", use_container_width=True):
             st.session_state["tela_atual"] = "dashboard"
             st.rerun()
-with col_nav2:
-    if "Upload de Dados" in gov_usuario:
-        if st.button("⚙️ Dados", use_container_width=True): 
+    with col_nav2:
+        if st.button("⚙️ Dados", use_container_width=True):
             st.session_state["tela_atual"] = "admin"
             st.rerun()
+elif tem_painel:
+    if st.sidebar.button("📊 Painel", use_container_width=True):
+        st.session_state["tela_atual"] = "dashboard"
+        st.rerun()
+elif tem_dados:
+    if st.sidebar.button("⚙️ Dados", use_container_width=True):
+        st.session_state["tela_atual"] = "admin"
+        st.rerun()
 
-# Botão exclusivo para liderança (CORRIGIDO PARA A SIDEBAR)
-if "Gestão de Usuários" in gov_usuario or "Exportar SAP" in gov_usuario:
-    if st.sidebar.button("🛡️ Governança (Auditoria)", use_container_width=True): 
+# Botão de Governança — SOMENTE para quem tem "Gestão de Usuários"
+if tem_governanca:
+    if st.sidebar.button("🛡️ Governança (Auditoria)", use_container_width=True):
         st.session_state["tela_atual"] = "governanca"
         st.rerun()
 
@@ -2158,12 +2176,16 @@ if "Gestão de Usuários" in st.session_state.get("governanca", ""):
             st.markdown("**Governança (O que o usuário pode ver/fazer?)**")
             
             # Define marcações automáticas inteligentes com base no perfil escolhido
-            if n_perf == "Técnico": def_gov = ["Mapa de Campo"]
-            elif n_perf == "Assistente": def_gov = ["Painel Gerencial", "Upload de Dados"]
-            elif n_perf == "Coordenador": def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Exportar SAP"]
-            else: def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Gestão de Usuários", "Exportar SAP"]
+            if n_perf == "Técnico":
+                def_gov = ["Mapa de Campo"]
+            elif n_perf == "Assistente":
+                def_gov = ["Painel Gerencial", "Upload de Dados", "Exportar SAP"]
+            elif n_perf == "Coordenador":
+                def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Exportar SAP", "Governança"]
+            else:
+                def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Gestão de Usuários", "Exportar SAP", "Governança"]
             
-            opcoes_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Gestão de Usuários", "Exportar SAP"]
+            opcoes_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Gestão de Usuários", "Exportar SAP", "Governança"]
             n_gov = st.multiselect("Permissões de Acesso:", opcoes_gov, default=def_gov, key="novo_user_gov")
 
             if st.form_submit_button("Salvar Novo Usuário"):
@@ -2357,8 +2379,13 @@ st.markdown("---")
 #region 8.1 - ROTEAMENTO PRINCIPAL (CONTROLE DE TELAS)
 if st.session_state.get("tela_atual", "dashboard") == "dashboard":
     
-    # Apenas 2 Abas! A Governança agora é uma tela separada.
-    tab1, tab2 = st.tabs(["📊 Visão Gerencial", "🗺️ Roteirização e Mapa de Campo"])
+# --- CONTROLE DE ABAS POR GOVERNANÇA ---
+    tem_mapa_campo = "Mapa de Campo" in st.session_state.get("governanca", "")
+    if tem_mapa_campo:
+        tab1, tab2 = st.tabs(["📊 Visão Gerencial", "🗺️ Roteirização e Mapa de Campo"])
+    else:
+        tab1 = st.tabs(["📊 Visão Gerencial"])[0]
+        tab2 = None
 #endregion
 
 #region 8.2: ABA 1 — Visão Gerencial (Indicadores)
@@ -2612,6 +2639,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 #endregion
 
 #region 8.3: ABA 2 — Roteirização e Mapa de Campo
+    if tab2 is not None:
         with tab2:
             # 0. Inicialização de segurança da variável para evitar NameError
             df_recomendado = pd.DataFrame()
