@@ -99,6 +99,14 @@ def init_db():
                 UNIQUE(ativo, atividade)
             );
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS mapeamento_patios (
+                ativo_chave VARCHAR(500) PRIMARY KEY,
+                patio VARCHAR(10) NOT NULL,
+                tipo VARCHAR(20) DEFAULT 'Ativo',
+                data_upload TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
         
         # --- ATUALIZAÇÕES AUTOMÁTICAS DE ESTRUTURA (UPGRADE V6 E FASE 2) ---
         try:
@@ -556,6 +564,20 @@ def carregar_evidencias_df() -> pd.DataFrame:
     finally:
         release_connection(conn)
     return df
+
+@st.cache_data(show_spinner=False, ttl=600)
+def carregar_mapeamento_patios() -> dict:
+    """Carrega o dicionário de mapeamento Ativo → Pátio do banco Neon."""
+    conn = get_connection()
+    try:
+        df = pd.read_sql_query("SELECT ativo_chave, patio FROM mapeamento_patios", conn)
+    finally:
+        release_connection(conn)
+    if df.empty:
+        return {}
+    df["ativo_chave"] = df["ativo_chave"].astype(str).str.strip().str.upper()
+    df["patio"] = df["patio"].astype(str).str.strip().str.upper()
+    return dict(zip(df["ativo_chave"], df["patio"]))
 #endregion
 
 #region SESSÃO 2.3 ===== Export/Salvar Excel (MASTER) =====
@@ -1218,6 +1240,100 @@ def render_tela_admin():
         else:
             st.info("Nenhum upload realizado até o momento.")
 
+    # ==============================================
+    # UPLOAD DE MAPEAMENTO DE PÁTIOS
+    # ==============================================
+    st.markdown("---")
+    with st.expander("🗺️ Mapeamento de Ativos → Pátios", expanded=False):
+        st.markdown("Carregue a planilha **Relação_ativos_SP.xlsx** para atualizar o mapeamento de Ativos e Equipamentos para Pátios.")
+        st.caption("A planilha deve ter as abas **Ativos_SP** (coluna A: Local de instalação, coluna K: Pátio) e **Equipamento_SP** (coluna A: Equipamento, coluna G: Pátio).")
+        
+        arquivo_mapa = st.file_uploader("Selecione a planilha de mapeamento", type=["xlsx"], key="upload_mapeamento_patios")
+        
+        if arquivo_mapa is not None:
+            if st.button("🚀 Processar Mapeamento", use_container_width=True, type="primary"):
+                with st.spinner("Processando mapeamento de pátios..."):
+                    try:
+                        xls = pd.ExcelFile(arquivo_mapa, engine="openpyxl")
+                        registros = []
+                        
+                        # Aba Ativos_SP
+                        if "Ativos_SP" in xls.sheet_names:
+                            df_at = pd.read_excel(xls, sheet_name="Ativos_SP")
+                            col_chave_at = df_at.columns[0]
+                            col_patio_at = df_at.columns[10]
+                            for _, row in df_at.iterrows():
+                                chave = str(row[col_chave_at]).strip()
+                                patio = str(row[col_patio_at]).strip()
+                                if chave and patio and chave != "nan" and patio != "nan":
+                                    registros.append((chave, patio, "Ativo"))
+                        
+                        # Aba Equipamento_SP (aceita ambos os nomes)
+                        for nome_aba in ["Equipamento_SP", "Equipamentos_SP"]:
+                            if nome_aba in xls.sheet_names:
+                                df_eq = pd.read_excel(xls, sheet_name=nome_aba)
+                                col_chave_eq = df_eq.columns[0]
+                                col_patio_eq = df_eq.columns[6]
+                                for _, row in df_eq.iterrows():
+                                    chave = str(row[col_chave_eq]).strip()
+                                    patio = str(row[col_patio_eq]).strip()
+                                    if chave and patio and chave != "nan" and patio != "nan":
+                                        registros.append((chave, patio, "Equipamento"))
+                                break
+                        
+                        if not registros:
+                            st.error("❌ Nenhum registro válido encontrado. Verifique a estrutura da planilha.")
+                        else:
+                            conn = get_connection()
+                            try:
+                                cur = conn.cursor()
+                                lote_size = 500
+                                barra = st.progress(0, text="Gravando mapeamento...")
+                                for i in range(0, len(registros), lote_size):
+                                    lote = registros[i:i + lote_size]
+                                    execute_values(
+                                        cur,
+                                        """
+                                        INSERT INTO mapeamento_patios (ativo_chave, patio, tipo, data_upload)
+                                        VALUES %s
+                                        ON CONFLICT (ativo_chave) DO UPDATE SET
+                                            patio = EXCLUDED.patio,
+                                            tipo = EXCLUDED.tipo,
+                                            data_upload = CURRENT_TIMESTAMP
+                                        """,
+                                        lote,
+                                        page_size=lote_size
+                                    )
+                                    pct = min((i + len(lote)) / len(registros), 1.0)
+                                    barra.progress(pct, text=f"Gravando... {min(i + lote_size, len(registros))}/{len(registros)}")
+                                conn.commit()
+                                cur.close()
+                            finally:
+                                release_connection(conn)
+                            
+                            barra.progress(1.0, text="Concluído!")
+                            st.success(f"✅ Mapeamento atualizado com {len(registros)} registros!")
+                            st.cache_data.clear()
+                            time.sleep(1.5)
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Erro ao processar: {e}")
+        
+        # Mostrar status atual do mapeamento
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*), COUNT(DISTINCT patio) FROM mapeamento_patios")
+            row_map = cur.fetchone()
+            cur.close()
+        finally:
+            release_connection(conn)
+        
+        if row_map and row_map[0] > 0:
+            st.info(f"📊 **Mapeamento atual:** {row_map[0]:,} ativos/equipamentos → {row_map[1]} pátios".replace(",", "."))
+        else:
+            st.warning("⚠️ Mapeamento vazio. Faça o upload da planilha para ativar a resolução inteligente de pátios.")
+
     # --- SESSÃO DE EXPORTAÇÃO SAP ---
     if "Exportar SAP" in st.session_state.get("governanca", ""):
         st.markdown("---")
@@ -1400,7 +1516,15 @@ def tratar_df_os(df: pd.DataFrame):
     df["PRIORIDADE_CAN"] = df[col_prioridade].astype(str).str.strip()
     df["HXH_CAN"] = pd.to_numeric(df[col_hxh], errors="coerce").fillna(0) if col_hxh else 0.0
     
-    df["PATIO_CAN"] = df["ATIVO_CAN"].str[:3].str.upper()
+    # --- RESOLUÇÃO INTELIGENTE DE PÁTIO (lookup + fallback 3 letras) ---
+    _mapa_patios = carregar_mapeamento_patios()
+    if _mapa_patios:
+        df["PATIO_CAN"] = df["ATIVO_CAN"].str.strip().str.upper().map(_mapa_patios)
+        _sem_patio = df["PATIO_CAN"].isna()
+        if _sem_patio.any():
+            df.loc[_sem_patio, "PATIO_CAN"] = df.loc[_sem_patio, "ATIVO_CAN"].str[:3].str.upper()
+    else:
+        df["PATIO_CAN"] = df["ATIVO_CAN"].str[:3].str.upper()
 
     df["DATA_PROG_CAN"] = df[col_data_prog].apply(parse_data_programada)
     df["DESC_LONGA_CAN"] = df[col_desc].astype(str).str.strip() if col_desc else ""
