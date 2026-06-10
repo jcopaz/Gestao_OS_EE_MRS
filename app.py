@@ -1298,7 +1298,7 @@ def render_tela_admin():
                                         VALUES %s
                                         ON CONFLICT (ativo_chave) DO UPDATE SET
                                             patio = EXCLUDED.patio,
-                                            tipo = EXCLUDED.tipo,
+                                            tipo = EXCLUDED.tipo
                                         """,
                                         lote,
                                         page_size=lote_size
