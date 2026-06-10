@@ -2445,7 +2445,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             how="left"
                         )
                         df_lista["Evidência"] = df_lista["foto_url"].apply(
-                            lambda url: f'<a href="{url}" target="_blank">📷 Ver Foto</a>' if pd.notna(url) and str(url).startswith("http") else ""
+                            lambda url: str(url) if pd.notna(url) and str(url).startswith("http") else None
                         )
                         df_lista.drop(columns=["ativo", "atividade", "foto_url"], inplace=True, errors="ignore")
                     else:
@@ -2471,7 +2471,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 
             if not df_lista.empty:
                 df_styled = df_lista[colunas_ordem].style.set_properties(**{'text-align': 'center'}).set_table_styles([{'selector': 'th', 'props': [('text-align', 'center')]}])
-                st.dataframe(df_styled, use_container_width=True, height=400, hide_index=True)
+                st.dataframe(df_styled, use_container_width=True, height=400, hide_index=True, column_config={"Evidência": st.column_config.LinkColumn("📷 Evidência", display_text="📷 Ver Foto")})
 #endregion
 
 #region 8.3: ABA 2 — Roteirização e Mapa de Campo
@@ -2886,15 +2886,18 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                                 st.info("💡 Aproxime-se do pátio e atualize sua posição em '📍 Minha Localização'.")
                                 return 
 
-                            st.markdown("---")
-                            st.markdown("#### 📷 Evidência Fotográfica")
-                            st.caption("Registre a evidência da execução. Use a câmera ou selecione da galeria.")
+                    st.markdown("---")
+                    st.markdown("#### 📷 Evidências Fotográficas")
+                    st.caption("Registre a evidência de **cada OS**. Use a câmera ou selecione da galeria.")
+                    fotos_por_os = {}
+                    for os_id_ev in os_selecionadas:
+                        with st.expander(f"📷 Foto da OS: {os_id_ev}", expanded=True):
                             col_cam, col_gal = st.columns(2)
                             with col_cam:
-                                foto_camera = st.camera_input("📸 Capturar Foto", key="cam_evidencia")
+                                foto_cam = st.camera_input("📸 Câmera", key=f"cam_{os_id_ev}")
                             with col_gal:
-                                foto_galeria = st.file_uploader("🖼️ Selecionar da Galeria", type=["jpg", "jpeg", "png"], key="gal_evidencia")
-                            foto_final = foto_camera if foto_camera is not None else foto_galeria
+                                foto_gal = st.file_uploader("🖼️ Galeria", type=["jpg", "jpeg", "png"], key=f"gal_{os_id_ev}")
+                            fotos_por_os[os_id_ev] = foto_cam if foto_cam is not None else foto_gal
 
 
                             conn = get_connection()
@@ -2952,38 +2955,38 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                                                 equipe=equipe_str, data_inicio=data_hoje_br, hora_inicio=hora_ini_str,
                                                 data_fim=data_hoje_br, hora_fim=hora_fim_str
                                             )
-                                        # --- UPLOAD DE EVIDÊNCIA FOTOGRÁFICA ---
-                                        if foto_final is not None:
-                                            with st.spinner("📤 Enviando evidência fotográfica..."):
+                                        # --- UPLOAD DE EVIDÊNCIA FOTOGRÁFICA (1 por OS) ---
+                                        fotos_enviadas = 0
+                                        for os_id_foto in set(os_selecionadas):
+                                            foto_da_os = fotos_por_os.get(str(os_id_foto))
+                                            if foto_da_os is None:
+                                                continue
+                                            with st.spinner(f"📤 Enviando foto da OS {os_id_foto}..."):
                                                 try:
-                                                    foto_bytes = foto_final.getvalue()
-                                                    pares_processados = set()
-                                                    for os_id_foto in set(os_selecionadas):
-                                                        mask_foto = (st.session_state["df_os"]["Ordem servico"].astype(str) == str(os_id_foto))
-                                                        df_match = st.session_state["df_os"].loc[mask_foto]
-                                                        if df_match.empty:
-                                                            continue
-                                                        ativo_val = str(df_match["Ativo"].iloc[0]).strip()
-                                                        atividade_col = "Atividade ativo" if "Atividade ativo" in df_match.columns else None
-                                                        atividade_val = str(df_match[atividade_col].iloc[0]).strip() if atividade_col else "N_A"
-                                                        par_chave = (ativo_val, atividade_val)
-                                                        if par_chave in pares_processados:
-                                                            continue
-                                                        pares_processados.add(par_chave)
-                                                        nome_seguro = re.sub(r'[^\w\-.]', '_', f"{ativo_val}__{atividade_val}.jpg")
-                                                        url_foto = upload_foto_supabase(foto_bytes, nome_seguro)
-                                                        geo_evidencia = f"Lat: {st.session_state.get('lat_partida')}, Lon: {st.session_state.get('lon_partida')}"
-                                                        upsert_evidencia(
-                                                            ativo=ativo_val,
-                                                            atividade=atividade_val,
-                                                            foto_url=url_foto,
-                                                            os_referencia=str(os_id_foto),
-                                                            concluido_por=usr_logado,
-                                                            geolocalizacao=geo_evidencia
-                                                        )
-                                                    st.info("📷 Evidência fotográfica registrada com sucesso!")
+                                                    foto_bytes = foto_da_os.getvalue()
+                                                    mask_foto = (st.session_state["df_os"]["Ordem servico"].astype(str) == str(os_id_foto))
+                                                    df_match = st.session_state["df_os"].loc[mask_foto]
+                                                    if df_match.empty:
+                                                        continue
+                                                    ativo_val = str(df_match["Ativo"].iloc[0]).strip()
+                                                    atividade_col = "Atividade ativo" if "Atividade ativo" in df_match.columns else None
+                                                    atividade_val = str(df_match[atividade_col].iloc[0]).strip() if atividade_col else "N_A"
+                                                    nome_seguro = re.sub(r'[^\w\-.]', '_', f"{ativo_val}__{atividade_val}.jpg")
+                                                    url_foto = upload_foto_supabase(foto_bytes, nome_seguro)
+                                                    geo_evidencia = f"Lat: {st.session_state.get('lat_partida')}, Lon: {st.session_state.get('lon_partida')}"
+                                                    upsert_evidencia(
+                                                        ativo=ativo_val,
+                                                        atividade=atividade_val,
+                                                        foto_url=url_foto,
+                                                        os_referencia=str(os_id_foto),
+                                                        concluido_por=usr_logado,
+                                                        geolocalizacao=geo_evidencia
+                                                    )
+                                                    fotos_enviadas += 1
                                                 except Exception as e_foto:
-                                                    st.warning(f"⚠️ OS gravada, mas a foto falhou: {e_foto}")
+                                                    st.warning(f"⚠️ Foto da OS {os_id_foto} falhou: {e_foto}")
+                                        if fotos_enviadas > 0:
+                                            st.info(f"📷 {fotos_enviadas} evidência(s) registrada(s) com sucesso!")
 
                                         st.success(f"✅ Execução registrada com sucesso!")
                                         time.sleep(2)
