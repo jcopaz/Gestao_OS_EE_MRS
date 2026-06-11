@@ -1,4 +1,6 @@
 #region SESSÃO 1: Imports, Configurações e Funções de Base
+
+#region 1.1: Imports
 import io
 import time
 import math
@@ -22,16 +24,18 @@ from streamlit_calendar import calendar
 from psycopg2.extras import execute_values
 from psycopg2 import pool
 import requests
+#endregion 1.1
 
-# --- CONFIGURAÇÕES GLOBAIS ---
+#region 1.2: Configurações Globais e Tela Inicial de Login
 st.set_page_config(page_title="Painel de OS Eletroeletrônica", layout="wide", initial_sidebar_state="collapsed")
 
 if not st.session_state.get("logged_in", False):
     col_vazia1, col_centro, col_vazia2 = st.columns([1, 6, 1])
     with col_centro:
         st.markdown("<h1 style='text-align: center;'>⚡ Sistema de Gestão de Ordens de Serviço</h1>", unsafe_allow_html=True)
+#endregion 1.2
 
-# --- GERENCIAMENTO DE CONEXÃO NEON (POSTGRES) ---
+#region 1.3: Conexão com Banco de Dados e Constantes de Status
 @st.cache_resource
 def init_connection_pool():
     return psycopg2.pool.SimpleConnectionPool(
@@ -52,7 +56,9 @@ def hash_senha(senha):
 _status_prazo  = {"REALIZADO"}
 _status_atraso = {"REALIZADO FORA DA DATA DE PROGRAMAÇÃO", "REALIZADO FORA DO PRAZO"}
 _status_aberto = {"NÃO REALIZADO", "NAO REALIZADO", "PENDENTE", "ATRASADO", ""}
+#endregion 1.3
 
+#region 1.4: Inicialização do Banco de Dados (init_db)
 def init_db():
     conn = None
     try:
@@ -108,7 +114,7 @@ def init_db():
             );
         """)
         
-        # --- ATUALIZAÇÕES AUTOMÁTICAS DE ESTRUTURA (UPGRADE V6 E FASE 2) ---
+        # --- ATUALIZAÇÕES AUTOMÁTICAS DE ESTRUTURA ---
         try:
             cur.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS governanca VARCHAR(255) DEFAULT 'Painel Gerencial,Mapa de Campo';")
         except Exception: conn.rollback()
@@ -117,7 +123,6 @@ def init_db():
             cur.execute("ALTER TABLE os_programadas ADD COLUMN IF NOT EXISTS coordenacao VARCHAR(100);")
         except Exception: conn.rollback()
 
-        # NOVAS COLUNAS PARA A FASE 2 (Apontamentos e GPS)
         try:
             cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS geolocalizacao_baixa VARCHAR(255);")
             cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS equipe TEXT;")
@@ -144,8 +149,9 @@ def init_db():
         if conn is not None:
             release_connection(conn)
 init_db()
+#endregion 1.4
 
-# --- INICIALIZAÇÃO CENTRALIZADA DE SESSION_STATE ---
+#region 1.5: Inicialização Centralizada do Session State
 _defaults_session = {
     "gps_pending": False,
     "gps_trials": 0,
@@ -155,10 +161,13 @@ _defaults_session = {
 for _key, _val in _defaults_session.items():
     if _key not in st.session_state:
         st.session_state[_key] = _val
-
 #endregion
 
-#region SESSÃO 1.5: Barreira de Login com Governança e GPS Obrigatório
+#endregion SESSÃO 1
+
+#region SESSÃO 2: Barreira de Login com Governança e GPS Obrigatório
+
+#region 2.1: Barreira de Login com Governança e GPS Obrigatório
 if "logged_in" not in st.session_state:
     st.session_state.update({"logged_in": False, "username": "", "perfil": "", "escopo": "", "governanca": "", "needs_reset": False, "validando_gps": False})
 
@@ -167,7 +176,9 @@ if not st.session_state["logged_in"]:
     col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
     
     with col_l2:
-        # ETAPA 3: Reset de Senha (se for o primeiro acesso)
+#endregion
+
+#region 2.2: Etapa 3 — Reset de Senha
         if st.session_state.get("needs_reset"):
             st.warning("⚠️ Configure sua senha e sua palavra de recuperação.")
             with st.form("form_reset"):
@@ -186,8 +197,9 @@ if not st.session_state["logged_in"]:
                         release_connection(conn)
                         st.success("Concluído! Entre com sua nova senha."); st.session_state["needs_reset"] = False; st.rerun()
             if st.button("⬅️ Voltar"): st.session_state["needs_reset"] = False; st.rerun()
-            
-        # ETAPA 2: Barreira de GPS Obrigatória (Apenas Técnico)
+#endregion 2.1
+
+#region 2.3: Etapa 2 — GPS Obrigatório
         elif st.session_state.get("validando_gps"):
             st.info("📍 **Para acessar o conteúdo é necessário a ativação do GPS.** Por favor, clique em 'Permitir' no aviso do seu navegador.")
             loc_login = get_geolocation()
@@ -226,8 +238,9 @@ if not st.session_state["logged_in"]:
                 if st.button("⬅️ Voltar para o Login"):
                     st.session_state["validando_gps"] = False
                     st.rerun()
-                
-        # ETAPA 1: Login Padrão
+#endregion 2.2
+
+#region 2.4: Etapa 1 — Login Padrão
         else:
             with st.form("form_login"):
                 user_input = st.text_input("Usuário")
@@ -268,12 +281,15 @@ if not st.session_state["logged_in"]:
                         # ---------------------------------
                 else: st.error("❌ Usuário ou senha incorretos.")
     st.stop()
-#endregion
+#endregion 2.3
 
-#region SESSÃO 2: Funções (Lógica, Utilidades, GPS, Distância, Persistência, Export)
-# ==========================================
+#endregion SESSÃO 2
 
-#region SESSÃO 2.1 ===== Lógica =====
+#region SESSÃO 3: Funções (Lógica, Utilidades, GPS, Persistência)
+
+#region 3.1: Lógica
+
+#region 3.1.1: Normalização e Leitura de Colunas
 def normalize_cols(df: pd.DataFrame) -> pd.DataFrame:
     # Agressivo contra sujeiras do SAP: remove \n, \r, espaços extras e deixa maiúsculo
     df.columns = df.columns.astype(str).str.replace('\n', ' ').str.replace('\r', '').str.strip().str.upper()
@@ -284,7 +300,9 @@ def pick_first_existing(df: pd.DataFrame, candidates: list[str]) -> str | None:
         if c in df.columns:
             return c
     return None
+#endregion 3.1.1
 
+#region 3.1.2: Classificação de Atividades e Criticidade
 def classificar_atividade(atividade: str) -> str:
     s = str(atividade).upper()
     if "_MAN_CONF_" in s:
@@ -326,7 +344,9 @@ def calcular_nivel_prioridade(classificacao: str, criticidade_rank: int) -> int:
     }
     base = base_map.get(classificacao, 3)
     return base * 10 + int(criticidade_rank)
+#endregion 3.1.2
 
+#region 3.1.3: Funções de Data/Hora e Status de Execução
 def parse_data_programada(valor):
     if pd.isna(valor):
         return pd.NaT
@@ -355,7 +375,9 @@ def determinar_status_execucao(data_programada: pd.Timestamp, realizado_em: date
     if data_real_dia <= data_prog_dia:
         return "Realizado"
     return "Realizado Fora da Data de Programação"
+#endregion 3.1.3
 
+#region 3.1.4: Cálculo de Distância Geográfica (Haversine)
 def haversine_vectorized(lat1, lon1, lat2_series, lon2_series):
     R = 6371.0
     lat1 = np.radians(float(lat1))
@@ -372,6 +394,9 @@ def haversine_vectorized(lat1, lon1, lat2_series, lon2_series):
     return R * c
 
 @st.cache_data(show_spinner=False)
+#endregion 3.1.4
+
+#region 3.1.5: Geocodificação
 def geocode_endereco(texto: str):
     geolocator = Nominatim(user_agent="gestao_os_eletro_mrs", timeout=10)
     return geolocator.geocode(texto + ", Brasil")
@@ -451,7 +476,9 @@ def reverse_geocode_coordenada(lat: float, lon: float) -> str:
 
     except Exception:
         return "GPS Local"
+#endregion 3.1.5
 
+#region 3.1.6: Leitura de GPS do Navegador
 def tentar_gps_uma_vez():
     loc = get_geolocation()
     if not loc:
@@ -470,7 +497,9 @@ def tentar_gps_uma_vez():
     return False, None, None, "Não foi possível interpretar a resposta do GPS.", None
 #endregion
 
-#region SESSÃO 2.2 ===== Persistência (SQLite) =====
+#endregion 3.1.6
+
+#region 3.2: Persistência (SQLite/Neon)
 
 def upsert_baixa(os_id: str, status: str, realizado_em_str: str, coordenacao: str, concluido_por: str,
                  geolocalizacao_baixa: str = "", equipe: str = "",
@@ -516,7 +545,7 @@ def carregar_baixas_df() -> pd.DataFrame:
 
 #endregion
 
-#region SESSÃO 2.2.1 ===== Supabase Storage (Evidências Fotográficas) =====
+#region 3.3: Supabase Storage (Evidências Fotográficas)
 def upload_foto_supabase(arquivo_bytes: bytes, nome_arquivo: str) -> str:
     """Faz upload de uma foto para o Supabase Storage (bucket 'evidencias') e retorna a URL pública."""
     url_base = st.secrets["SUPABASE_URL"]
@@ -578,7 +607,7 @@ def carregar_mapeamento_patios() -> dict:
     return dict(zip(df["ativo_chave"], df["patio"]))
 #endregion
 
-#region SESSÃO 2.3 ===== Export/Salvar Excel (MASTER) =====
+#region 3.4: Export/Salvar Excel (SAP)
 def gerar_excel_sap_bytes(df_filtrado_atual: pd.DataFrame) -> bytes:
     # 1. Filtra apenas o que já foi executado
     df_concluidas = df_filtrado_atual[df_filtrado_atual["Status_norm"].isin(_status_prazo | _status_atraso)].copy()
@@ -690,7 +719,9 @@ def gerar_excel_sap_bytes(df_filtrado_atual: pd.DataFrame) -> bytes:
     
     return output.read()
 
-#region SESSÃO 2.4 ===== Auxiliares: datas/turnos para gráficos gerenciais =====
+#endregion 3.4
+
+#region 3.5: Auxiliares — Datas/Turnos para Gráficos Gerenciais
 def parse_datahora_realizado(valor):
     # Espera texto "dd/mm/aaaa hh:mm" ou vazio
     if pd.isna(valor):
@@ -713,7 +744,7 @@ def classificar_turno(dt):
     return "16h-00h"
 #endregion
 
-#region SESSÃO 2.5 ===== Auxiliares da Sidebar: preparação e filtros =====
+#region 3.6: Auxiliares da Sidebar — Preparação e Filtros
 def preparar_df_visao(df_base: pd.DataFrame, filtro_visao: str) -> pd.DataFrame:
     df_visao = df_base.copy()
 
@@ -768,11 +799,12 @@ def aplicar_filtros_sidebar(
     return df_filtrado
 #endregion
 
-#region SESSÃO 2.6 ===== Calendário mensal de demanda por pátio =====
+#region 3.7: Calendário Mensal de Demanda por Pátio
 import calendar as pycal
 from datetime import date
 
 @st.cache_data(show_spinner=False)
+#region 3.7.1: Preparação do DataFrame do Calendário
 def _preparar_df_calendario(df_base_cal: pd.DataFrame) -> pd.DataFrame:
     if df_base_cal.empty:
         return pd.DataFrame()
@@ -798,8 +830,10 @@ def _preparar_df_calendario(df_base_cal: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
-
 @st.cache_data(show_spinner=False)
+#endregion 3.7.1
+
+#region 3.7.2: Montagem dos Eventos do Calendário
 def montar_eventos_calendario_patios(
     df_base_cal: pd.DataFrame,
     ano: int,
@@ -911,6 +945,9 @@ def montar_eventos_calendario_patios(
 
 
 @st.cache_data(show_spinner=False)
+#endregion 3.7.2
+
+#region 3.7.3: Resumo de Demanda por Dia
 def resumir_demanda_calendario(
     df_base_cal: pd.DataFrame,
     ano: int,
@@ -1012,6 +1049,9 @@ def resumir_demanda_calendario(
     }
 
 @st.cache_data(show_spinner=False)
+#endregion 3.7.3
+
+#region 3.7.4: Resumo de Conclusões por Turno
 def resumir_conclusoes_por_turno_data(
     df_base_cal: pd.DataFrame,
     data_ref
@@ -1077,9 +1117,9 @@ def resumir_conclusoes_por_turno_data(
 #endregion
 #endregion
 
+#region 3.8: Administração de Dados (render_tela_admin)
 
-#region SESSÃO 2.7 ===== Administração de Dados =====
-
+#region 3.8.1: Upload e Processamento de OS Programadas
 def render_tela_admin():
     col_adm_t1, col_adm_t2 = st.columns([8, 2])
     with col_adm_t1:
@@ -1184,6 +1224,9 @@ def render_tela_admin():
     # HISTÓRICO DE UPLOADS (aba recolhível)
     # ==============================================
     st.markdown("---")
+#endregion 3.8.1
+
+#region 3.8.2: Histórico de Uploads
     with st.expander("📋 Histórico de Uploads", expanded=False):
         perfil_user = st.session_state.get("perfil", "")
         escopo_user = st.session_state.get("escopo", "")
@@ -1249,6 +1292,9 @@ def render_tela_admin():
     # UPLOAD DE MAPEAMENTO DE PÁTIOS
     # ==============================================
     st.markdown("---")
+#endregion 3.8.2
+
+#region 3.8.3: Upload de Mapeamento de Pátios
     with st.expander("🗺️ Mapeamento de Ativos → Pátios", expanded=False):
         st.markdown("Carregue a planilha **Relação_ativos_SP.xlsx** para atualizar o mapeamento de Ativos e Equipamentos para Pátios.")
         st.caption("A planilha deve ter as abas **Ativos_SP** (coluna A: Local de instalação, coluna K: Pátio) e **Equipamento_SP** (coluna A: Equipamento, coluna G: Pátio).")
@@ -1339,6 +1385,9 @@ def render_tela_admin():
             st.warning("⚠️ Mapeamento vazio. Faça o upload da planilha para ativar a resolução inteligente de pátios.")
 
     # --- SESSÃO DE EXPORTAÇÃO SAP ---
+#endregion 3.8.3
+
+#region 3.8.4: Exportação SAP
     if "Exportar SAP" in st.session_state.get("governanca", ""):
         st.markdown("---")
         st.subheader("⬇️ Exportação SAP")
@@ -1372,12 +1421,13 @@ def render_tela_admin():
                     st.info("⚠️ Nenhuma OS concluída encontrada para exportação no momento.")
             else:
                 st.warning("A base de dados central está vazia.")
-#endregion
-#endregion
+#endregion 3.8.4
+#endregion 3.8
+#endregion SESSÃO 3
 
-#region SESSÃO 3: Banco de Coordenadas Fixo
+#region SESSÃO 4: Banco de Coordenadas Fixo
 
-#region SESSÃO 3.1 Coordenadas Fixas
+#region 4.1: Coordenadas Fixas (COORDENADAS_FIXAS dict)
 COORDENADAS_FIXAS = {
     "FPI": [-23.444413, -46.309269],
     "IAB": [-23.521338, -46.688570],
@@ -1428,7 +1478,7 @@ COORDENADAS_FIXAS = {
 }
 #endregion
 
-#region SESSÃO 3.2 Continuação do código da função de obtenção da base padrão do usuário
+#region 4.2: Função obter_base_padrao_usuario
 def obter_base_padrao_usuario():
     username = str(st.session_state.get("username", "")).strip()
     escopo = str(st.session_state.get("escopo", "")).strip()
@@ -1487,13 +1537,13 @@ def obter_base_padrao_usuario():
     lat, lon = coord
     return float(lat), float(lon), nome_exibicao
 #endregion
-#endregion
 
-#region SESSÃO 4: ETL (Carregamento e Tratamento)
-# ==========================================
+#endregion SESSÃO 4
 
+#region SESSÃO 5: ETL (Carregamento e Tratamento)
 ETL_VERSION = "v6_leitura_crua_status_avancado"
 
+#region 5.1: Tratamento Principal (tratar_df_os + _resolver_patio)
 def tratar_df_os(df: pd.DataFrame):
     df = normalize_cols(df)
 
@@ -1595,6 +1645,9 @@ def tratar_df_os(df: pd.DataFrame):
     return df_out
 
 @st.cache_data
+#endregion 5.1
+
+#region 5.2: Auto-detecção e Leitores Excel
 def auto_detect_and_treat(path_ou_bytes):
     if isinstance(path_ou_bytes, bytes):
         df_raw = pd.read_excel(io.BytesIO(path_ou_bytes), engine="openpyxl", header=None)
@@ -1620,6 +1673,9 @@ def carregar_excel_por_path(path_excel: str, etl_version: str):
     return auto_detect_and_treat(path_excel)
 
 @st.cache_data(show_spinner=False)
+#endregion 5.2
+
+#region 5.3: Carga da Base Operacional (carregar_base_sem_overlay)
 def carregar_base_sem_overlay(
     usar_sim: bool,
     qtd_sim: int,
@@ -1680,6 +1736,9 @@ def carregar_base_sem_overlay(
     return df_base_final
 
 @st.cache_data(show_spinner=False)
+#endregion 5.3
+
+#region 5.4: Overlay de Baixas (aplicar_overlay_baixas)
 def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, baixas_mtime: float) -> pd.DataFrame:
     df_base = df_base_bruto.copy()
     if df_base.empty: return df_base
@@ -1721,14 +1780,12 @@ def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, bai
         df_base.drop(columns=[f"{col}_baixado"], inplace=True)
 
     return df_base
-#endregion
+#endregion 5.4
+#endregion SESSÃO 5
 
-#region SESSÃO EXTRA: Simulação de dados (APENAS TESTE - remover depois)
-# ==========================================
-# SESSÃO EXTRA: Simulação de dados (APENAS TESTE - remover depois)
-# ==========================================
+#region SESSÃO 6: Simulação de Dados (Ambiente de Teste)
 
-#region SESSÃO EXTRA: Gerador de base simulada (para testar KPIs e gráficos)
+#region 6.1: Gerador de Base Simulada (gerar_base_simulada)
 def gerar_base_simulada(qtd: int = 800, seed: int = 42, pct_p: int = 45, pct_ok: int = 40, pct_a: int = 15) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
 
@@ -1827,7 +1884,7 @@ def gerar_base_simulada(qtd: int = 800, seed: int = 42, pct_p: int = 45, pct_ok:
     return df
 #endregion
 
-#region SESSÃO EXTRA: Controle na Sidebar
+#region 6.2: Controle de Simulação na Sidebar (DEV_MODE)
 _DEV_MODE = os.getenv("DEV_MODE", "0") == "1"
 
 if _DEV_MODE:
@@ -1845,12 +1902,14 @@ if _DEV_MODE:
         st.sidebar.info("✅ Simulação ativa. Excel real NÃO será carregado.")
         return True, df_sim
 #endregion
-#endregion
 
-#region SESSÃO 5: Sidebar, Navegação, Carga e Filtro
+#endregion SESSÃO 6
 
-#region SESSÃO 5.1: Identidade visual, navegação e escopo
-# 5.1.1 CSS / identidade visual
+#region SESSÃO 7: Sidebar, Navegação, Carga e Filtro
+
+#region 7.1: Identidade visual, navegação e escopo
+
+#region 7.1.1: CSS / Identidade Visual da Sidebar
 st.markdown("""
     <style>
     [data-testid="stSidebar"] {
@@ -1973,10 +2032,15 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # 5.1.2 Logotipo
+#endregion 7.1.1
+
+#region 7.1.2: Logotipo e Cabeçalho da Sidebar
 st.sidebar.image("logo_mrs.png", use_container_width=True)
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
-# 5.1.3 Navegação Inteligente (Baseada na Governança)
+#endregion 7.1.2
+
+#region 7.1.3: Navegação Inteligente por Perfil
 st.sidebar.markdown("### 🧭 Navegação")
 
 if "tela_atual" not in st.session_state:
@@ -2017,7 +2081,9 @@ if tem_governanca:
 if st.session_state.get("tela_atual") == "admin":
     render_tela_admin()
     st.stop()
-    
+#endregion 7.1.3
+
+#region 7.1.4: Filtro de Visão (Escopo do Usuário)
 # --- DEFINIÇÃO DO FILTRO DE VISÃO ---
 if "Painel Gerencial" in gov_usuario:
     visao_selecionada = st.sidebar.radio(
@@ -2030,7 +2096,11 @@ else:
     st.sidebar.info(f"Visão Restrita: {filtro_visao}")
 # -------------------------------------------------------
 
-#region SESSÃO 5.2: Carregamento da base operacional
+#endregion 7.1.4
+
+#endregion 7.1
+
+#region 7.2: Carregamento da Base Operacional
 usar_sim = st.session_state.get("chk_sim", False)
 qtd_sim = st.session_state.get("qtd_sim", 1200)
 seed_sim = st.session_state.get("seed_sim", 42)
@@ -2066,7 +2136,7 @@ st.session_state["df_os"] = df_base
 df_visao = preparar_df_visao(df_base, filtro_visao)
 #endregion
 
-#region SESSÃO 5.3: Filtros da sidebar
+#region 7.3: Filtros da Sidebar
 st.sidebar.markdown("### 📊 Filtros")
 
 valid_dates = df_visao["dt_prog_filtro"].dropna()
@@ -2133,9 +2203,10 @@ df_filtrado = aplicar_filtros_sidebar(
 )
 #endregion
 #endregion
-#endregion
 
-#region SESSÃO 6: Sistema, dados e gestão de usuários
+#region SESSÃO 8: Sistema, Dados e Gestão de Usuários
+
+#region 8.1: Controles de Simulação e Recarga ETL
 if "Gestão de Usuários" in st.session_state.get("governanca", ""):
     with st.sidebar.expander("⚙️ Sistema, Dados e Gestão", expanded=False):
         
@@ -2152,10 +2223,9 @@ if "Gestão de Usuários" in st.session_state.get("governanca", ""):
         else:
             if st.button("🔄 Recarregar dados (ETL)", use_container_width=True):
                 st.cache_data.clear(); st.rerun()
+#endregion 8.1
 
-        # ======================================================
-        # GESTÃO DE USUÁRIOS (Fragmento isolado - sem rerun global)
-        # ======================================================
+#region 8.2: Gestão de Usuários (@st.fragment)
         @st.fragment
         def fragmento_gestao_usuarios():
             st.markdown("<div style='background-color: #FF4B4B; color: #FFFFFF; font-weight: bold; text-align: center; padding: 8px; border-radius: 6px; margin-top: 15px; margin-bottom: 10px;'>Gestão de Usuários</div>", unsafe_allow_html=True)
@@ -2171,6 +2241,7 @@ if "Gestão de Usuários" in st.session_state.get("governanca", ""):
 
             opcoes_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Gestão de Usuários", "Exportar SAP", "Governança"]
 
+#region 8.2.1: Criar Novo Usuário (Formulário)
             with st.form("form_novo_user", clear_on_submit=True):
                 n_user = st.text_input("Login (Nova conta)", key="novo_user_login")
                 n_perf = st.selectbox("Perfil", ["Técnico", "Assistente", "Coordenador", "Gerência"], key="novo_user_perfil")
@@ -2216,6 +2287,8 @@ if "Gestão de Usuários" in st.session_state.get("governanca", ""):
                     else:
                         st.warning("Preencha o login do usuário.")
 
+#endregion 8.2.1
+#region 8.2.2: Gerenciar Existentes (Editar/Resetar/Excluir)
             st.markdown("<br><b style='color: #F8FAFC;'>👥 Gerenciar Usuários</b>", unsafe_allow_html=True)
             conn = get_connection()
             df_usuarios = pd.read_sql_query("SELECT username, perfil, escopo, coordenacao_padrao, governanca FROM usuarios", conn)
@@ -2264,10 +2337,18 @@ if "Gestão de Usuários" in st.session_state.get("governanca", ""):
                         st.session_state["msg_sucesso_user"] = f"Usuário {usr_sel} excluído."
                         st.rerun(scope="fragment")
 
+#endregion 8.2.2
+#endregion 8.2
+
+#region 8.3: Chamada do Fragmento de Gestão
         fragmento_gestao_usuarios()
 #endregion
 
-#region SESSÃO 7: DASHBOARD HEADER E KPI METRICS
+#endregion SESSÃO 8
+
+#region SESSÃO 9: Dashboard Header e KPI Metrics
+
+#region 9.1: Header do Dashboard (Título + Saudação)
 col_titulo, col_acoes = st.columns([9, 1])
 
 with col_titulo:
@@ -2277,6 +2358,9 @@ with col_titulo:
 with col_acoes:
     st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
     
+#endregion 9.1
+
+#region 9.2: Botões de Ação (Atualizar / Trocar Senha / Sair)
     if st.button("🔄 Atualizar", use_container_width=True):
         st.rerun()
         
@@ -2307,7 +2391,9 @@ with col_acoes:
 
 st.markdown("---")
 
-# CÁLCULO DOS KPIS PARA A SESSÃO 7
+#endregion 9.2
+
+#region 9.3: Cálculo dos KPIs + CSS dos Cards
 total_os = len(df_filtrado)
 realizado_prazo = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_prazo)])
 realizado_atraso = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_atraso)])
@@ -2348,6 +2434,9 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+#endregion 9.3
+
+#region 9.4: Renderização dos Cards KPI
 col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
 
 with col_kpi1:
@@ -2389,9 +2478,11 @@ with col_kpi4:
 st.markdown("---")
 #endregion
 
-#region SESSÃO 8: Abas e Renderização dos Gráficos
+#endregion SESSÃO 9
 
-#region 8.1 - ROTEAMENTO PRINCIPAL (CONTROLE DE TELAS)
+#region SESSÃO 10: Abas e Renderização dos Gráficos
+
+#region 10.1: Roteamento Principal (Controle de Telas)
 if st.session_state.get("tela_atual", "dashboard") == "dashboard":
     
 # --- CONTROLE DE ABAS POR GOVERNANÇA ---
@@ -2403,7 +2494,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
         tab2 = None
 #endregion
 
-#region 8.2: ABA 1 — Visão Gerencial (Indicadores)
+#region 10.2: ABA 1 — Visão Gerencial (Indicadores)
     with tab1:
         if st.session_state["perfil"] == "Técnico":
             st.info("🔒 Seu perfil (Técnico) tem foco operacional. Por favor, utilize a aba 'Roteirização e Mapa de Campo'.")
@@ -2421,6 +2512,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
             elif taxa_conclusao <= 80: gauge_color = cor_prazo
             else: gauge_color = cor_real
 
+#region 10.2.1: Resumo Executivo (Gauge + Rosca + Área)
             with st.expander("Resumo Executivo (Geral)", expanded=True):
                 col_g1, col_g2, col_g5 = st.columns(3)
 
@@ -2498,6 +2590,8 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     else:
                         st.info("Sem datas suficientes para área.")
 
+#endregion 10.2.1
+#region 10.2.2: Análise Operacional (Matriz de Prioridades)
             with st.expander("Análise Operacional: Matriz de Prioridades e Execução por Categoria", expanded=True):
                 col_h1, col_h2 = st.columns([1.2, 1])
 
@@ -2559,6 +2653,8 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     }
                     st_echarts(options=bar_horiz_options, height="380px", theme="streamlit", key="aba1_bar_horiz")
 
+#endregion 10.2.2
+#region 10.2.3: Execução por Turno e Acumulado
             with st.expander("Execução por Turno e Acumulado", expanded=True):
                 col_g3, col_g6 = st.columns(2)
 
@@ -2608,6 +2704,8 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     else:
                         st.info("Sem dados cronológicos.")
 
+#endregion 10.2.3
+#region 10.2.4: Lista Detalhada de OS (com Evidências)
             st.subheader("📋 Lista Detalhada de OS")
             df_lista = df_visao_base.copy().rename(columns={"Ordem servico": "OS"})
 
@@ -2653,16 +2751,16 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                 st.dataframe(df_styled, use_container_width=True, height=400, hide_index=True, column_config={"Evidência": st.column_config.LinkColumn("📷 Evidência", display_text="📷 Ver Foto")})
 #endregion
 
-#region 8.3: ABA 2 — Roteirização e Mapa de Campo
+#endregion 10.2.4
+
+#region 10.3: ABA 2 — Roteirização e Mapa de Campo
     if tab2 is not None:
         with tab2:
             # 0. Inicialização de segurança da variável para evitar NameError
             df_recomendado = pd.DataFrame()
             
-            # 8.3.1 Calendário mensal
+#region 10.3.1: CSS + Calendário Mensal + Cards + Turno
             st.markdown("### 📅 Agenda Mensal de Demanda por Pátio")
-            
-            # CSS: Fontes e Cartões da Aba 2 com dimensões limpas e elegantes
             st.markdown(
                 """
                 <style>
@@ -2947,8 +3045,9 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             st_echarts(options=concl_turno_options, height="435px", theme="streamlit", key="chart_conclusoes_turno_data")
 
             st.markdown("---")
+#endregion 10.3.1
 
-            # 8.3.2 Navegação geográfica operacional
+#region 10.3.2: Navegação Geográfica Operacional (GPS + Raio)
             st.markdown("### 🗺️ Navegação Geográfica Operacional")
 
             col_mapa, col_acao = st.columns([6, 4], gap="large")
@@ -3045,6 +3144,9 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                 st.info(f"**{len(df_recomendado)} OS pendentes** encontradas no raio de {raio_busca_km} km.")
 
                 if not df_recomendado.empty:
+#endregion 10.3.2
+
+#region 10.3.3: Formulário de Baixa de OS + Evidências (fragment)
                     @st.fragment
                     def renderizar_bloco_apontamento():
                         st.markdown("---")
@@ -3174,7 +3276,9 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 
                     renderizar_bloco_apontamento()
                     st.markdown("---")
+#endregion 10.3.3
 
+#region 10.3.4: Mapa Interativo (Folium + Malha Ferroviária)
             with col_mapa:
                 SP_MIN_LAT, SP_MAX_LAT = -25.50, -19.50
                 SP_MIN_LON, SP_MAX_LON = -53.50, -44.00
@@ -3233,6 +3337,9 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 
                 col_tit_crono, col_btn_crono = st.columns([7.5, 2.5])
                 with col_tit_crono:
+#endregion 10.3.4
+
+#region 10.3.5: Cronograma de Execução de Campo (Tabela)
                     st.markdown("#### 📋 Cronograma de Execução de Campo")
                     st.caption("OS Pendentes recomendadas no raio de atuação visual por prioridade")
 
@@ -3249,12 +3356,15 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
             else:
                 st.markdown("#### 📋 Cronograma de Execução de Campo")
                 st.info("Nenhuma OS pendente localizada dentro do raio de atuação selecionado.")
-        #endregion (Fim da Sessão 8.3)
-    #endregion (Fim da Sessão 8 Geral)
+#endregion 10.3.5
 
-#region SESSÃO 9: Tela Isolada de Governança e Auditoria
+#endregion 10.3
 
-#region 9.1: Controle de acesso e segurança
+#endregion SESSÃO 10
+
+#region SESSÃO 11: Tela Isolada de Governança e Auditoria
+
+#region 11.1: Controle de acesso e segurança
 if st.session_state.get("tela_atual") == "governanca":
 
     col_gov_t1, col_gov_t2 = st.columns([8, 2])
@@ -3290,9 +3400,9 @@ if st.session_state.get("tela_atual") == "governanca":
                     else:
                         st.error("❌ Senha incorreta. Acesso negado.")
         st.stop()
-    #endregion 9.1
+#endregion 11.1
 
-    #region 9.2: Carregamento de dados de auditoria
+#region 11.2: Carregamento de dados de auditoria
     with st.spinner("Compilando logs de auditoria e telemetria..."):
         if st.session_state.get("chk_sim", False):
             df_baixas_full = st.session_state.get("df_baixas_sim", pd.DataFrame())
@@ -3328,13 +3438,13 @@ if st.session_state.get("tela_atual") == "governanca":
         df_gov["Data_Real"] = pd.to_datetime(df_gov["data_inicio"], format="%d/%m/%Y", errors="coerce").dt.date
         df_gov["Via_GPS"] = df_gov["geolocalizacao_baixa"].apply(lambda x: 0 if "Base" in str(x) or "Sede" in str(x) else 1)
         df_gov["Alta_Prioridade"] = df_gov["Criticidade_rank"].apply(lambda x: 1 if x in [1, 2] else 0)
-    #endregion 9.2
+#endregion 11.2
 
-    #region 9.3: Fragmento de Governança (filtros + KPIs + gráficos)
+#region 11.3: Fragmento de Governança (@st.fragment)
     @st.fragment
     def fragmento_governanca():
 
-        #region 9.3.1: Filtros de auditoria
+#region 11.3.1: Filtros de Auditoria
         col_f1, col_f2, col_f3 = st.columns(3)
         with col_f1:
             tecnicos_disp = sorted(df_gov["concluido_por"].dropna().unique().tolist())
@@ -3354,8 +3464,9 @@ if st.session_state.get("tela_atual") == "governanca":
         if df_gov_f.empty:
             st.info("Nenhuma execução encontrada para os filtros selecionados.")
             return
-        #endregion 9.3.1
+#endregion 11.3.1
 
+#region 11.3.2: KPIs de Auditoria
         #region 9.3.2: KPIs de auditoria
         total_os_gov = len(df_gov_f)
         tme_minutos = df_gov_f["Tempo_Minutos"].mean()
@@ -3369,9 +3480,13 @@ if st.session_state.get("tela_atual") == "governanca":
         c_k4.metric("📍 Integridade de GPS", f"{taxa_gps:.1f}%")
 
         st.markdown("---")
-        #endregion 9.3.2
+#endregion 11.3.2
 
-        #region 9.4: Volume Diário e Produtividade Acumulada
+#endregion 11.3
+
+#endregion
+
+#region 11.4: Volume Diário e Produtividade Acumulada
         col_l1_c1, col_l1_c2 = st.columns(2, gap="large")
 
         df_real_dia = df_gov_f.groupby("Data_Real").size().reset_index(name="Realizado")
@@ -3421,9 +3536,9 @@ if st.session_state.get("tela_atual") == "governanca":
                     {"name": "Planejado Acumulado", "type": "line", "smooth": True, "data": df_merge_vol["Plan_Acum"].tolist(), "lineStyle": {"type": "dashed", "color": "#64748B", "width": 3}, "itemStyle": {"color": "#64748B"}}
                 ]
             }, height="350px", theme="streamlit", key="gov_prod_acum_new")
-        #endregion 9.4
+#endregion 11.4
 
-        #region 9.5: Produtividade Individual, Esforço e Heatmap
+#region 11.5: Produtividade Individual, Esforço e Heatmap
         st.markdown("<br>", unsafe_allow_html=True)
         col_l2_c1, col_l2_c2, col_l2_c3 = st.columns(3, gap="medium")
 
@@ -3473,9 +3588,9 @@ if st.session_state.get("tela_atual") == "governanca":
                 "visualMap": {"min": 0, "max": max_v if max_v > 0 else 5, "orient": "horizontal", "left": "center", "bottom": "0%", "inRange": {"color": ["#F8FAFC", "#93C5FD", "#1D4ED8"]}},
                 "series": [{"type": "heatmap", "data": h_data, "label": {"show": True}, "itemStyle": {"borderColor": "#FFFFFF", "borderWidth": 1.5}}]
             }, height="320px", key="gov_heatmap_l2")
-        #endregion 9.5
+#endregion 11.5
 
-        #region 9.6: Aderência, Top Técnicos e Variabilidade
+#region 11.6: Aderência, Top Técnicos e Variabilidade
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("---")
         col_l3_c1, col_l3_c2, col_l3_c3 = st.columns(3, gap="medium")
@@ -3608,9 +3723,9 @@ if st.session_state.get("tela_atual") == "governanca":
                 "yAxis": {"type": "category", "data": df_var["concluido_por"].tolist(), "axisLabel": {"fontSize": 10}},
                 "series": [{"type": "bar", "data": df_var["Tempo_Minutos"].round(1).tolist(), "itemStyle": {"color": "#8B5CF6"}, "label": {"show": True, "position": "right", "formatter": "{c} min", "fontSize": 10}}]
             }, height="400px", theme="streamlit", key="gov_variab_echarts")
-        #endregion 9.6
+#endregion 11.6
 
-        #region 9.7: Tabela de Auditoria GPS
+#region 11.7: Tabela de Auditoria GPS
         st.markdown("---")
         st.markdown("#### 📍 Tabela de Auditoria de Apontamentos (GPS)")
         df_auditoria = df_gov_f[["Ordem servico", "concluido_por", "data_inicio", "hora_fim", "geolocalizacao_baixa", "equipe", "Tempo_Minutos"]].copy().sort_values(by=["data_inicio", "hora_fim"], ascending=[False, False]).rename(columns={
@@ -3624,8 +3739,8 @@ if st.session_state.get("tela_atual") == "governanca":
         })
         df_auditoria["Tempo Gasto (min)"] = df_auditoria["Tempo Gasto (min)"].round(0).astype(int)
         st.dataframe(df_auditoria.style.map(lambda v: 'background-color: #FEE2E2; color: #991B1B; font-weight: bold;' if pd.notna(v) and ('Base' in str(v) or 'Sede' in str(v)) else 'color: #065F46;', subset=["Localização do Celular"]), use_container_width=True, height=300, hide_index=True)
-        #endregion 9.7
-
     fragmento_governanca()
     st.stop()
-#endregion SESSÃO 9
+#endregion 11.7
+
+#endregion SESSÃO 11
