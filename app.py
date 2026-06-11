@@ -2161,7 +2161,7 @@ def _sanear_lista_filtro(chave: str, opcoes: list[str], padrao: list[str]):
 
 @st.fragment
 def fragmento_filtros_sidebar_seguro():
-    st.sidebar.markdown("### 📊 Filtros")
+    st.markdown("### 📊 Filtros")
 
     if st.session_state["perfil"] != "Técnico":
         start_padrao = st.session_state.get("filtro_start_date", min_date)
@@ -2173,7 +2173,7 @@ def fragmento_filtros_sidebar_seguro():
         if start_padrao > end_padrao:
             start_padrao, end_padrao = min_date, max_date
 
-        data_selecionada = st.sidebar.date_input(
+        data_selecionada = st.date_input(
             "Período de Programação",
             value=(start_padrao, end_padrao),
             min_value=min_date,
@@ -2196,21 +2196,21 @@ def fragmento_filtros_sidebar_seguro():
         st.session_state["filtro_end_date"] = end_date_local
 
         patios_default = _sanear_lista_filtro("filtro_patios", lista_patios, lista_patios)
-        st.sidebar.multiselect("Pátio", lista_patios, default=patios_default, key="filtro_patios")
+        st.multiselect("Pátio", lista_patios, default=patios_default, key="filtro_patios")
 
         classif_default = _sanear_lista_filtro("filtro_classificacoes", lista_classificacoes, lista_classificacoes)
-        st.sidebar.multiselect("Classificação", lista_classificacoes, default=classif_default, key="filtro_classificacoes")
+        st.multiselect("Classificação", lista_classificacoes, default=classif_default, key="filtro_classificacoes")
 
         turnos_default = _sanear_lista_filtro("filtro_turnos", lista_turnos, lista_turnos)
-        st.sidebar.multiselect("Turno", lista_turnos, default=turnos_default, key="filtro_turnos")
+        st.multiselect("Turno", lista_turnos, default=turnos_default, key="filtro_turnos")
 
         status_default = st.session_state.get("filtro_status_sel", "Todos")
         if status_default not in status_opcoes:
             status_default = "Todos"
             st.session_state["filtro_status_sel"] = status_default
-        st.sidebar.selectbox("Status da OS", status_opcoes, index=status_opcoes.index(status_default), key="filtro_status_sel")
+        st.selectbox("Status da OS", status_opcoes, index=status_opcoes.index(status_default), key="filtro_status_sel")
     else:
-        st.sidebar.info("💡 Filtros automáticos aplicados de acordo com o seu escopo operacional de campo.")
+        st.info("💡 Filtros automáticos aplicados de acordo com o seu escopo operacional de campo.")
         st.session_state["filtro_start_date"] = min_date
         st.session_state["filtro_end_date"] = max_date
         st.session_state["filtro_patios"] = list(lista_patios)
@@ -2218,7 +2218,8 @@ def fragmento_filtros_sidebar_seguro():
         st.session_state["filtro_turnos"] = list(lista_turnos)
         st.session_state["filtro_status_sel"] = "Todos"
 
-fragmento_filtros_sidebar_seguro()
+with st.sidebar:
+    fragmento_filtros_sidebar_seguro()
 
 start_date = st.session_state.get("filtro_start_date", min_date)
 end_date = st.session_state.get("filtro_end_date", max_date)
@@ -2384,50 +2385,46 @@ if "Gestão de Usuários" in st.session_state.get("governanca", ""):
 #region SESSÃO 9: Dashboard Header e KPI Metrics
 
 #region 9.1: Header do Dashboard (Título + Saudação)
-def _limpar_sessao_preservando_fluxo(*, reset_user=None, needs_reset=False):
-    keys_manter = {"gps_pending", "gps_trials", "origem_tipo"}
-    preservados = {k: st.session_state.get(k) for k in keys_manter if k in st.session_state}
-    st.session_state.clear()
-    for k, v in preservados.items():
-        st.session_state[k] = v
-    st.session_state["logged_in"] = False
-    if needs_reset and reset_user:
+col_titulo, col_acoes = st.columns([9, 1])
+
+with col_titulo:
+    st.title("⚡ Sistema de Gestão de Ordens de Serviço")
+    st.markdown(f"<h5 style='color: #475569; margin-top: -10px;'>Olá, <b>{st.session_state.get('username', 'Usuário')}</b> 👋</h5>", unsafe_allow_html=True)
+
+with col_acoes:
+    st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+    
+#endregion 9.1
+
+#region 9.2: Botões de Ação (Atualizar / Trocar Senha / Sair)
+    if st.button("🔄 Atualizar", use_container_width=True):
+        st.rerun()
+        
+    if st.button("🔑 Trocar", use_container_width=True):
+        usr_atual = st.session_state["username"]
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("UPDATE usuarios SET reset_obrigatorio = 1 WHERE username = %s", (usr_atual,))
+        conn.commit()
+        cur.close()
+        release_connection(conn)
+        
+        st.session_state.clear()
+        st.session_state["logged_in"] = False
         st.session_state["needs_reset"] = True
-        st.session_state["reset_user"] = reset_user
+        st.session_state["reset_user"] = usr_atual
+        st.rerun()
+        
+    
+    if st.button("🚪 Sair", use_container_width=True):
+        keys_manter = {"gps_pending", "gps_trials", "origem_tipo"}
+        for key in list(st.session_state.keys()):
+            if key not in keys_manter:
+                del st.session_state[key]
+        st.session_state["logged_in"] = False
+        st.rerun()
 
-@st.fragment
-def fragmento_header_dashboard():
-    col_titulo, col_acoes = st.columns([9, 1])
 
-    with col_titulo:
-        st.title("⚡ Sistema de Gestão de Ordens de Serviço")
-        st.markdown(f"<h5 style='color: #475569; margin-top: -10px;'>Olá, <b>{st.session_state.get('username', 'Usuário')}</b> 👋</h5>", unsafe_allow_html=True)
-
-    with col_acoes:
-        st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
-
-    #endregion 9.1
-
-    #region 9.2: Botões de Ação (Atualizar / Trocar Senha / Sair)
-        if st.button("🔄 Atualizar", use_container_width=True, key="btn_header_atualizar"):
-            st.rerun()
-
-        if st.button("🔑 Trocar", use_container_width=True, key="btn_header_trocar"):
-            usr_atual = st.session_state["username"]
-            conn = get_connection()
-            cur = conn.cursor()
-            cur.execute("UPDATE usuarios SET reset_obrigatorio = 1 WHERE username = %s", (usr_atual,))
-            conn.commit()
-            cur.close()
-            release_connection(conn)
-            _limpar_sessao_preservando_fluxo(reset_user=usr_atual, needs_reset=True)
-            st.rerun()
-
-        if st.button("🚪 Sair", use_container_width=True, key="btn_header_sair"):
-            _limpar_sessao_preservando_fluxo()
-            st.rerun()
-
-fragmento_header_dashboard()
 st.markdown("---")
 
 #endregion 9.2
@@ -3096,71 +3093,66 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
             else:
                 df_pendentes_f = df_visao[df_visao["Status_norm"].isin(_status_aberto)].copy()
 
-            def _garantir_origem_padrao_campo():
-                if "lat_partida" not in st.session_state or "lon_partida" not in st.session_state or "local_nome" not in st.session_state:
+            with col_acao:
+                st.markdown("#### ⚙️ Ferramentas de Campo")
+
+                # --- INICIALIZAÇÃO CENTRALIZADA DE SESSION_STATE ---
+
+                if "lat_partida" not in st.session_state:
                     lat_base, lon_base, nome_base = obter_base_padrao_usuario()
                     st.session_state["lat_partida"] = lat_base
                     st.session_state["lon_partida"] = lon_base
                     st.session_state["local_nome"] = nome_base
-                if "origem_tipo" not in st.session_state:
-                    st.session_state["origem_tipo"] = "BASE"
 
-            with col_acao:
-                @st.fragment
-                def fragmento_controles_campo():
-                    st.markdown("#### ⚙️ Ferramentas de Campo")
-                    _garantir_origem_padrao_campo()
-                    GPS_MAX_TRIALS = 10
+                GPS_MAX_TRIALS = 10
 
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        if st.button("📍 Minha Localização", use_container_width=True, key="btn_gps_localizacao"):
-                            st.session_state["gps_pending"] = True
-                            st.session_state["gps_trials"] = 0
-                            st.rerun(scope="fragment")
-                    with c2:
-                        if st.button("🏠 Minha Base", use_container_width=True, key="btn_minha_base"):
-                            lat_base, lon_base, nome_base = obter_base_padrao_usuario()
-                            st.session_state["lat_partida"] = lat_base
-                            st.session_state["lon_partida"] = lon_base
-                            st.session_state["local_nome"] = nome_base
-                            st.session_state["origem_tipo"] = "BASE"
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("📍 Minha Localização", use_container_width=True, key="btn_gps_localizacao"):
+                        st.session_state["gps_pending"] = True
+                        st.session_state["gps_trials"] = 0
+                        st.rerun()
+                with c2:
+                    if st.button("🏠 Minha Base", use_container_width=True, key="btn_minha_base"):
+                        lat_base, lon_base, nome_base = obter_base_padrao_usuario()
+                        st.session_state["lat_partida"] = lat_base
+                        st.session_state["lon_partida"] = lon_base
+                        st.session_state["local_nome"] = nome_base
+                        st.session_state["origem_tipo"] = "BASE"
+                        st.session_state["gps_pending"] = False
+                        st.session_state["gps_trials"] = 0
+                        st.rerun()
+
+                if st.session_state.get("gps_pending"):
+                    st.info("Aguardando autorização do navegador e captura do GPS...")
+                    loc = get_geolocation()
+
+                    if loc and isinstance(loc, dict) and "coords" in loc:
+                        coords = loc.get("coords", {})
+                        lat, lon = coords.get("latitude"), coords.get("longitude")
+                        if lat is not None and lon is not None:
+                            st.session_state["lat_partida"] = float(lat)
+                            st.session_state["lon_partida"] = float(lon)
+                            st.session_state["local_nome"] = reverse_geocode_coordenada(float(lat), float(lon))
+                            st.session_state["origem_tipo"] = "GPS"
                             st.session_state["gps_pending"] = False
                             st.session_state["gps_trials"] = 0
+                            st.success("GPS ativado com sucesso!")
                             st.rerun()
-
-                    if st.session_state.get("gps_pending"):
-                        st.info("Aguardando autorização do navegador e captura do GPS...")
-                        loc = get_geolocation()
-
-                        if loc and isinstance(loc, dict) and "coords" in loc:
-                            coords = loc.get("coords", {})
-                            lat, lon = coords.get("latitude"), coords.get("longitude")
-                            if lat is not None and lon is not None:
-                                st.session_state["lat_partida"] = float(lat)
-                                st.session_state["lon_partida"] = float(lon)
-                                st.session_state["local_nome"] = reverse_geocode_coordenada(float(lat), float(lon))
-                                st.session_state["origem_tipo"] = "GPS"
-                                st.session_state["gps_pending"] = False
-                                st.session_state["gps_trials"] = 0
-                                st.success("GPS ativado com sucesso!")
-                                st.rerun()
-                        elif loc and isinstance(loc, dict) and "error" in loc:
+                    elif loc and isinstance(loc, dict) and "error" in loc:
+                        st.session_state["gps_pending"] = False
+                        st.session_state["gps_trials"] = 0
+                        st.error(f"GPS falhou: {loc['error'].get('message', 'Erro desconhecido')}")
+                    else:
+                        st.session_state["gps_trials"] += 1
+                        if st.session_state["gps_trials"] < GPS_MAX_TRIALS:
+                            st.info("Aguardando permissão do navegador...")
+                            time.sleep(0.3)
+                            st.rerun()
+                        else:
                             st.session_state["gps_pending"] = False
                             st.session_state["gps_trials"] = 0
-                            st.error(f"GPS falhou: {loc['error'].get('message', 'Erro desconhecido')}")
-                        else:
-                            st.session_state["gps_trials"] += 1
-                            if st.session_state["gps_trials"] < GPS_MAX_TRIALS:
-                                st.info("Aguardando permissão do navegador...")
-                                time.sleep(0.3)
-                                st.rerun(scope="fragment")
-                            else:
-                                st.session_state["gps_pending"] = False
-                                st.session_state["gps_trials"] = 0
-                                st.error("Tempo do GPS esgotado. Tente novamente ou use a Minha Base.")
-
-                fragmento_controles_campo()
+                            st.error("Tempo do GPS esgotado. Tente novamente ou use a Minha Base.")
 
                 st.markdown("---")
                 raio_busca_km = st.slider("📏 Raio de Atuação Visual (km):", 0, 50, 10, 5, key="slider_raio_atuacao")
@@ -3217,18 +3209,13 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             fotos_por_os = {}
                             for os_id_ev in os_selecionadas:
                                 with st.expander(f"📷 Foto da OS: {os_id_ev}", expanded=True):
-                                    st.caption("Opção 1: tirar foto pela câmera do dispositivo (sem remover a galeria).")
-                                    foto_camera = st.camera_input(
-                                        "📸 Tirar Foto Agora (opcional)",
-                                        key=f"camera_{os_id_ev}"
-                                    )
                                     foto_up = st.file_uploader(
-                                        "🖼️ Ou selecionar da galeria",
+                                        "📸 Tirar Foto ou 🖼️ Selecionar da Galeria",
                                         type=["jpg", "jpeg", "png"],
                                         key=f"foto_{os_id_ev}",
                                         accept_multiple_files=False
                                     )
-                                    fotos_por_os[str(os_id_ev)] = foto_camera if foto_camera is not None else foto_up
+                                    fotos_por_os[os_id_ev] = foto_up
 
                             conn = get_connection()
                             try:
