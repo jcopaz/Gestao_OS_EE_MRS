@@ -2100,8 +2100,10 @@ gov_usuario = st.session_state.get("governanca", "")
 # --- NAVEGAÇÃO INTELIGENTE POR PERFIL ---
 tem_painel = "Painel Gerencial" in gov_usuario or "Mapa de Campo" in gov_usuario
 tem_dados = "Upload de Dados" in gov_usuario
+tem_usuarios = "Gestão de Usuários" in gov_usuario
 tem_governanca = "Gestão de Usuários" in gov_usuario or "Governança" in gov_usuario
 
+# Linha 1: Painel + Dados
 if tem_painel and tem_dados:
     col_nav1, col_nav2 = st.sidebar.columns(2)
     with col_nav1:
@@ -2121,14 +2123,33 @@ elif tem_dados:
         st.session_state["tela_atual"] = "admin"
         st.rerun()
 
-# Botão de Governança — SOMENTE para quem tem "Gestão de Usuários"
-if tem_governanca:
+# Linha 2: Usuários + Governança
+if tem_usuarios and tem_governanca:
+    col_nav3, col_nav4 = st.sidebar.columns(2)
+    with col_nav3:
+        if st.button("👤 Usuários", use_container_width=True):
+            st.session_state["tela_atual"] = "usuarios"
+            st.rerun()
+    with col_nav4:
+        if st.button("🛡️ Governança", use_container_width=True):
+            st.session_state["tela_atual"] = "governanca"
+            st.rerun()
+elif tem_usuarios:
+    if st.sidebar.button("👤 Gestão de Usuários", use_container_width=True):
+        st.session_state["tela_atual"] = "usuarios"
+        st.rerun()
+elif tem_governanca:
     if st.sidebar.button("🛡️ Governança (Auditoria)", use_container_width=True):
         st.session_state["tela_atual"] = "governanca"
         st.rerun()
 
+# --- ROTEAMENTO DAS TELAS ISOLADAS ---
 if st.session_state.get("tela_atual") == "admin":
     render_tela_admin()
+    st.stop()
+
+if st.session_state.get("tela_atual") == "usuarios":
+    render_tela_usuarios()
     st.stop()
 #endregion 7.1.3
 
@@ -2293,13 +2314,13 @@ df_filtrado = aplicar_filtros_sidebar(
 
 #region 8.1: Controles de Simulação e Recarga ETL
 if "Gestão de Usuários" in st.session_state.get("governanca", ""):
-    with st.sidebar.expander("⚙️ Sistema, Dados e Gestão", expanded=False):
-        
+    with st.sidebar.expander("⚙️ Sistema e Simulação", expanded=False):
+
         st.checkbox("🧪 Usar dados simulados (teste rápido)", key="chk_sim")
         if st.session_state.get("chk_sim"):
             st.slider("Volume de OS simuladas", 100, 4000, 1200, 100, key="qtd_sim")
             st.number_input("Seed (repete mesmos dados)", value=42, key="seed_sim")
-            
+
             st.markdown("<small style='color: #CBD5E1;'>Distribuição da Simulação</small>", unsafe_allow_html=True)
             col_s1, col_s2, col_s3 = st.columns(3)
             with col_s1: st.number_input("% Pendente", min_value=0, max_value=100, value=45, key="sim_pct_pendente")
@@ -2336,328 +2357,32 @@ def fragmento_gestao_usuarios():
     ]
 
     #region 8.2.1: Criar Novo Usuário (Formulário)
-    with st.form("form_novo_user", clear_on_submit=True):
-        n_user = st.text_input("Matrícula / Username", key="novo_user_login")
-        n_nome = st.text_input("Nome do Colaborador", key="novo_user_nome")
-        n_perf = st.selectbox("Perfil", ["Técnico", "Assistente", "Coordenador", "Gerência"], key="novo_user_perfil")
-        n_esco = st.selectbox("Escopo (Base)", ["Paranapiacaba", "Piaçaguera", "Todas"], key="novo_user_escopo")
-
-        sedes_validas = sedes_por_escopo(n_esco)
-        n_sede = st.selectbox(
-            "Sede Física",
-            sedes_validas,
-            key="novo_user_sede",
-            format_func=lambda x: x.replace("Sede ", "")
-        )
-
-        st.markdown("---")
-        st.markdown("**Governança (O que o usuário pode ver/fazer?)**")
-
-        if n_perf == "Técnico":
-            def_gov = ["Mapa de Campo"]
-        elif n_perf == "Assistente":
-            def_gov = ["Painel Gerencial", "Upload de Dados", "Exportar SAP"]
-        elif n_perf == "Coordenador":
-            def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Exportar SAP", "Governança"]
-        else:
-            def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Gestão de Usuários", "Exportar SAP", "Governança"]
-
-        n_gov = st.multiselect("Permissões de Acesso:", opcoes_gov, default=def_gov, key="novo_user_gov")
-
-        if st.form_submit_button("Salvar Novo Usuário"):
-            if n_user and n_nome:
-                conn = get_connection()
-                cur = conn.cursor()
-                try:
-                    cur.execute(
-                        """
-                        INSERT INTO usuarios (
-                            username, nome, senha_hash, perfil, escopo,
-                            palavra_recuperacao, dica_recuperacao,
-                            coordenacao_padrao, reset_obrigatorio, governanca
-                        )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """,
-                        (
-                            n_user.strip(),
-                            n_nome.strip(),
-                            hash_senha("mrs123"),
-                            n_perf,
-                            n_esco,
-                            "PENDENTE",
-                            "PENDENTE",
-                            n_sede,
-                            1,
-                            ",".join(n_gov)
-                        )
-                    )
-                    conn.commit()
-                    st.session_state["msg_sucesso_user"] = f"Usuário '{n_nome}' ({n_user}) criado com sucesso!"
-                    st.rerun(scope="fragment")
-                except psycopg2.IntegrityError:
-                    conn.rollback()
-                    st.error("Erro: Esta matrícula/usuário já existe.")
-                finally:
-                    cur.close()
-                    release_connection(conn)
-            else:
-                st.warning("Preencha a matrícula e o nome do colaborador.")
+    # ... (MANTER EXATAMENTE COMO ESTÁ NO SEU app.py ATUAL — linhas 2335 a 2405)
     #endregion 8.2.1
 
     #region 8.2.2: Gerenciar Existentes (Editar/Resetar/Excluir)
-    st.markdown("**👥 Gerenciar Usuários**", unsafe_allow_html=True)
-
-    conn = get_connection()
-    df_usuarios = pd.read_sql_query(
-        "SELECT username, nome, perfil, escopo, coordenacao_padrao, governanca FROM usuarios",
-        conn
-    )
-    release_connection(conn)
-
-    if not df_usuarios.empty:
-        df_usuarios["label_exibicao"] = df_usuarios.apply(
-            lambda r: f"{str(r['nome']).strip()} ({str(r['username']).strip()})"
-            if pd.notna(r["nome"]) and str(r["nome"]).strip()
-            else str(r["username"]).strip(),
-            axis=1
-        )
-
-        mapa_label_para_user = dict(zip(df_usuarios["label_exibicao"], df_usuarios["username"]))
-        usr_label_sel = st.selectbox(
-            "Selecione um usuário:",
-            [""] + df_usuarios["label_exibicao"].tolist(),
-            key="sel_usr_frag"
-        )
-
-        if usr_label_sel != "":
-            usr_sel = mapa_label_para_user[usr_label_sel]
-            dados_usr = df_usuarios[df_usuarios["username"] == usr_sel].iloc[0]
-            gov_atual_lista = str(dados_usr["governanca"]).split(",") if pd.notna(dados_usr["governanca"]) else []
-
-            st.caption(
-                f"**Nome:** {dados_usr['nome']} | "
-                f"**Matrícula:** {dados_usr['username']} | "
-                f"**Perfil:** {dados_usr['perfil']} | "
-                f"**Visão:** {dados_usr['escopo']} | "
-                f"**Sede:** {str(dados_usr['coordenacao_padrao']).replace('Sede ', '')}"
-            )
-
-            acao = st.radio(
-                "Ação:",
-                ["✏️ Editar Acesso", "🔑 Resetar Senha", "🗑️ Excluir"],
-                horizontal=True,
-                key="radio_acao_frag"
-            )
-
-            if acao == "✏️ Editar Acesso":
-                with st.form(f"form_edit_{usr_sel}"):
-                    n_nome_edit = st.text_input(
-                        "Nome do Colaborador",
-                        value=str(dados_usr["nome"]).strip() if pd.notna(dados_usr["nome"]) else ""
-                    )
-
-                    n_perf_edit = st.selectbox(
-                        "Novo Perfil",
-                        ["Técnico", "Assistente", "Coordenador", "Gerência"],
-                        index=["Técnico", "Assistente", "Coordenador", "Gerência"].index(dados_usr["perfil"])
-                    )
-
-                    n_esco_edit = st.selectbox(
-                        "Nova Visão",
-                        ["Paranapiacaba", "Piaçaguera", "Todas"],
-                        index=["Paranapiacaba", "Piaçaguera", "Todas"].index(dados_usr["escopo"])
-                    )
-
-                    n_sede_edit = st.selectbox(
-                        "Sede",
-                        sedes_por_escopo(n_esco_edit),
-                        format_func=lambda x: x.replace("Sede ", "")
-                    )
-
-                    gov_editadas = st.multiselect(
-                        "Governança:",
-                        opcoes_gov,
-                        default=[g for g in gov_atual_lista if g in opcoes_gov]
-                    )
-
-                    if st.form_submit_button("Salvar Alterações"):
-                        conn = get_connection()
-                        cur = conn.cursor()
-                        cur.execute(
-                            """
-                            UPDATE usuarios
-                            SET nome=%s, perfil=%s, escopo=%s, coordenacao_padrao=%s, governanca=%s
-                            WHERE username=%s
-                            """,
-                            (
-                                n_nome_edit.strip(),
-                                n_perf_edit,
-                                n_esco_edit,
-                                n_sede_edit,
-                                ",".join(gov_editadas),
-                                usr_sel
-                            )
-                        )
-                        conn.commit()
-                        cur.close()
-                        release_connection(conn)
-                        st.session_state["msg_sucesso_user"] = f"Cadastro de {n_nome_edit} ({usr_sel}) atualizado!"
-                        st.rerun(scope="fragment")
-
-            elif acao == "🔑 Resetar Senha":
-                if st.button("Confirmar Reset", key="btn_reset_frag"):
-                    conn = get_connection()
-                    cur = conn.cursor()
-                    cur.execute(
-                        "UPDATE usuarios SET senha_hash = %s, reset_obrigatorio = 1 WHERE username = %s",
-                        (hash_senha("mrs123"), usr_sel)
-                    )
-                    conn.commit()
-                    cur.close()
-                    release_connection(conn)
-                    st.session_state["msg_sucesso_user"] = f"Senha de {dados_usr['nome']} ({usr_sel}) resetada!"
-                    st.rerun(scope="fragment")
-
-            elif acao == "🗑️ Excluir":
-                if st.button("Confirmar Exclusão", type="primary", key="btn_excluir_frag"):
-                    conn = get_connection()
-                    cur = conn.cursor()
-                    cur.execute("DELETE FROM usuarios WHERE username = %s", (usr_sel,))
-                    conn.commit()
-                    cur.close()
-                    release_connection(conn)
-                    st.session_state["msg_sucesso_user"] = f"Usuário {dados_usr['nome']} ({usr_sel}) excluído."
-                    st.rerun(scope="fragment")
-    else:
-        st.info("Nenhum usuário cadastrado.")
+    # ... (MANTER EXATAMENTE COMO ESTÁ NO SEU app.py ATUAL — linhas 2407 a 2533)
     #endregion 8.2.2
 
     #region 8.2.3: Importação em Massa de Colaboradores
-    st.markdown("---")
-    st.markdown("**📥 Importação em Massa de Colaboradores**")
-
-    st.caption(
-        "A planilha deve conter exatamente as colunas: "
-        "`username`, `Nome`, `perfil`, `escopo`, `coordenacao_padrao`, `governanca`."
-    )
-
-    arquivo_users = st.file_uploader(
-        "Selecione a planilha de colaboradores (.xlsx ou .csv)",
-        type=["xlsx", "csv"],
-        key="upload_users_massa"
-    )
-
-    if arquivo_users is not None:
-        if st.button("🚀 Processar Cadastro em Massa", use_container_width=True, type="primary", key="btn_users_massa"):
-            with st.spinner("Processando colaboradores..."):
-                try:
-                    if arquivo_users.name.lower().endswith(".csv"):
-                        df_users = pd.read_csv(arquivo_users, sep=None, engine="python", encoding="utf-8-sig")
-                    else:
-                        df_users = pd.read_excel(arquivo_users)
-
-                    df_users.columns = [str(c).strip() for c in df_users.columns]
-
-                    colunas_obrigatorias = ["username", "Nome", "perfil", "escopo", "coordenacao_padrao", "governanca"]
-                    faltantes = [c for c in colunas_obrigatorias if c not in df_users.columns]
-
-                    if faltantes:
-                        st.error(f"❌ Colunas obrigatórias ausentes: {', '.join(faltantes)}")
-                    else:
-                        df_users = df_users.fillna("")
-
-                        perfis_validos = {"Técnico", "Assistente", "Coordenador", "Gerência"}
-                        escopos_validos = {"Paranapiacaba", "Piaçaguera", "Todas"}
-
-                        registros = []
-                        erros = []
-
-                        for idx, row in df_users.iterrows():
-                            matricula = str(row["username"]).strip()
-                            nome = str(row["Nome"]).strip()
-                            perfil = str(row["perfil"]).strip()
-                            escopo = str(row["escopo"]).strip()
-                            coordenacao_padrao = str(row["coordenacao_padrao"]).strip()
-                            governanca = str(row["governanca"]).strip()
-
-                            if not matricula:
-                                erros.append(f"Linha {idx + 2}: username/matrícula vazio.")
-                                continue
-
-                            if not nome:
-                                erros.append(f"Linha {idx + 2}: Nome vazio.")
-                                continue
-
-                            if perfil not in perfis_validos:
-                                erros.append(f"Linha {idx + 2}: perfil inválido ({perfil}).")
-                                continue
-
-                            if escopo not in escopos_validos:
-                                erros.append(f"Linha {idx + 2}: escopo inválido ({escopo}).")
-                                continue
-
-                            if not coordenacao_padrao:
-                                erros.append(f"Linha {idx + 2}: coordenacao_padrao vazio.")
-                                continue
-
-                            registros.append((
-                                matricula,
-                                nome,
-                                hash_senha("mrs123"),
-                                perfil,
-                                escopo,
-                                "PENDENTE",
-                                "PENDENTE",
-                                coordenacao_padrao,
-                                1,
-                                governanca
-                            ))
-
-                        if erros:
-                            st.error("❌ Foram encontrados erros na planilha:")
-                            for e in erros[:20]:
-                                st.write(f"- {e}")
-                            if len(erros) > 20:
-                                st.write(f"... e mais {len(erros) - 20} erro(s).")
-                        elif not registros:
-                            st.warning("⚠️ Nenhum registro válido encontrado.")
-                        else:
-                            conn = get_connection()
-                            try:
-                                cur = conn.cursor()
-                                execute_values(
-                                    cur,
-                                    """
-                                    INSERT INTO usuarios (
-                                        username, nome, senha_hash, perfil, escopo,
-                                        palavra_recuperacao, dica_recuperacao,
-                                        coordenacao_padrao, reset_obrigatorio, governanca
-                                    )
-                                    VALUES %s
-                                    ON CONFLICT (username) DO UPDATE SET
-                                        nome = EXCLUDED.nome,
-                                        perfil = EXCLUDED.perfil,
-                                        escopo = EXCLUDED.escopo,
-                                        coordenacao_padrao = EXCLUDED.coordenacao_padrao,
-                                        governanca = EXCLUDED.governanca
-                                    """,
-                                    registros,
-                                    page_size=500
-                                )
-                                conn.commit()
-                                cur.close()
-                            finally:
-                                release_connection(conn)
-
-                            st.session_state["msg_sucesso_user"] = f"✅ Importação concluída com sucesso! {len(registros)} colaborador(es) processado(s)."
-                            st.rerun(scope="fragment")
-
-                except Exception as e:
-                    st.error(f"❌ Erro ao processar a planilha: {e}")
+    # ... (MANTER EXATAMENTE COMO ESTÁ NO SEU app.py ATUAL — linhas 2535 a 2657)
     #endregion 8.2.3
-
-fragmento_gestao_usuarios()
 #endregion 8.2
+
+#region 8.3: Tela Isolada de Gestão de Usuários
+def render_tela_usuarios():
+    col_usr_t1, col_usr_t2 = st.columns([8, 2])
+    with col_usr_t1:
+        st.title("👤 Gestão de Usuários")
+    with col_usr_t2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("⬅️ Voltar ao Painel", use_container_width=True):
+            st.session_state["tela_atual"] = "dashboard"
+            st.rerun()
+    st.markdown("Cadastro individual, edição, importação em massa e exclusão de colaboradores.")
+    st.markdown("---")
+    fragmento_gestao_usuarios()
+#endregion 8.3
 
 #endregion SESSÃO 8
 
