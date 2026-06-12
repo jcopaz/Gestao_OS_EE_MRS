@@ -2147,10 +2147,6 @@ elif tem_governanca:
 if st.session_state.get("tela_atual") == "admin":
     render_tela_admin()
     st.stop()
-
-if st.session_state.get("tela_atual") == "usuarios":
-    render_tela_usuarios()
-    st.stop()
 #endregion 7.1.3
 
 #region 7.1.4: Filtro de Visão (Escopo do Usuário)
@@ -2382,8 +2378,12 @@ def render_tela_usuarios():
     st.markdown("Cadastro individual, edição, importação em massa e exclusão de colaboradores.")
     st.markdown("---")
     fragmento_gestao_usuarios()
-#endregion 8.3
 
+# --- Roteamento da Tela de Gestão de Usuários (após definição) ---
+if st.session_state.get("tela_atual") == "usuarios":
+    render_tela_usuarios()
+    st.stop()
+#endregion 8.3
 #endregion SESSÃO 8
 
 #region SESSÃO 9: Dashboard Header e KPI Metrics
@@ -2751,7 +2751,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 #region 10.2.4: Lista Detalhada de OS (com Evidências)
 st.subheader("📋 Lista Detalhada de OS")
 
-df_lista = df_visao_base.copy().rename(columns={"Ordem servico": "OS"})
+df_lista = df_filtrado.copy().rename(columns={"Ordem servico": "OS"})
 
 # --- EVIDÊNCIAS FOTOGRÁFICAS (merge com a tabela de evidências) ---
 try:
