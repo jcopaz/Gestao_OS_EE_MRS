@@ -2330,7 +2330,7 @@ if "Gestão de Usuários" in st.session_state.get("governanca", ""):
 #region 8.2: Gestão de Usuários (@st.fragment)
 @st.fragment
 def fragmento_gestao_usuarios():
-    st.markdown("## 👤 Gestão de Usuários", unsafe_allow_html=True)
+    st.markdown("### 👤 Cadastro de Novos Usuários", unsafe_allow_html=True)
 
     if "msg_sucesso_user" in st.session_state:
         st.success(st.session_state["msg_sucesso_user"])
