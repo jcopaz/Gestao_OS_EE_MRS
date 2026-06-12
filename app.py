@@ -2386,144 +2386,124 @@ if st.session_state.get("tela_atual") == "usuarios":
 #endregion 8.3
 #endregion SESSÃO 8
 
+# ═══ CONTROLE CENTRAL: só renderiza dashboard nas SESSÕES 9 e 10 ═══
+_is_dashboard = st.session_state.get("tela_atual", "dashboard") == "dashboard"
+
 #region SESSÃO 9: Dashboard Header e KPI Metrics
+if _is_dashboard:
+    #region 9.1: Header do Dashboard (Título + Saudação)
+    col_titulo, col_acoes = st.columns([9, 1])
 
-#region 9.1: Header do Dashboard (Título + Saudação)
-col_titulo, col_acoes = st.columns([9, 1])
+    with col_titulo:
+        st.title("⚡ Sistema de Gestão de Ordens de Serviço")
+        st.markdown(f"<h5 style='color: #475569; margin-top: -10px;'>Olá, <b>{st.session_state.get('username', 'Usuário')}</b> 👋</h5>", unsafe_allow_html=True)
 
-with col_titulo:
-    st.title("⚡ Sistema de Gestão de Ordens de Serviço")
-    st.markdown(f"<h5 style='color: #475569; margin-top: -10px;'>Olá, <b>{st.session_state.get('username', 'Usuário')}</b> 👋</h5>", unsafe_allow_html=True)
+    with col_acoes:
+        st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+    #endregion 9.1
 
-with col_acoes:
-    st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
-    
-#endregion 9.1
+    #region 9.2: Botões de Ação (Atualizar / Trocar Senha / Sair)
+        if st.button("🔄 Atualizar", use_container_width=True):
+            st.rerun()
 
-#region 9.2: Botões de Ação (Atualizar / Trocar Senha / Sair)
-    if st.button("🔄 Atualizar", use_container_width=True):
-        st.rerun()
-        
-    if st.button("🔑 Trocar", use_container_width=True):
-        usr_atual = st.session_state["username"]
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute("UPDATE usuarios SET reset_obrigatorio = 1 WHERE username = %s", (usr_atual,))
-        conn.commit()
-        cur.close()
-        release_connection(conn)
-        
-        st.session_state.clear()
-        st.session_state["logged_in"] = False
-        st.session_state["needs_reset"] = True
-        st.session_state["reset_user"] = usr_atual
-        st.rerun()
-        
-    
-    if st.button("🚪 Sair", use_container_width=True):
-        keys_manter = {"gps_pending", "gps_trials", "origem_tipo"}
-        for key in list(st.session_state.keys()):
-            if key not in keys_manter:
-                del st.session_state[key]
-        st.session_state["logged_in"] = False
-        st.rerun()
+        if st.button("🔑 Trocar", use_container_width=True):
+            usr_atual = st.session_state["username"]
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute("UPDATE usuarios SET reset_obrigatorio = 1 WHERE username = %s", (usr_atual,))
+            conn.commit()
+            cur.close()
+            release_connection(conn)
+            st.session_state.clear()
+            st.session_state["logged_in"] = False
+            st.session_state["needs_reset"] = True
+            st.session_state["reset_user"] = usr_atual
+            st.rerun()
 
+        if st.button("🚪 Sair", use_container_width=True):
+            keys_manter = {"gps_pending", "gps_trials", "origem_tipo"}
+            for key in list(st.session_state.keys()):
+                if key not in keys_manter:
+                    del st.session_state[key]
+            st.session_state["logged_in"] = False
+            st.rerun()
 
-st.markdown("---")
+    st.markdown("---")
+    #endregion 9.2
 
-#endregion 9.2
+    #region 9.3: Cálculo dos KPIs + CSS dos Cards
+    total_os = len(df_filtrado)
+    realizado_prazo = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_prazo)])
+    realizado_atraso = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_atraso)])
+    realizado_total = realizado_prazo + realizado_atraso
+    nao_realizado = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_aberto)])
+    taxa_conclusao = (realizado_total / total_os * 100) if total_os > 0 else 0.0
 
-#region 9.3: Cálculo dos KPIs + CSS dos Cards
-total_os = len(df_filtrado)
-realizado_prazo = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_prazo)])
-realizado_atraso = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_atraso)])
-realizado_total = realizado_prazo + realizado_atraso
-nao_realizado = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_aberto)])
-taxa_conclusao = (realizado_total / total_os * 100) if total_os > 0 else 0.0
-
-st.markdown("""
+    st.markdown("""
     <style>
-    iframe, .stEcharts, [data-testid="stHtmlBlock"] + div iframe {
-        border-radius: 12px !important;
-        overflow: hidden !important;
+    .kpi-card {
+        background: linear-gradient(135deg, #1E293B 0%, #334155 100%);
+        border-radius: 14px;
+        padding: 22px 18px;
+        color: #F1F5F9;
+        box-shadow: 0 4px 14px rgba(15, 23, 42, 0.25);
+        transition: transform 0.18s ease, box-shadow 0.18s ease;
     }
-    .kpi-header-wrapper { font-family: "Source Sans Pro", sans-serif; }
-    .kpi-header-card {
-        font-family: "Source Sans Pro", sans-serif;
-        border-radius: 12px;
-        padding: 16px 20px;
-        box-shadow: 0 4px 6px rgba(15, 23, 42, 0.08);
-        height: 140px; 
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        box-sizing: border-box;
-        margin-bottom: 15px;
+    .kpi-card:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.35);
     }
-    .kpi-border-gray { border-left: 5px solid #64748B; background: linear-gradient(135deg, #F8FAFC 0%, #F1F5F9 100%); }
-    .kpi-border-red { border-left: 5px solid #FF4B4B; background: linear-gradient(135deg, #FEF2F2 0%, #FEE2E2 100%); }
-    .kpi-border-green { border-left: 5px solid #10B981; background: linear-gradient(135deg, #F0FDF4 0%, #D1FAE5 100%); }
-    .kpi-border-blue { border-left: 5px solid #3B82F6; background: linear-gradient(135deg, #EFF6FF 0%, #DBEAFE 100%); }
-    .kpi-header-title { font-size: 14px; font-weight: 700; color: #1E293B; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
-    .kpi-header-val { font-size: 32px; font-weight: 400; color: #0F172A; line-height: 1; }
-    .kpi-header-sub { font-size: 12px; font-weight: 400; margin-top: 8px; padding: 4px 10px; border-radius: 20px; display: inline-block; width: fit-content; }
-    .badge-gray { background-color: #E2E8F0; color: #475569; }
-    .badge-red { background-color: #FECACA; color: #991B1B; }
-    .badge-green { background-color: #A7F3D0; color: #065F46; }
-    .badge-blue { background-color: #DBEAFE; color: #1E40AF; }
+    .kpi-title {
+        font-size: 13px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.6px;
+        margin-bottom: 6px;
+        color: #94A3B8;
+    }
+    .kpi-value {
+        font-size: 32px;
+        font-weight: 800;
+        margin-bottom: 2px;
+    }
+    .kpi-sub {
+        font-size: 12px;
+        color: #CBD5E1;
+    }
     </style>
-""", unsafe_allow_html=True)
-
-#endregion 9.3
-
-#region 9.4: Renderização dos Cards KPI
-col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
-
-with col_kpi1:
-    st.markdown(f"""
-        <div class="kpi-header-wrapper kpi-header-card kpi-border-gray">
-            <div class="kpi-header-title">📋 Planejado (OS)</div>
-            <div class="kpi-header-val">{total_os}</div>
-            <div class="kpi-header-sub badge-gray">Total de O.S do período</div>
-        </div>
     """, unsafe_allow_html=True)
+    #endregion 9.3
 
-with col_kpi2:
-    st.markdown(f"""
-        <div class="kpi-header-wrapper kpi-header-card kpi-border-red">
-            <div class="kpi-header-title">🔴 Backlog (Não Realizado)</div>
-            <div class="kpi-header-val">{nao_realizado}</div>
-            <div class="kpi-header-sub badge-red">↑ {nao_realizado} pendentes</div>
-        </div>
-    """, unsafe_allow_html=True)
+    #region 9.4: Renderização dos Cards KPI
+    col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
 
-with col_kpi3:
-    st.markdown(f"""
-        <div class="kpi-header-wrapper kpi-header-card kpi-border-green">
-            <div class="kpi-header-title">🟢 Realizado (Total)</div>
-            <div class="kpi-header-val">{realizado_total}</div>
-            <div class="kpi-header-sub badge-green">↑ {realizado_prazo} no prazo / {realizado_atraso} atrasado</div>
-        </div>
-    """, unsafe_allow_html=True)
+    with col_kpi1:
+        st.markdown(f"""<div class='kpi-card'><div class='kpi-title'>📋 Planejado (OS)</div><div class='kpi-value'>{total_os}</div><div class='kpi-sub'>Total de O.S do período</div></div>""", unsafe_allow_html=True)
 
-with col_kpi4:
-    st.markdown(f"""
-        <div class="kpi-header-wrapper kpi-header-card kpi-border-blue">
-            <div class="kpi-header-title">📈 Taxa de Conclusão</div>
-            <div class="kpi-header-val">{taxa_conclusao:.1f}%</div>
-            <div class="kpi-header-sub badge-blue">Aproveitamento geral</div>
-        </div>
-    """, unsafe_allow_html=True)
+    with col_kpi2:
+        st.markdown(f"""<div class='kpi-card'><div class='kpi-title'>🔴 Backlog (Não Realizado)</div><div class='kpi-value'>{nao_realizado}</div><div class='kpi-sub'>↑ {nao_realizado} pendentes</div></div>""", unsafe_allow_html=True)
 
-st.markdown("---")
-#endregion
+    with col_kpi3:
+        st.markdown(f"""<div class='kpi-card'><div class='kpi-title'>🟢 Realizado (Total)</div><div class='kpi-value'>{realizado_total}</div><div class='kpi-sub'>↑ {realizado_prazo} no prazo / {realizado_atraso} atrasado</div></div>""", unsafe_allow_html=True)
+
+    with col_kpi4:
+        st.markdown(f"""<div class='kpi-card'><div class='kpi-title'>📈 Taxa de Conclusão</div><div class='kpi-value'>{taxa_conclusao:.1f}%</div><div class='kpi-sub'>Aproveitamento geral</div></div>""", unsafe_allow_html=True)
+
+    st.markdown("---")
+    #endregion 9.4
+
+else:
+    # Variáveis necessárias inicializadas para evitar NameError em telas isoladas
+    total_os = realizado_prazo = realizado_atraso = realizado_total = nao_realizado = 0
+    taxa_conclusao = 0.0
 
 #endregion SESSÃO 9
 
 #region SESSÃO 10: Abas e Renderização dos Gráficos
 
 #region 10.1: Roteamento Principal (Controle de Telas)
-if st.session_state.get("tela_atual", "dashboard") == "dashboard":
+tab1 = tab2 = None
+if _is_dashboard:
     
 # --- CONTROLE DE ABAS POR GOVERNANÇA ---
     tem_mapa_campo = "Mapa de Campo" in st.session_state.get("governanca", "")
@@ -3450,7 +3430,7 @@ if st.session_state.get("tela_atual") == "governanca":
 
     col_gov_t1, col_gov_t2 = st.columns([8, 2])
     with col_gov_t1:
-        st.title("🛡️ Motor de Governança e Auditoria")
+        st.title("🛡️ Governança e Auditoria")
     with col_gov_t2:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("⬅️ Voltar ao Painel", use_container_width=True):
