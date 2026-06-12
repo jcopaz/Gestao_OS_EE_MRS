@@ -2729,89 +2729,89 @@ if _is_dashboard:
 #endregion 10.2.3
 
 #region 10.2.4: Lista Detalhada de OS (com Evidências)
-st.subheader("📋 Lista Detalhada de OS")
+        st.subheader("📋 Lista Detalhada de OS")
 
-df_lista = df_filtrado.copy().rename(columns={"Ordem servico": "OS"})
+        df_lista = df_filtrado.copy().rename(columns={"Ordem servico": "OS"})
 
-# --- EVIDÊNCIAS FOTOGRÁFICAS (merge com a tabela de evidências) ---
-try:
-    df_evidencias = carregar_evidencias_df()
-    if not df_evidencias.empty and "Ativo" in df_lista.columns:
-        col_atividade_lista = "Atividade ativo" if "Atividade ativo" in df_lista.columns else None
-        if col_atividade_lista:
-            df_lista = df_lista.merge(
-                df_evidencias[["ativo", "atividade", "foto_url"]],
-                left_on=["Ativo", col_atividade_lista],
-                right_on=["ativo", "atividade"],
-                how="left"
-            )
-            df_lista["Evidência"] = df_lista["foto_url"].apply(
-                lambda url: str(url) if pd.notna(url) and str(url).startswith("http") else None
-            )
-            df_lista.drop(columns=["ativo", "atividade", "foto_url"], inplace=True, errors="ignore")
-        else:
+        # --- EVIDÊNCIAS FOTOGRÁFICAS (merge com a tabela de evidências) ---
+        try:
+            df_evidencias = carregar_evidencias_df()
+            if not df_evidencias.empty and "Ativo" in df_lista.columns:
+                col_atividade_lista = "Atividade ativo" if "Atividade ativo" in df_lista.columns else None
+                if col_atividade_lista:
+                    df_lista = df_lista.merge(
+                        df_evidencias[["ativo", "atividade", "foto_url"]],
+                        left_on=["Ativo", col_atividade_lista],
+                        right_on=["ativo", "atividade"],
+                        how="left"
+                    )
+                    df_lista["Evidência"] = df_lista["foto_url"].apply(
+                        lambda url: str(url) if pd.notna(url) and str(url).startswith("http") else None
+                    )
+                    df_lista.drop(columns=["ativo", "atividade", "foto_url"], inplace=True, errors="ignore")
+                else:
+                    df_lista["Evidência"] = ""
+            else:
+                df_lista["Evidência"] = ""
+        except Exception:
             df_lista["Evidência"] = ""
-    else:
-        df_lista["Evidência"] = ""
-except Exception:
-    df_lista["Evidência"] = ""
 
-# --- TRADUÇÃO DE MATRÍCULA -> NOME NO CAMPO "CONCLUÍDO POR" ---
-try:
-    df_users_nomes = carregar_usuarios_nomes_df()
-    if not df_users_nomes.empty and "Concluído por" in df_lista.columns:
-        df_lista["Concluído por"] = df_lista["Concluído por"].astype(str).str.strip()
+        # --- TRADUÇÃO DE MATRÍCULA -> NOME NO CAMPO "CONCLUÍDO POR" ---
+        try:
+            df_users_nomes = carregar_usuarios_nomes_df()
+            if not df_users_nomes.empty and "Concluído por" in df_lista.columns:
+                df_lista["Concluído por"] = df_lista["Concluído por"].astype(str).str.strip()
 
-        df_lista = df_lista.merge(
-            df_users_nomes.rename(columns={"username": "matricula_conclusao", "nome": "nome_conclusao"}),
-            left_on="Concluído por",
-            right_on="matricula_conclusao",
-            how="left"
-        )
+                df_lista = df_lista.merge(
+                    df_users_nomes.rename(columns={"username": "matricula_conclusao", "nome": "nome_conclusao"}),
+                    left_on="Concluído por",
+                    right_on="matricula_conclusao",
+                    how="left"
+                )
 
-        df_lista["Concluído por"] = df_lista["nome_conclusao"].where(
-            df_lista["nome_conclusao"].notna() & (df_lista["nome_conclusao"].astype(str).str.strip() != ""),
-            df_lista["Concluído por"]
-        )
+                df_lista["Concluído por"] = df_lista["nome_conclusao"].where(
+                    df_lista["nome_conclusao"].notna() & (df_lista["nome_conclusao"].astype(str).str.strip() != ""),
+                    df_lista["Concluído por"]
+                )
 
-        df_lista.drop(columns=["matricula_conclusao", "nome_conclusao"], inplace=True, errors="ignore")
-except Exception:
-    pass
+                df_lista.drop(columns=["matricula_conclusao", "nome_conclusao"], inplace=True, errors="ignore")
+        except Exception:
+            pass
 
-if "Data inicial programada" in df_lista.columns:
-    df_lista["Data inicial programada"] = pd.to_datetime(
-        df_lista["Data inicial programada"], errors="coerce"
-    ).dt.strftime("%d/%m/%Y")
+        if "Data inicial programada" in df_lista.columns:
+            df_lista["Data inicial programada"] = pd.to_datetime(
+                df_lista["Data inicial programada"], errors="coerce"
+            ).dt.strftime("%d/%m/%Y")
 
-if "Data/Hora Realizado" in df_lista.columns:
-    df_lista["Data/Hora Realizado"] = pd.to_datetime(
-        df_lista["Data/Hora Realizado"], dayfirst=True, errors="coerce"
-    ).dt.strftime("%d/%m/%Y %H:%M").fillna("")
+        if "Data/Hora Realizado" in df_lista.columns:
+            df_lista["Data/Hora Realizado"] = pd.to_datetime(
+                df_lista["Data/Hora Realizado"], dayfirst=True, errors="coerce"
+            ).dt.strftime("%d/%m/%Y %H:%M").fillna("")
 
-colunas_ordem = [
-    "OS", "Patio", "Ativo", "Criticidade", "Classificacao", "Descrição Longa",
-    "Data inicial programada", "Status da Operação", "Data/Hora Realizado",
-    "Concluído por", "Geolocalização de Baixa", "Evidência"
-]
+        colunas_ordem = [
+            "OS", "Patio", "Ativo", "Criticidade", "Classificacao", "Descrição Longa",
+            "Data inicial programada", "Status da Operação", "Data/Hora Realizado",
+            "Concluído por", "Geolocalização de Baixa", "Evidência"
+        ]
 
-for c in colunas_ordem:
-    if c not in df_lista.columns:
-        df_lista[c] = ""
+        for c in colunas_ordem:
+            if c not in df_lista.columns:
+                df_lista[c] = ""
 
-if not df_lista.empty:
-    df_styled = df_lista[colunas_ordem].style.set_properties(**{'text-align': 'center'}).set_table_styles(
-        [{'selector': 'th', 'props': [('text-align', 'center')]}]
-    )
+        if not df_lista.empty:
+            df_styled = df_lista[colunas_ordem].style.set_properties(**{'text-align': 'center'}).set_table_styles(
+                [{'selector': 'th', 'props': [('text-align', 'center')]}]
+            )
 
-    st.dataframe(
-        df_styled,
-        use_container_width=True,
-        height=400,
-        hide_index=True,
-        column_config={
-            "Evidência": st.column_config.LinkColumn("📷 Evidência", display_text="📷 Ver Foto")
-        }
-    )
+            st.dataframe(
+                df_styled,
+                use_container_width=True,
+                height=400,
+                hide_index=True,
+                column_config={
+                    "Evidência": st.column_config.LinkColumn("📷 Evidência", display_text="📷 Ver Foto")
+                }
+            )
 #endregion 10.2.4
 #endregion 10.2
 
@@ -3430,7 +3430,7 @@ if st.session_state.get("tela_atual") == "governanca":
 
     col_gov_t1, col_gov_t2 = st.columns([8, 2])
     with col_gov_t1:
-        st.title("🛡️ Governança e Auditoria")
+        st.title("🛡️ Governança")
     with col_gov_t2:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("⬅️ Voltar ao Painel", use_container_width=True):
