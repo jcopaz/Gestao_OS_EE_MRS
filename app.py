@@ -1458,6 +1458,222 @@ def render_tela_admin():
             else:
                 st.warning("A base de dados central está vazia.")
 #endregion 3.8.4
+
+#region 3.8.5: Importação de Baixas em Massa (IW47)
+    st.markdown("---")
+    st.subheader("📥 Importação de Baixas em Massa (IW47)")
+    st.markdown("Carregue a planilha **IW47** exportada do SAP para concluir as OS já executadas manualmente.")
+    st.caption("Colunas esperadas: **Nº pessoal** (A), **Nome do empregado** (B), **Ordem** (D), **Data de início de execução real** (F), **Hora de início** (G), **Data real do fim** (H), **Hora real do fim** (I), **Centro trab.(real)** (O)")
+
+    coord_baixa = st.selectbox("Coordenação das Baixas", ["Paranapiacaba", "Piaçaguera"], key="coord_baixa_massa")
+    arquivo_iw47 = st.file_uploader("Selecione a planilha IW47", type=["xlsx", "csv"], key="upload_iw47_massa")
+
+    if arquivo_iw47 is not None:
+        if st.button("🚀 Processar Baixas em Massa", use_container_width=True, type="primary", key="btn_processar_iw47"):
+            with st.spinner("Processando baixas da IW47..."):
+                try:
+                    # 1. Leitura
+                    if arquivo_iw47.name.lower().endswith(".csv"):
+                        df_iw = pd.read_csv(arquivo_iw47, sep=None, engine="python", encoding="utf-8-sig")
+                    else:
+                        df_iw = pd.read_excel(arquivo_iw47)
+
+                    df_iw.columns = [str(c).strip() for c in df_iw.columns]
+
+                    # 2. Identificar colunas por posição (SAP pode ter nomes variados)
+                    col_matricula = df_iw.columns[0]   # A: Nº pessoal
+                    col_nome      = df_iw.columns[1]   # B: Nome do empregado
+                    col_ordem     = df_iw.columns[3]   # D: Ordem
+                    col_dt_ini    = df_iw.columns[5]   # F: Data início execução real
+                    col_hr_ini    = df_iw.columns[6]   # G: Hora início (decimal)
+                    col_dt_fim    = df_iw.columns[7]   # H: Data real fim execução
+                    col_hr_fim    = df_iw.columns[8]   # I: Hora real fim (decimal)
+                    col_centro    = df_iw.columns[14]   # O: Centro trab.(real)
+
+                    df_iw[col_ordem] = df_iw[col_ordem].astype(str).str.strip()
+                    df_iw[col_matricula] = df_iw[col_matricula].astype(str).str.strip()
+                    df_iw[col_nome] = df_iw[col_nome].astype(str).str.strip()
+
+                    # 3. Converter horários decimais do Excel → HH:MM:SS
+                    def decimal_para_hms(val):
+                        try:
+                            frac = float(val)
+                            if frac < 0:
+                                frac = 0
+                            total_seg = int(round(frac * 86400))
+                            h = (total_seg // 3600) % 24
+                            m = (total_seg % 3600) // 60
+                            s = total_seg % 60
+                            return f"{h:02d}:{m:02d}:{s:02d}"
+                        except Exception:
+                            return "00:00:00"
+
+                    df_iw["_hr_ini_str"] = df_iw[col_hr_ini].apply(decimal_para_hms)
+                    df_iw["_hr_fim_str"] = df_iw[col_hr_fim].apply(decimal_para_hms)
+
+                    # 4. Formatar datas para dd/mm/yyyy
+                    def formatar_data(val):
+                        try:
+                            dt = pd.to_datetime(val, dayfirst=True, errors="coerce")
+                            if pd.isna(dt):
+                                dt = pd.to_datetime(val, errors="coerce")
+                            return dt.strftime("%d/%m/%Y") if pd.notna(dt) else ""
+                        except Exception:
+                            return ""
+
+                    df_iw["_dt_ini_br"] = df_iw[col_dt_ini].apply(formatar_data)
+                    df_iw["_dt_fim_br"] = df_iw[col_dt_fim].apply(formatar_data)
+
+                    # 5. Coordenação
+                    def mapear_coord(centro):
+                        c = str(centro).upper()
+                        if "IPG" in c or "PIACAGUERA" in c or "PIAÇAGUERA" in c:
+                            return "Piaçaguera"
+                        return "Paranapiacaba"
+
+                    df_iw["_coordenacao"] = df_iw[col_centro].apply(mapear_coord)
+
+                    # 6. Agrupar por OS → primeiro executante = concluido_por, demais = equipe
+                    grupos = df_iw.groupby(col_ordem)
+
+                    registros_baixa = []
+                    for os_id, grp in grupos:
+                        if not os_id or os_id == "nan":
+                            continue
+
+                        # Pega dados da primeira linha (horários e datas)
+                        first = grp.iloc[0]
+                        dt_ini_br = first["_dt_ini_br"]
+                        hr_ini    = first["_hr_ini_str"]
+                        dt_fim_br = first["_dt_fim_br"]
+                        hr_fim    = first["_hr_fim_str"]
+                        coord     = first["_coordenacao"]
+
+                        # Executantes únicos (por matrícula)
+                        executantes = grp[[col_matricula, col_nome]].drop_duplicates(subset=[col_matricula])
+                        principal_mat = str(executantes.iloc[0][col_matricula]).strip()
+
+                        if len(executantes) > 1:
+                            co_exec = [str(r[col_matricula]).strip() for _, r in executantes.iloc[1:].iterrows()]
+                            equipe_str = ", ".join(co_exec)
+                        else:
+                            equipe_str = "Sozinho"
+
+                        # Concatena data/hora para realizado_em (formato do app)
+                        realizado_em = f"{dt_fim_br} {hr_fim[:5]}" if dt_fim_br else ""
+
+                        registros_baixa.append({
+                            "os": os_id,
+                            "concluido_por": principal_mat,
+                            "equipe": equipe_str,
+                            "realizado_em": realizado_em,
+                            "coordenacao": coord,
+                            "data_inicio": dt_ini_br,
+                            "hora_inicio": hr_ini,
+                            "data_fim": dt_fim_br,
+                            "hora_fim": hr_fim,
+                        })
+
+                    if not registros_baixa:
+                        st.warning("⚠️ Nenhuma OS válida encontrada na planilha.")
+                    else:
+                        # 7. Cruzar com base de OS para determinar status
+                        conn = get_connection()
+                        try:
+                            df_os_prog = pd.read_sql_query(
+                                "SELECT os, dados_completos->>'Data inicial programada' AS dt_prog FROM os_programadas",
+                                conn
+                            )
+                        finally:
+                            release_connection(conn)
+
+                        mapa_dt_prog = {}
+                        for _, row_p in df_os_prog.iterrows():
+                            os_key = str(row_p["os"]).strip()
+                            try:
+                                mapa_dt_prog[os_key] = pd.to_datetime(row_p["dt_prog"], dayfirst=True, errors="coerce")
+                            except Exception:
+                                mapa_dt_prog[os_key] = pd.NaT
+
+                        # 8. Buscar OS que já têm baixa no banco (não sobrescrever)
+                        conn2 = get_connection()
+                        try:
+                            df_ja_baixadas = pd.read_sql_query("SELECT os FROM baixas", conn2)
+                        finally:
+                            release_connection(conn2)
+                        os_ja_baixadas = set(df_ja_baixadas["os"].astype(str).str.strip().tolist()) if not df_ja_baixadas.empty else set()
+
+                        # Filtra apenas OS que ainda NÃO foram baixadas
+                        registros_novos = [r for r in registros_baixa if r["os"] not in os_ja_baixadas]
+                        os_ignoradas = len(registros_baixa) - len(registros_novos)
+                        registros_baixa = registros_novos
+
+                        if os_ignoradas > 0:
+                            st.info(f"ℹ️ **{os_ignoradas} OS** já possuem baixa no sistema e serão **preservadas** (GPS/foto não serão sobrescritas).")
+
+                        if not registros_baixa:
+                            st.warning("⚠️ Todas as OS da planilha já possuem baixa no sistema. Nenhuma nova baixa gravada.")
+                        else:
+                            barra = st.progress(0, text="Gravando baixas...")
+                            total = len(registros_baixa)
+                            gravados = 0
+                            erros_gravar = 0
+
+                        for idx, reg in enumerate(registros_baixa):
+                            # Determinar status
+                            dt_prog = mapa_dt_prog.get(reg["os"], pd.NaT)
+                            try:
+                                dt_exec = pd.to_datetime(reg["data_fim"], format="%d/%m/%Y", errors="coerce")
+                            except Exception:
+                                dt_exec = pd.NaT
+
+                            if pd.isna(dt_prog) or pd.isna(dt_exec):
+                                status = "Realizado"
+                            elif dt_exec.date() <= dt_prog.date():
+                                status = "Realizado"
+                            else:
+                                status = "Realizado Fora da Data de Programação"
+
+                            try:
+                                upsert_baixa(
+                                    os_id=reg["os"],
+                                    status=status,
+                                    realizado_em_str=reg["realizado_em"],
+                                    coordenacao=reg["coordenacao"],
+                                    concluido_por=reg["concluido_por"],
+                                    geolocalizacao_baixa="Baixa Manual",
+                                    equipe=reg["equipe"],
+                                    data_inicio=reg["data_inicio"],
+                                    hora_inicio=reg["hora_inicio"],
+                                    data_fim=reg["data_fim"],
+                                    hora_fim=reg["hora_fim"]
+                                )
+                                gravados += 1
+                            except Exception as e_upsert:
+                                erros_gravar += 1
+
+                            if (idx + 1) % 50 == 0 or (idx + 1) == total:
+                                barra.progress(min((idx + 1) / total, 1.0), text=f"Gravando... {idx + 1}/{total}")
+
+                        barra.progress(1.0, text="Concluído!")
+
+                        # Resumo
+                        st.success(f"✅ Importação concluída! **{gravados}** OS gravadas com sucesso.")
+                        if erros_gravar > 0:
+                            st.warning(f"⚠️ {erros_gravar} OS com erro na gravação.")
+
+                        total_linhas = len(df_iw)
+                        os_unicas = df_iw[col_ordem].nunique()
+                        st.info(f"📊 Resumo: **{total_linhas}** linhas processadas → **{os_unicas}** OS únicas → **{gravados}** baixas gravadas")
+
+                        st.cache_data.clear()
+                        time.sleep(2)
+                        st.rerun()
+
+                except Exception as e:
+                    st.error(f"❌ Erro ao processar a planilha IW47: {e}")
+    #endregion 3.8.5
+
 #endregion 3.8
 #endregion SESSÃO 3
 
@@ -3077,7 +3293,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                 df_visao = df_visao[df_visao["Tipo_Intervalo"] == _filtro_int_campo].copy()
                 if "df_filtrado" in locals():
                     df_filtrado = df_filtrado[df_filtrado["Tipo_Intervalo"] == _filtro_int_campo].copy()
-                    
+
             mostrar_calendario = st.toggle("📅 Mostrar Agenda Mensal de Demanda por Pátio e Turno", value=False)
 
             if mostrar_calendario:
