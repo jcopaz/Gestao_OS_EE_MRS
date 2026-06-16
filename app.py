@@ -1308,28 +1308,45 @@ def render_tela_admin():
                         xls = pd.ExcelFile(arquivo_mapa, engine="openpyxl")
                         registros = []
                         
-                        # Aba Ativos_SP
+                        
+# Aba Ativos_SP (coluna A = Local de instalação, coluna B = Denominação, coluna K = Pátio)
                         if "Ativos_SP" in xls.sheet_names:
                             df_at = pd.read_excel(xls, sheet_name="Ativos_SP")
-                            col_chave_at = df_at.columns[0]
-                            col_patio_at = df_at.columns[10]
+                            col_chave_a = df_at.columns[0]   # Coluna A: Local de instalação
+                            col_chave_b = df_at.columns[1]   # Coluna B: Denom.loc.instalação
+                            col_patio_at = df_at.columns[10]  # Coluna K: Pátio
                             for _, row in df_at.iterrows():
-                                chave = str(row[col_chave_at]).strip()
                                 patio = str(row[col_patio_at]).strip()
-                                if chave and patio and chave != "nan" and patio != "nan":
-                                    registros.append((chave, patio, "Ativo"))
-                        
-                        # Aba Equipamento_SP (aceita ambos os nomes)
+                                if not patio or patio == "nan":
+                                    continue
+                                # Chave primária: coluna A (Local de instalação)
+                                chave_a = str(row[col_chave_a]).strip()
+                                if chave_a and chave_a != "nan":
+                                    registros.append((chave_a, patio, "Ativo"))
+                                # Chave secundária: coluna B (Denominação) — é o que aparece na OS
+                                chave_b = str(row[col_chave_b]).strip()
+                                if chave_b and chave_b != "nan" and chave_b != chave_a:
+                                    registros.append((chave_b, patio, "Ativo_Denom"))
+
+                        # Aba Equipamento_SP (coluna A = Equipamento, coluna B = Descrição, coluna G = Pátio)
                         for nome_aba in ["Equipamento_SP", "Equipamentos_SP"]:
                             if nome_aba in xls.sheet_names:
                                 df_eq = pd.read_excel(xls, sheet_name=nome_aba)
-                                col_chave_eq = df_eq.columns[0]
-                                col_patio_eq = df_eq.columns[6]
+                                col_chave_eq_a = df_eq.columns[0]  # Coluna A: Equipamento
+                                col_chave_eq_b = df_eq.columns[1]  # Coluna B: Descrição do objeto
+                                col_patio_eq = df_eq.columns[6]    # Coluna G: Pátio
                                 for _, row in df_eq.iterrows():
-                                    chave = str(row[col_chave_eq]).strip()
                                     patio = str(row[col_patio_eq]).strip()
-                                    if chave and patio and chave != "nan" and patio != "nan":
-                                        registros.append((chave, patio, "Equipamento"))
+                                    if not patio or patio == "nan":
+                                        continue
+                                    # Chave primária: coluna A (Equipamento)
+                                    chave_a = str(row[col_chave_eq_a]).strip()
+                                    if chave_a and chave_a != "nan":
+                                        registros.append((chave_a, patio, "Equipamento"))
+                                    # Chave secundária: coluna B (Descrição) — é o que aparece na OS
+                                    chave_b = str(row[col_chave_eq_b]).strip()
+                                    if chave_b and chave_b != "nan" and chave_b != chave_a:
+                                        registros.append((chave_b, patio, "Equipamento_Denom"))
                                 break
                         
                         if not registros:
@@ -1582,14 +1599,14 @@ def tratar_df_os(df: pd.DataFrame):
     df["PRIORIDADE_CAN"] = df[col_prioridade].astype(str).str.strip()
     df["HXH_CAN"] = pd.to_numeric(df[col_hxh], errors="coerce").fillna(0) if col_hxh else 0.0
     
-    # --- RESOLUÇÃO INTELIGENTE DE PÁTIO (lookup + scan + fallback) ---
+# --- RESOLUÇÃO INTELIGENTE DE PÁTIO (lookup + denominação + scan + fallback) ---
     _mapa_patios = carregar_mapeamento_patios()
-    _patios_validos = set(COORDENADAS_FIXAS.keys())
+    _patios_validos = set(k for k in COORDENADAS_FIXAS.keys() if not k.startswith("Sede"))
 
     def _resolver_patio(ativo_str: str) -> str:
         ativo_upper = str(ativo_str).strip().upper()
 
-        # 1) Busca exata no mapeamento do banco
+        # 1) Busca exata no mapeamento do banco (coluna A ou B da planilha)
         if _mapa_patios and ativo_upper in _mapa_patios:
             return _mapa_patios[ativo_upper]
 
@@ -1598,12 +1615,19 @@ def tratar_df_os(df: pd.DataFrame):
         if prefixo in _patios_validos:
             return prefixo
 
-        # 3) Scan: procura qualquer pátio válido dentro do texto do ativo
+        # 3) Busca parcial: verifica se o ativo CONTÉM alguma chave do mapeamento
+        #    Ex: OS tem "TRP QCA01A" e mapeamento tem "TRP QCA01A" como chave
+        if _mapa_patios:
+            for chave_mapa, patio_mapa in _mapa_patios.items():
+                if chave_mapa in ativo_upper or ativo_upper in chave_mapa:
+                    return patio_mapa
+
+        # 4) Scan: procura qualquer pátio válido dentro do texto do ativo
         for patio_candidato in sorted(_patios_validos, key=len, reverse=True):
             if patio_candidato in ativo_upper:
                 return patio_candidato
 
-        # 4) Nada encontrado
+        # 5) Nada encontrado
         return "N/D"
 
     df["PATIO_CAN"] = df["ATIVO_CAN"].apply(_resolver_patio)
