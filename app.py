@@ -749,10 +749,12 @@ def preparar_df_visao(df_base: pd.DataFrame, filtro_visao: str) -> pd.DataFrame:
     df_visao = df_base.copy()
 
     if filtro_visao != "Todas":
-        _kw_map = {"Paranapiacaba": "paranap", "Piaçaguera": "piac"}
-        _kw = _kw_map.get(filtro_visao, filtro_visao.lower()[:5])
+        import unicodedata
+        def _normalizar(s):
+            return unicodedata.normalize('NFKD', str(s).lower()).encode('ASCII', 'ignore').decode('ASCII')
+        _kw = _normalizar(filtro_visao)[:5]
         df_visao = df_visao[
-            df_visao["Coordenacao"].str.lower().str.contains(_kw, na=False, regex=False)
+            df_visao["Coordenacao"].apply(lambda x: _kw in _normalizar(x))
         ].copy()
 
     df_visao["Status_norm"] = df_visao["Status da Operação"].astype(str).str.strip().str.upper()
@@ -2031,10 +2033,12 @@ def carregar_base_sem_overlay(
 
     # 4. Aplica o filtro de escopo de quem está logado
     if escopo_usuario != "Todas":
-        _kw_map = {"Paranapiacaba": "paranap", "Piaçaguera": "piac"}
-        _kw = _kw_map.get(escopo_usuario, escopo_usuario.lower()[:5])
+        import unicodedata
+        def _normalizar(s):
+            return unicodedata.normalize('NFKD', str(s).lower()).encode('ASCII', 'ignore').decode('ASCII')
+        _kw = _normalizar(escopo_usuario)[:5]
         df_base_final = df_base_final[
-            df_base_final["Coordenacao"].str.lower().str.contains(_kw, na=False, regex=False)
+            df_base_final["Coordenacao"].apply(lambda x: _kw in _normalizar(x))
         ]
 
     return df_base_final
@@ -2057,9 +2061,11 @@ def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, bai
     df_base["Ordem servico"] = df_base["Ordem servico"].astype(str)
 
     if escopo_usuario != "Todas":
-        _kw_map = {"Paranapiacaba": "paranap", "Piaçaguera": "piac"}
-        _kw = _kw_map.get(escopo_usuario, escopo_usuario.lower()[:5])
-        df_baixas = df_baixas[df_baixas["coordenacao"].str.lower().str.contains(_kw, na=False, regex=False)]
+        import unicodedata
+        def _normalizar(s):
+            return unicodedata.normalize('NFKD', str(s).lower()).encode('ASCII', 'ignore').decode('ASCII')
+        _kw = _normalizar(escopo_usuario)[:5]
+        df_baixas = df_baixas[df_baixas["coordenacao"].apply(lambda x: _kw in _normalizar(x))]
 
     # Correção Ponto 3: Incluindo a geolocalização no cruzamento
     colunas_overlay = ["Status da Operação", "Data/Hora Realizado", "Concluído por", "Geolocalização de Baixa"]
