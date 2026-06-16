@@ -1614,13 +1614,11 @@ def render_tela_admin():
                         if not registros_baixa:
                             st.warning("⚠️ Todas as OS da planilha já possuem baixa no sistema. Nenhuma nova baixa gravada.")
                         else:
-                            barra = st.progress(0, text="Gravando baixas...")
-                            total = len(registros_baixa)
-                            gravados = 0
-                            erros_gravar = 0
+                            barra = st.progress(0, text="Preparando gravação em lote...")
 
-                        for idx, reg in enumerate(registros_baixa):
-                            # Determinar status
+                        # Determinar status de cada OS
+                        lote_valores = []
+                        for reg in registros_baixa:
                             dt_prog = mapa_dt_prog.get(reg["os"], pd.NaT)
                             try:
                                 dt_exec = pd.to_datetime(reg["data_fim"], format="%d/%m/%Y", errors="coerce")
@@ -1634,26 +1632,49 @@ def render_tela_admin():
                             else:
                                 status = "Realizado Fora da Data de Programação"
 
-                            try:
-                                upsert_baixa(
-                                    os_id=reg["os"],
-                                    status=status,
-                                    realizado_em_str=reg["realizado_em"],
-                                    coordenacao=reg["coordenacao"],
-                                    concluido_por=reg["concluido_por"],
-                                    geolocalizacao_baixa="Baixa Manual",
-                                    equipe=reg["equipe"],
-                                    data_inicio=reg["data_inicio"],
-                                    hora_inicio=reg["hora_inicio"],
-                                    data_fim=reg["data_fim"],
-                                    hora_fim=reg["hora_fim"]
-                                )
-                                gravados += 1
-                            except Exception as e_upsert:
-                                erros_gravar += 1
+                            lote_valores.append((
+                                reg["os"], status, reg["realizado_em"], reg["coordenacao"],
+                                reg["concluido_por"], "Baixa Manual", reg["equipe"],
+                                reg["data_inicio"], reg["hora_inicio"],
+                                reg["data_fim"], reg["hora_fim"]
+                            ))
 
-                            if (idx + 1) % 50 == 0 or (idx + 1) == total:
-                                barra.progress(min((idx + 1) / total, 1.0), text=f"Gravando... {idx + 1}/{total}")
+                        barra.progress(0.3, text="Gravando no banco em lote...")
+
+                        conn_lote = get_connection()
+                        try:
+                            cur_lote = conn_lote.cursor()
+                            execute_values(
+                                cur_lote,
+                                """
+                                INSERT INTO baixas (os, status, realizado_em, coordenacao, concluido_por,
+                                    geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim)
+                                VALUES %s
+                                ON CONFLICT (os) DO UPDATE SET
+                                    status = EXCLUDED.status,
+                                    realizado_em = EXCLUDED.realizado_em,
+                                    concluido_por = EXCLUDED.concluido_por,
+                                    geolocalizacao_baixa = EXCLUDED.geolocalizacao_baixa,
+                                    equipe = EXCLUDED.equipe,
+                                    data_inicio = EXCLUDED.data_inicio,
+                                    hora_inicio = EXCLUDED.hora_inicio,
+                                    data_fim = EXCLUDED.data_fim,
+                                    hora_fim = EXCLUDED.hora_fim
+                                """,
+                                lote_valores,
+                                page_size=500
+                            )
+                            conn_lote.commit()
+                            cur_lote.close()
+                            gravados = len(lote_valores)
+                            erros_gravar = 0
+                        except Exception as e_lote:
+                            conn_lote.rollback()
+                            gravados = 0
+                            erros_gravar = len(lote_valores)
+                            st.error(f"❌ Erro na gravação em lote: {e_lote}")
+                        finally:
+                            release_connection(conn_lote)
 
                         barra.progress(1.0, text="Concluído!")
 
