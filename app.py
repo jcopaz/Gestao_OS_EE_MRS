@@ -767,10 +767,11 @@ def aplicar_filtros_sidebar(
     patios_selecionados: list,
     classif_selecionadas: list,
     turnos_selecionados: list,
-    start_date,
-    end_date,
-    status_sel: str
+    start_date, end_date,
+    status_sel: str,
+    intervalo_sel: str = "Todas"
 ) -> pd.DataFrame:
+
     df_filtrado = df_visao[
         (df_visao["Patio"].isin(patios_selecionados)) &
         (df_visao["Classificacao"].isin(classif_selecionadas)) &
@@ -791,12 +792,20 @@ def aplicar_filtros_sidebar(
         df_filtrado = df_filtrado[
             df_filtrado["Status_norm"].isin(_status_atraso)
         ]
+
     elif status_sel == "Pendentes":
         df_filtrado = df_filtrado[
             df_filtrado["Status_norm"].isin(_status_aberto)
         ]
 
+    # --- FILTRO DE INTERVALO ---
+    if intervalo_sel == "Com Intervalo" and "Tipo_Intervalo" in df_filtrado.columns:
+        df_filtrado = df_filtrado[df_filtrado["Tipo_Intervalo"] == "Com Intervalo"]
+    elif intervalo_sel == "Sem Intervalo" and "Tipo_Intervalo" in df_filtrado.columns:
+        df_filtrado = df_filtrado[df_filtrado["Tipo_Intervalo"] == "Sem Intervalo"]
+
     return df_filtrado
+
 #endregion
 
 #region 3.7: Calendário Mensal de Demanda por Pátio
@@ -1644,6 +1653,18 @@ def tratar_df_os(df: pd.DataFrame):
 
     df["DATA_PROG_CAN"] = df[col_data_prog].apply(parse_data_programada)
     df["DESC_LONGA_CAN"] = df[col_desc].astype(str).str.strip() if col_desc else ""
+    # --- TIPO DE INTERVALO (Sem Intervalo / Com Intervalo) ---
+    col_sem_int = pick_first_existing(df, ["SEM INTERVALO", "S_I", "SEM_INTERVALO"])
+    col_com_int = pick_first_existing(df, ["COM INTERVALO", "C_I", "COM_INTERVALO"])
+    def _classificar_intervalo(row):
+        si = str(row[col_sem_int]).strip().upper() if col_sem_int and pd.notna(row.get(col_sem_int)) else ""
+        ci = str(row[col_com_int]).strip().upper() if col_com_int and pd.notna(row.get(col_com_int)) else ""
+        if si in ("S_I", "SI", "S"):
+            return "Sem Intervalo"
+        if ci in ("C_I", "CI", "C"):
+            return "Com Intervalo"
+        return "N/D"
+    df["TIPO_INTERVALO_CAN"] = df.apply(_classificar_intervalo, axis=1) if (col_sem_int or col_com_int) else "N/D"
 
     df["Classificacao"] = df["ATIVIDADE_CAN"].apply(classificar_atividade)
     crit = df["PRIORIDADE_CAN"].apply(extrair_criticidade)
@@ -1686,6 +1707,7 @@ def tratar_df_os(df: pd.DataFrame):
         "Hxh Plano": df["HXH_CAN"],
         "Criticidade_rank": df["Criticidade_rank"],
         "Nivel_Prioridade": df["Nivel_Prioridade"],
+        "TIPO_INTERVALO_CAN": df["TIPO_INTERVALO_CAN"],
     })
 
     return df_out
@@ -2250,6 +2272,13 @@ def fragmento_filtros_sidebar_seguro():
         turnos_default = _sanear_lista_filtro("filtro_turnos", lista_turnos, lista_turnos)
         st.multiselect("Turno", lista_turnos, default=turnos_default, key="filtro_turnos")
 
+        intervalo_opcoes = ["Todas", "Com Intervalo", "Sem Intervalo"]
+        intervalo_default = st.session_state.get("filtro_intervalo_sel", "Todas")
+        if intervalo_default not in intervalo_opcoes:
+            intervalo_default = "Todas"
+        st.session_state["filtro_intervalo_sel"] = intervalo_default
+        st.selectbox("Tipo de Intervalo", intervalo_opcoes, index=intervalo_opcoes.index(intervalo_default), key="filtro_intervalo_sel")
+
         status_default = st.session_state.get("filtro_status_sel", "Todos")
         if status_default not in status_opcoes:
             status_default = "Todos"
@@ -2274,6 +2303,8 @@ classif_selecionadas = st.session_state.get("filtro_classificacoes", list(lista_
 turnos_selecionados = st.session_state.get("filtro_turnos", list(lista_turnos))
 status_sel = st.session_state.get("filtro_status_sel", "Todos")
 
+intervalo_sel = st.session_state.get("filtro_intervalo_sel", "Todas")
+
 df_filtrado = aplicar_filtros_sidebar(
     df_visao=df_visao,
     patios_selecionados=patios_selecionados,
@@ -2281,7 +2312,8 @@ df_filtrado = aplicar_filtros_sidebar(
     turnos_selecionados=turnos_selecionados,
     start_date=start_date,
     end_date=end_date,
-    status_sel=status_sel
+    status_sel=status_sel,
+    intervalo_sel=intervalo_sel
 )
 #endregion
 #endregion
@@ -3020,6 +3052,32 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
             if data_ref_card.year != int(st.session_state["cal_ref_ano"]) or data_ref_card.month != int(st.session_state["cal_ref_mes"]):
                 data_ref_card = dia_ref_default
 
+            # --- FILTRO DE INTERVALO NA ROTEIRIZAÇÃO ---
+            st.markdown("#### 🔧 Tipo de OS")
+            if "filtro_intervalo_campo" not in st.session_state:
+                st.session_state["filtro_intervalo_campo"] = "Todas"
+            col_int1, col_int2, col_int3 = st.columns(3)
+            with col_int1:
+                if st.button("📋 Todas", use_container_width=True, type="primary" if st.session_state["filtro_intervalo_campo"] == "Todas" else "secondary"):
+                    st.session_state["filtro_intervalo_campo"] = "Todas"
+                    st.rerun()
+            with col_int2:
+                if st.button("🔒 Com Intervalo", use_container_width=True, type="primary" if st.session_state["filtro_intervalo_campo"] == "Com Intervalo" else "secondary"):
+                    st.session_state["filtro_intervalo_campo"] = "Com Intervalo"
+                    st.rerun()
+            with col_int3:
+                if st.button("🔓 Sem Intervalo", use_container_width=True, type="primary" if st.session_state["filtro_intervalo_campo"] == "Sem Intervalo" else "secondary"):
+                    st.session_state["filtro_intervalo_campo"] = "Sem Intervalo"
+                    st.rerun()
+            st.markdown("---")
+
+            # Aplica filtro de intervalo em toda a Aba 2
+            _filtro_int_campo = st.session_state.get("filtro_intervalo_campo", "Todas")
+            if _filtro_int_campo != "Todas" and "Tipo_Intervalo" in df_visao.columns:
+                df_visao = df_visao[df_visao["Tipo_Intervalo"] == _filtro_int_campo].copy()
+                if "df_filtrado" in locals():
+                    df_filtrado = df_filtrado[df_filtrado["Tipo_Intervalo"] == _filtro_int_campo].copy()
+                    
             mostrar_calendario = st.toggle("📅 Mostrar Agenda Mensal de Demanda por Pátio e Turno", value=False)
 
             if mostrar_calendario:
