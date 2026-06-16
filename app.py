@@ -750,7 +750,7 @@ def preparar_df_visao(df_base: pd.DataFrame, filtro_visao: str) -> pd.DataFrame:
 
     if filtro_visao != "Todas":
         df_visao = df_visao[
-            df_visao["Coordenacao"].str.contains(filtro_visao, case=False, na=False)
+            df_visao["Coordenacao"].str.contains(filtro_visao, case=False, na=False, regex=False)
         ].copy()
 
     df_visao["Status_norm"] = df_visao["Status da Operação"].astype(str).str.strip().str.upper()
@@ -1200,11 +1200,10 @@ def render_tela_admin():
                                 """
                                 INSERT INTO os_programadas (os, mes_referencia, coordenacao, dados_completos)
                                 VALUES %s
-                                ON CONFLICT (os) DO UPDATE 
-                                SET mes_referencia = EXCLUDED.mes_referencia,
+                                ON CONFLICT (os) DO UPDATE SET
+                                    mes_referencia = EXCLUDED.mes_referencia,
                                     coordenacao = EXCLUDED.coordenacao,
-                                    dados_completos = EXCLUDED.dados_completos,
-                                    data_upload = CURRENT_TIMESTAMP
+                                    dados_completos = EXCLUDED.dados_completos
                                 """,
                                 lote,
                                 page_size=lote_size
@@ -1247,28 +1246,26 @@ def render_tela_admin():
         try:
             if ver_tudo:
                 query_hist = """
-                    SELECT 
-                        coordenacao AS "Coordenação",
-                        MAX(data_upload) AS "Último Upload",
-                        COUNT(*) AS "Linhas Carregadas"
-                    FROM os_programadas
-                    GROUP BY coordenacao
-                    ORDER BY MAX(data_upload) DESC
-                """
+                        SELECT coordenacao AS "Coordenação",
+                            MAX(data_upload AT TIME ZONE 'America/Sao_Paulo') AS "Último Upload",
+                            COUNT(*) AS "Linhas Carregadas"
+                        FROM os_programadas
+                        GROUP BY coordenacao
+                        ORDER BY MAX(data_upload) DESC
+                    """
                 df_hist = pd.read_sql_query(query_hist, conn)
             else:
                 # Filtra pela coordenação do usuário
                 filtro_coord = escopo_user if escopo_user else "Paranapiacaba"
                 query_hist = """
-                    SELECT 
-                        coordenacao AS "Coordenação",
-                        MAX(data_upload) AS "Último Upload",
-                        COUNT(*) AS "Linhas Carregadas"
-                    FROM os_programadas
-                    WHERE coordenacao = %s
-                    GROUP BY coordenacao
-                    ORDER BY MAX(data_upload) DESC
-                """
+                        SELECT coordenacao AS "Coordenação",
+                            MAX(data_upload AT TIME ZONE 'America/Sao_Paulo') AS "Último Upload",
+                            COUNT(*) AS "Linhas Carregadas"
+                        FROM os_programadas
+                        WHERE coordenacao = %s
+                        GROUP BY coordenacao
+                        ORDER BY MAX(data_upload) DESC
+                    """
                 df_hist = pd.read_sql_query(query_hist, conn, params=(filtro_coord,))
         finally:
             release_connection(conn)
@@ -2033,7 +2030,7 @@ def carregar_base_sem_overlay(
     # 4. Aplica o filtro de escopo de quem está logado
     if escopo_usuario != "Todas":
         df_base_final = df_base_final[
-            df_base_final["Coordenacao"].str.contains(escopo_usuario, case=False, na=False)
+            df_base_final["Coordenacao"].str.contains(escopo_usuario, case=False, na=False, regex=False)
         ]
 
     return df_base_final
