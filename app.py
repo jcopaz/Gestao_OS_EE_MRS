@@ -68,49 +68,30 @@ def init_db():
         # Criação padrão das tabelas...
         cur.execute("""
             CREATE TABLE IF NOT EXISTS baixas (
-                os VARCHAR(255) PRIMARY KEY,
-                status VARCHAR(255) NOT NULL,
-                realizado_em VARCHAR(255) NOT NULL,
-                coordenacao VARCHAR(255) NOT NULL,
-                concluido_por VARCHAR(255)
+                os VARCHAR(255) PRIMARY KEY, status VARCHAR(255) NOT NULL, 
+                realizado_em VARCHAR(255) NOT NULL, coordenacao VARCHAR(255) NOT NULL, concluido_por VARCHAR(255)
             );
         """)
-
         cur.execute("""
             CREATE TABLE IF NOT EXISTS usuarios (
-                username VARCHAR(255) PRIMARY KEY,
-                nome VARCHAR(255),
-                senha_hash VARCHAR(255) NOT NULL,
-                perfil VARCHAR(50) NOT NULL,
-                escopo VARCHAR(50) NOT NULL,
-                palavra_recuperacao VARCHAR(255) DEFAULT 'PENDENTE',
-                dica_recuperacao VARCHAR(255) DEFAULT 'PENDENTE',
-                reset_obrigatorio INTEGER DEFAULT 1,
-                coordenacao_padrao VARCHAR(100) DEFAULT 'ICG'
+                username VARCHAR(255) PRIMARY KEY, senha_hash VARCHAR(255) NOT NULL, 
+                perfil VARCHAR(50) NOT NULL, escopo VARCHAR(50) NOT NULL,
+                palavra_recuperacao VARCHAR(255) DEFAULT 'PENDENTE', dica_recuperacao VARCHAR(255) DEFAULT 'PENDENTE', 
+                reset_obrigatorio INTEGER DEFAULT 1, coordenacao_padrao VARCHAR(100) DEFAULT 'ICG'
             );
         """)
-
         cur.execute("""
             CREATE TABLE IF NOT EXISTS logs_acesso (
-                id SERIAL PRIMARY KEY,
-                username VARCHAR(255) NOT NULL,
-                data_hora_login TIMESTAMP NOT NULL,
-                data_hora_logout TIMESTAMP,
-                geolocalizacao_login VARCHAR(255),
-                sessao_ativa BOOLEAN DEFAULT TRUE
+                id SERIAL PRIMARY KEY, username VARCHAR(255) NOT NULL, data_hora_login TIMESTAMP NOT NULL,
+                data_hora_logout TIMESTAMP, geolocalizacao_login VARCHAR(255), sessao_ativa BOOLEAN DEFAULT TRUE
             );
         """)
-
         cur.execute("""
             CREATE TABLE IF NOT EXISTS os_programadas (
-                id SERIAL PRIMARY KEY,
-                os VARCHAR(255) UNIQUE NOT NULL,
-                mes_referencia VARCHAR(50),
-                dados_completos JSONB,
-                data_upload TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                id SERIAL PRIMARY KEY, os VARCHAR(255) UNIQUE NOT NULL, mes_referencia VARCHAR(50),
+                dados_completos JSONB, data_upload TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
-
         cur.execute("""
             CREATE TABLE IF NOT EXISTS evidencias (
                 id SERIAL PRIMARY KEY,
@@ -124,7 +105,6 @@ def init_db():
                 UNIQUE(ativo, atividade)
             );
         """)
-
         cur.execute("""
             CREATE TABLE IF NOT EXISTS mapeamento_patios (
                 ativo_chave VARCHAR(500) PRIMARY KEY,
@@ -133,22 +113,15 @@ def init_db():
                 data_upload TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
-
+        
         # --- ATUALIZAÇÕES AUTOMÁTICAS DE ESTRUTURA ---
         try:
-            cur.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS nome VARCHAR(255);")
-        except Exception:
-            conn.rollback()
-
-        try:
             cur.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS governanca VARCHAR(255) DEFAULT 'Painel Gerencial,Mapa de Campo';")
-        except Exception:
-            conn.rollback()
-
+        except Exception: conn.rollback()
+        
         try:
             cur.execute("ALTER TABLE os_programadas ADD COLUMN IF NOT EXISTS coordenacao VARCHAR(100);")
-        except Exception:
-            conn.rollback()
+        except Exception: conn.rollback()
 
         try:
             cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS geolocalizacao_baixa VARCHAR(255);")
@@ -157,27 +130,24 @@ def init_db():
             cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS hora_inicio VARCHAR(50);")
             cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS data_fim VARCHAR(50);")
             cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS hora_fim VARCHAR(50);")
-        except Exception:
-            conn.rollback()
-
+        except Exception: conn.rollback()
+        
         # Criar o admin mestre se não existir
         cur.execute("SELECT COUNT(*) FROM usuarios")
         if cur.fetchone()[0] == 0:
             cur.execute("""
-                INSERT INTO usuarios (username, nome, senha_hash, perfil, escopo, reset_obrigatorio, governanca)
-                VALUES (%s, %s, %s, %s, %s, 1, %s)
-            """, ('admin', 'Administrador', hash_senha('mrs123'), 'Gerência', 'Todas', 'Painel Gerencial,Mapa de Campo,Upload de Dados,Gestão de Usuários'))
-
+                INSERT INTO usuarios (username, senha_hash, perfil, escopo, reset_obrigatorio, governanca) 
+                VALUES (%s, %s, %s, %s, 1, %s)
+            """, ('admin', hash_senha('mrs123'), 'Gerência', 'Todas', 'Painel Gerencial,Mapa de Campo,Upload de Dados,Gestão de Usuários'))
+            
         conn.commit()
         cur.close()
-
     except Exception as e:
         import logging
         logging.warning(f"[init_db] Erro na inicialização do banco: {e}")
     finally:
         if conn is not None:
             release_connection(conn)
-
 init_db()
 #endregion 1.4
 
@@ -530,15 +500,18 @@ def tentar_gps_uma_vez():
 #endregion 3.1.6
 
 #region 3.2: Persistência (SQLite/Neon)
-def upsert_baixa(os_id: str, status: str, realizado_em_str: str, coordenacao: str, concluido_por: str, geolocalizacao_baixa: str = "", equipe: str = "", data_inicio: str = "", hora_inicio: str = "", data_fim: str = "", hora_fim: str = ""):
+
+def upsert_baixa(os_id: str, status: str, realizado_em_str: str, coordenacao: str, concluido_por: str,
+                 geolocalizacao_baixa: str = "", equipe: str = "",
+                 data_inicio: str = "", hora_inicio: str = "",
+                 data_fim: str = "", hora_fim: str = ""):
     conn = get_connection()
     try:
         cur = conn.cursor()
         cur.execute("""
-            INSERT INTO baixas (
-                os, status, realizado_em, coordenacao, concluido_por,
-                geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim
-            )
+            INSERT INTO baixas (os, status, realizado_em, coordenacao, concluido_por,
+                                geolocalizacao_baixa, equipe, data_inicio, hora_inicio,
+                                data_fim, hora_fim)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (os) DO UPDATE SET
                 status = EXCLUDED.status,
@@ -550,48 +523,26 @@ def upsert_baixa(os_id: str, status: str, realizado_em_str: str, coordenacao: st
                 hora_inicio = EXCLUDED.hora_inicio,
                 data_fim = EXCLUDED.data_fim,
                 hora_fim = EXCLUDED.hora_fim;
-        """, (
-            str(os_id), str(status), str(realizado_em_str), str(coordenacao), str(concluido_por),
-            str(geolocalizacao_baixa), str(equipe), str(data_inicio), str(hora_inicio), str(data_fim), str(hora_fim)
-        ))
+        """, (str(os_id), str(status), str(realizado_em_str), str(coordenacao),
+              str(concluido_por), str(geolocalizacao_baixa), str(equipe),
+              str(data_inicio), str(hora_inicio), str(data_fim), str(hora_fim)))
         conn.commit()
         cur.close()
     finally:
         release_connection(conn)
 
+
 def carregar_baixas_df() -> pd.DataFrame:
     conn = get_connection()
     try:
-        df = pd.read_sql_query(
-            "SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa FROM baixas",
-            conn
-        )
+        df = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa FROM baixas", conn)
     finally:
         release_connection(conn)
-
     if df.empty:
         return df
-
     df["os"] = df["os"].astype(str)
     return df
 
-@st.cache_data(show_spinner=False, ttl=300)
-def carregar_usuarios_nomes_df() -> pd.DataFrame:
-    conn = get_connection()
-    try:
-        df = pd.read_sql_query(
-            "SELECT username, nome FROM usuarios",
-            conn
-        )
-    finally:
-        release_connection(conn)
-
-    if df.empty:
-        return pd.DataFrame(columns=["username", "nome"])
-
-    df["username"] = df["username"].astype(str).str.strip()
-    df["nome"] = df["nome"].astype(str).str.strip()
-    return df
 #endregion
 
 #region 3.3: Supabase Storage (Evidências Fotográficas)
@@ -1481,38 +1432,38 @@ COORDENADAS_FIXAS = {
     "FPI": [-23.444413, -46.309269],
     "IAA": [-23.862936, -46.398189],
     "IAB": [-23.521338, -46.688570],
-    "IBA": [-23.907681, -46.325638],
-    "ICB": [-23.886147, -46.416167],
+    "IBA": [-23.907681, -46.325638],  
+    "ICB": [-23.886147, -46.416167],  
     "ICG": [-23.767863, -46.343114],
     "ICP": [-23.658495, -46.490753],
-    "ICQ": [-23.926493, -46.402720],
+    "ICQ": [-23.926493, -46.402720], 
     "ICR": [-23.640310, -46.323992],
-    "ICZ": [-23.954824, -46.293306],
+    "ICZ": [-23.954824, -46.293306], 
     "IEF": [-23.477809, -46.360984],
     "IES": [-23.545441, -46.603648],
     "IIP": [-23.564977, -46.604896],
     "IJN": [-23.195297, -46.870829],
-    "IJU": [-23.889626, -46.338534],
+    "IJU": [-23.889626, -46.338534], 
     "ILA": [-23.520217, -46.698082],
     "IMO": [-23.557803, -46.608382],
     "IOF": [-23.658579, -46.338538],
     "IPA": [-23.774399, -46.306769],
     "IPG": [-23.847950, -46.370812],
     "IPR": [-23.537749, -46.625522],
-    "IQA": [-23.925948, -46.380123],
-    "IQB": [-23.875674, -46.348587],
-    "IRA": [-23.500572, -46.339448],
+    "IQA": [-23.925948, -46.380123], 
+    "IQB": [-23.875674, -46.348587], 
+    "IRA": [-23.500572, -46.339448], 
     "IRG": [-23.736705, -46.382241],
     "IRP": [-23.713578, -46.414862],
     "IRS": [-23.828162, -46.363101],
     "ISA": [-23.647553, -46.531007],
     "ISC": [-23.613874, -46.558834],
     "ISL": [-23.752383, -46.389262],
-    "ISN": [-23.928399, -46.363015],
+    "ISN": [-23.928399, -46.363015],  
     "ISU": [-23.551210, -46.288671],
-    "IUF": [-23.860615, -46.359726],
+    "IUF": [-23.860615, -46.359726],  
     "IUT": [-23.624864, -46.544716],
-    "IVP": [-23.848139, -46.390430],
+    "IVP": [-23.848139, -46.390430], 
     "OAR": [-23.500419, -46.339111],
     "OBF": [-23.525591, -46.666726],
     "OBR": [-23.545397, -46.616293],
@@ -2112,10 +2063,8 @@ gov_usuario = st.session_state.get("governanca", "")
 # --- NAVEGAÇÃO INTELIGENTE POR PERFIL ---
 tem_painel = "Painel Gerencial" in gov_usuario or "Mapa de Campo" in gov_usuario
 tem_dados = "Upload de Dados" in gov_usuario
-tem_usuarios = "Gestão de Usuários" in gov_usuario
 tem_governanca = "Gestão de Usuários" in gov_usuario or "Governança" in gov_usuario
 
-# Linha 1: Painel + Dados
 if tem_painel and tem_dados:
     col_nav1, col_nav2 = st.sidebar.columns(2)
     with col_nav1:
@@ -2135,27 +2084,12 @@ elif tem_dados:
         st.session_state["tela_atual"] = "admin"
         st.rerun()
 
-# Linha 2: Usuários + Governança
-if tem_usuarios and tem_governanca:
-    col_nav3, col_nav4 = st.sidebar.columns(2)
-    with col_nav3:
-        if st.button("👤 Usuários", use_container_width=True):
-            st.session_state["tela_atual"] = "usuarios"
-            st.rerun()
-    with col_nav4:
-        if st.button("🛡️ Governança", use_container_width=True):
-            st.session_state["tela_atual"] = "governanca"
-            st.rerun()
-elif tem_usuarios:
-    if st.sidebar.button("👤 Gestão de Usuários", use_container_width=True):
-        st.session_state["tela_atual"] = "usuarios"
-        st.rerun()
-elif tem_governanca:
+# Botão de Governança — SOMENTE para quem tem "Gestão de Usuários"
+if tem_governanca:
     if st.sidebar.button("🛡️ Governança (Auditoria)", use_container_width=True):
         st.session_state["tela_atual"] = "governanca"
         st.rerun()
 
-# --- ROTEAMENTO DAS TELAS ISOLADAS ---
 if st.session_state.get("tela_atual") == "admin":
     render_tela_admin()
     st.stop()
@@ -2322,13 +2256,13 @@ df_filtrado = aplicar_filtros_sidebar(
 
 #region 8.1: Controles de Simulação e Recarga ETL
 if "Gestão de Usuários" in st.session_state.get("governanca", ""):
-    with st.sidebar.expander("⚙️ Sistema e Simulação", expanded=False):
-
+    with st.sidebar.expander("⚙️ Sistema, Dados e Gestão", expanded=False):
+        
         st.checkbox("🧪 Usar dados simulados (teste rápido)", key="chk_sim")
         if st.session_state.get("chk_sim"):
             st.slider("Volume de OS simuladas", 100, 4000, 1200, 100, key="qtd_sim")
             st.number_input("Seed (repete mesmos dados)", value=42, key="seed_sim")
-
+            
             st.markdown("<small style='color: #CBD5E1;'>Distribuição da Simulação</small>", unsafe_allow_html=True)
             col_s1, col_s2, col_s3 = st.columns(3)
             with col_s1: st.number_input("% Pendente", min_value=0, max_value=100, value=45, key="sim_pct_pendente")
@@ -2340,482 +2274,287 @@ if "Gestão de Usuários" in st.session_state.get("governanca", ""):
 #endregion 8.1
 
 #region 8.2: Gestão de Usuários (@st.fragment)
-@st.fragment
-def fragmento_gestao_usuarios():
-    st.markdown("### 👤 Cadastro de Novos Usuários", unsafe_allow_html=True)
+        @st.fragment
+        def fragmento_gestao_usuarios():
+            st.markdown("<div style='background-color: #FF4B4B; color: #FFFFFF; font-weight: bold; text-align: center; padding: 8px; border-radius: 6px; margin-top: 15px; margin-bottom: 10px;'>Gestão de Usuários</div>", unsafe_allow_html=True)
 
-    if "msg_sucesso_user" in st.session_state:
-        st.success(st.session_state["msg_sucesso_user"])
-        del st.session_state["msg_sucesso_user"]
+            if "msg_sucesso_user" in st.session_state:
+                st.success(st.session_state["msg_sucesso_user"])
+                del st.session_state["msg_sucesso_user"]
 
-    def sedes_por_escopo(escopo: str):
-        if escopo == "Paranapiacaba":
-            return ["Sede IPA"]
-        elif escopo == "Piaçaguera":
-            return ["Sede IPG"]
-        return ["Sede IPA", "Sede IPG"]
+            def sedes_por_escopo(escopo: str):
+                if escopo == "Paranapiacaba": return ["Sede IPA"]
+                elif escopo == "Piaçaguera": return ["Sede IPG"]
+                return ["Sede IPA", "Sede IPG"]
 
-    opcoes_gov = [
-        "Painel Gerencial",
-        "Mapa de Campo",
-        "Upload de Dados",
-        "Gestão de Usuários",
-        "Exportar SAP",
-        "Governança"
-    ]
+            opcoes_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Gestão de Usuários", "Exportar SAP", "Governança"]
 
-    #region 8.2.1: Criar Novo Usuário (Formulário)
-    with st.form("form_novo_user", clear_on_submit=True):
-        n_user = st.text_input("Matrícula / Username", key="novo_user_login")
-        n_nome = st.text_input("Nome do Colaborador", key="novo_user_nome")
-        n_perf = st.selectbox("Perfil", ["Técnico", "Assistente", "Coordenador", "Gerência"], key="novo_user_perfil")
-        n_esco = st.selectbox("Escopo (Base)", ["Paranapiacaba", "Piaçaguera", "Todas"], key="novo_user_escopo")
+#region 8.2.1: Criar Novo Usuário (Formulário)
+            with st.form("form_novo_user", clear_on_submit=True):
+                n_user = st.text_input("Login (Nova conta)", key="novo_user_login")
+                n_perf = st.selectbox("Perfil", ["Técnico", "Assistente", "Coordenador", "Gerência"], key="novo_user_perfil")
+                n_esco = st.selectbox("Escopo (Base)", ["Paranapiacaba", "Piaçaguera", "Todas"], key="novo_user_escopo")
 
-        sedes_validas = sedes_por_escopo(n_esco)
-        n_sede = st.selectbox("Sede Física", sedes_validas, key="novo_user_sede", format_func=lambda x: x.replace("Sede ", ""))
+                sedes_validas = sedes_por_escopo(n_esco)
+                n_sede = st.selectbox("Sede Física", sedes_validas, key="novo_user_sede", format_func=lambda x: x.replace("Sede ", ""))
 
-        st.markdown("---")
-        st.markdown("**Governança (O que o usuário pode ver/fazer?)**")
+                st.markdown("---")
+                st.markdown("**Governança (O que o usuário pode ver/fazer?)**")
 
-        if n_perf == "Técnico":
-            def_gov = ["Mapa de Campo"]
-        elif n_perf == "Assistente":
-            def_gov = ["Painel Gerencial", "Upload de Dados", "Exportar SAP"]
-        elif n_perf == "Coordenador":
-            def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Exportar SAP", "Governança"]
-        else:
-            def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Gestão de Usuários", "Exportar SAP", "Governança"]
+                if n_perf == "Técnico":
+                    def_gov = ["Mapa de Campo"]
+                elif n_perf == "Assistente":
+                    def_gov = ["Painel Gerencial", "Upload de Dados", "Exportar SAP"]
+                elif n_perf == "Coordenador":
+                    def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Exportar SAP", "Governança"]
+                else:
+                    def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Gestão de Usuários", "Exportar SAP", "Governança"]
 
-        n_gov = st.multiselect("Permissões de Acesso:", opcoes_gov, default=def_gov, key="novo_user_gov")
+                n_gov = st.multiselect("Permissões de Acesso:", opcoes_gov, default=def_gov, key="novo_user_gov")
 
-        if st.form_submit_button("Salvar Novo Usuário"):
-            if n_user and n_nome:
-                conn = get_connection()
-                cur = conn.cursor()
-                try:
-                    cur.execute(
-                        """
-                        INSERT INTO usuarios (
-                            username, nome, senha_hash, perfil, escopo,
-                            palavra_recuperacao, dica_recuperacao,
-                            coordenacao_padrao, reset_obrigatorio, governanca
-                        )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """,
-                        (
-                            n_user.strip(),
-                            n_nome.strip(),
-                            hash_senha("mrs123"),
-                            n_perf,
-                            n_esco,
-                            "PENDENTE",
-                            "PENDENTE",
-                            n_sede,
-                            1,
-                            ",".join(n_gov)
-                        )
-                    )
-                    conn.commit()
-                    st.session_state["msg_sucesso_user"] = f"Usuário '{n_nome}' ({n_user}) criado com sucesso!"
-                    st.rerun(scope="fragment")
-                except psycopg2.IntegrityError:
-                    conn.rollback()
-                    st.error("Erro: Esta matrícula/usuário já existe.")
-                finally:
-                    cur.close()
-                    release_connection(conn)
-            else:
-                st.warning("Preencha a matrícula e o nome do colaborador.")
-    #endregion 8.2.1
-
-    #region 8.2.2: Gerenciar Existentes (Editar/Resetar/Excluir)
-    st.markdown("**👥 Gerenciar Usuários**", unsafe_allow_html=True)
-
-    conn = get_connection()
-    df_usuarios = pd.read_sql_query(
-        "SELECT username, nome, perfil, escopo, coordenacao_padrao, governanca FROM usuarios",
-        conn
-    )
-    release_connection(conn)
-
-    if not df_usuarios.empty:
-        df_usuarios["label_exibicao"] = df_usuarios.apply(
-            lambda r: f"{str(r['nome']).strip()} ({str(r['username']).strip()})"
-            if pd.notna(r["nome"]) and str(r["nome"]).strip()
-            else str(r["username"]).strip(),
-            axis=1
-        )
-
-        mapa_label_para_user = dict(zip(df_usuarios["label_exibicao"], df_usuarios["username"]))
-        usr_label_sel = st.selectbox(
-            "Selecione um usuário:",
-            [""] + df_usuarios["label_exibicao"].tolist(),
-            key="sel_usr_frag"
-        )
-
-        if usr_label_sel != "":
-            usr_sel = mapa_label_para_user[usr_label_sel]
-            dados_usr = df_usuarios[df_usuarios["username"] == usr_sel].iloc[0]
-            gov_atual_lista = str(dados_usr["governanca"]).split(",") if pd.notna(dados_usr["governanca"]) else []
-
-            st.caption(
-                f"**Nome:** {dados_usr['nome']} | "
-                f"**Matrícula:** {dados_usr['username']} | "
-                f"**Perfil:** {dados_usr['perfil']} | "
-                f"**Visão:** {dados_usr['escopo']} | "
-                f"**Sede:** {str(dados_usr['coordenacao_padrao']).replace('Sede ', '')}"
-            )
-
-            acao = st.radio(
-                "Ação:",
-                ["✏️ Editar Acesso", "🔑 Resetar Senha", "🗑️ Excluir"],
-                horizontal=True,
-                key="radio_acao_frag"
-            )
-
-            if acao == "✏️ Editar Acesso":
-                with st.form(f"form_edit_{usr_sel}"):
-                    n_nome_edit = st.text_input(
-                        "Nome do Colaborador",
-                        value=str(dados_usr["nome"]).strip() if pd.notna(dados_usr["nome"]) else ""
-                    )
-                    n_perf_edit = st.selectbox(
-                        "Novo Perfil",
-                        ["Técnico", "Assistente", "Coordenador", "Gerência"],
-                        index=["Técnico", "Assistente", "Coordenador", "Gerência"].index(dados_usr["perfil"])
-                    )
-                    n_esco_edit = st.selectbox(
-                        "Nova Visão",
-                        ["Paranapiacaba", "Piaçaguera", "Todas"],
-                        index=["Paranapiacaba", "Piaçaguera", "Todas"].index(dados_usr["escopo"])
-                    )
-                    n_sede_edit = st.selectbox(
-                        "Sede",
-                        sedes_por_escopo(n_esco_edit),
-                        format_func=lambda x: x.replace("Sede ", "")
-                    )
-                    gov_editadas = st.multiselect(
-                        "Governança:",
-                        opcoes_gov,
-                        default=[g for g in gov_atual_lista if g in opcoes_gov]
-                    )
-
-                    if st.form_submit_button("Salvar Alterações"):
+                if st.form_submit_button("Salvar Novo Usuário"):
+                    if n_user:
                         conn = get_connection()
                         cur = conn.cursor()
-                        cur.execute(
-                            """
-                            UPDATE usuarios
-                            SET nome=%s, perfil=%s, escopo=%s, coordenacao_padrao=%s, governanca=%s
-                            WHERE username=%s
-                            """,
-                            (
-                                n_nome_edit.strip(),
-                                n_perf_edit,
-                                n_esco_edit,
-                                n_sede_edit,
-                                ",".join(gov_editadas),
-                                usr_sel
+                        try:
+                            cur.execute(
+                                """
+                                INSERT INTO usuarios
+                                (username, senha_hash, perfil, escopo, palavra_recuperacao, dica_recuperacao, coordenacao_padrao, reset_obrigatorio, governanca)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                """,
+                                (n_user.strip(), hash_senha("mrs123"), n_perf, n_esco, "PENDENTE", "PENDENTE", n_sede, 1, ",".join(n_gov))
                             )
-                        )
-                        conn.commit()
-                        cur.close()
-                        release_connection(conn)
-                        st.session_state["msg_sucesso_user"] = f"Cadastro de {n_nome_edit} ({usr_sel}) atualizado!"
-                        st.rerun(scope="fragment")
-
-            elif acao == "🔑 Resetar Senha":
-                if st.button("Confirmar Reset", key="btn_reset_frag"):
-                    conn = get_connection()
-                    cur = conn.cursor()
-                    cur.execute(
-                        "UPDATE usuarios SET senha_hash = %s, reset_obrigatorio = 1 WHERE username = %s",
-                        (hash_senha("mrs123"), usr_sel)
-                    )
-                    conn.commit()
-                    cur.close()
-                    release_connection(conn)
-                    st.session_state["msg_sucesso_user"] = f"Senha de {dados_usr['nome']} ({usr_sel}) resetada!"
-                    st.rerun(scope="fragment")
-
-            elif acao == "🗑️ Excluir":
-                if st.button("Confirmar Exclusão", type="primary", key="btn_excluir_frag"):
-                    conn = get_connection()
-                    cur = conn.cursor()
-                    cur.execute("DELETE FROM usuarios WHERE username = %s", (usr_sel,))
-                    conn.commit()
-                    cur.close()
-                    release_connection(conn)
-                    st.session_state["msg_sucesso_user"] = f"Usuário {dados_usr['nome']} ({usr_sel}) excluído."
-                    st.rerun(scope="fragment")
-    else:
-        st.info("Nenhum usuário cadastrado.")
-    #endregion 8.2.2
-
-    #region 8.2.3: Importação em Massa de Colaboradores
-    st.markdown("---")
-    st.markdown("**📥 Importação em Massa de Colaboradores**")
-
-    st.caption(
-        "A planilha deve conter exatamente as colunas: "
-        "`username`, `Nome`, `perfil`, `escopo`, `coordenacao_padrao`, `governanca`."
-    )
-
-    arquivo_users = st.file_uploader(
-        "Selecione a planilha de colaboradores (.xlsx ou .csv)",
-        type=["xlsx", "csv"],
-        key="upload_users_massa"
-    )
-
-    if arquivo_users is not None:
-        if st.button("🚀 Processar Cadastro em Massa", use_container_width=True, type="primary", key="btn_users_massa"):
-            with st.spinner("Processando colaboradores..."):
-                try:
-                    if arquivo_users.name.lower().endswith(".csv"):
-                        df_users = pd.read_csv(arquivo_users, sep=None, engine="python", encoding="utf-8-sig")
+                            conn.commit()
+                            st.session_state["msg_sucesso_user"] = f"Usuário '{n_user}' criado com sucesso!"
+                            st.rerun(scope="fragment")
+                        except psycopg2.IntegrityError:
+                            conn.rollback(); st.error("Erro: Este usuário já existe.")
+                        finally:
+                            cur.close(); release_connection(conn)
                     else:
-                        df_users = pd.read_excel(arquivo_users)
+                        st.warning("Preencha o login do usuário.")
 
-                    df_users.columns = [str(c).strip() for c in df_users.columns]
+#endregion 8.2.1
+#region 8.2.2: Gerenciar Existentes (Editar/Resetar/Excluir)
+            st.markdown("<br><b style='color: #F8FAFC;'>👥 Gerenciar Usuários</b>", unsafe_allow_html=True)
+            conn = get_connection()
+            df_usuarios = pd.read_sql_query("SELECT username, perfil, escopo, coordenacao_padrao, governanca FROM usuarios", conn)
+            release_connection(conn)
 
-                    colunas_obrigatorias = ["username", "Nome", "perfil", "escopo", "coordenacao_padrao", "governanca"]
-                    faltantes = [c for c in colunas_obrigatorias if c not in df_users.columns]
+            usr_sel = st.selectbox("Selecione um usuário:", [""] + df_usuarios["username"].tolist(), key="sel_usr_frag")
 
-                    if faltantes:
-                        st.error(f"❌ Colunas obrigatórias ausentes: {', '.join(faltantes)}")
-                    else:
-                        df_users = df_users.fillna("")
+            if usr_sel != "":
+                dados_usr = df_usuarios[df_usuarios["username"] == usr_sel].iloc[0]
+                gov_atual_lista = str(dados_usr["governanca"]).split(",") if pd.notna(dados_usr["governanca"]) else []
 
-                        perfis_validos = {"Técnico", "Assistente", "Coordenador", "Gerência"}
-                        escopos_validos = {"Paranapiacaba", "Piaçaguera", "Todas"}
+                st.caption(f"**Perfil:** {dados_usr['perfil']} | **Visão:** {dados_usr['escopo']} | **Sede:** {str(dados_usr['coordenacao_padrao']).replace('Sede ', '')}")
 
-                        registros = []
-                        erros = []
+                acao = st.radio("Ação:", ["✏️ Editar Acesso", "🔑 Resetar Senha", "🗑️ Excluir"], horizontal=True, key="radio_acao_frag")
 
-                        for idx, row in df_users.iterrows():
-                            matricula = str(row["username"]).strip()
-                            nome = str(row["Nome"]).strip()
-                            perfil = str(row["perfil"]).strip()
-                            escopo = str(row["escopo"]).strip()
-                            coordenacao_padrao = str(row["coordenacao_padrao"]).strip()
-                            governanca = str(row["governanca"]).strip()
+                if acao == "✏️ Editar Acesso":
+                    with st.form(f"form_edit_{usr_sel}"):
+                        n_perf_edit = st.selectbox("Novo Perfil", ["Técnico", "Assistente", "Coordenador", "Gerência"], index=["Técnico", "Assistente", "Coordenador", "Gerência"].index(dados_usr["perfil"]))
+                        n_esco_edit = st.selectbox("Nova Visão", ["Paranapiacaba", "Piaçaguera", "Todas"], index=["Paranapiacaba", "Piaçaguera", "Todas"].index(dados_usr["escopo"]))
+                        n_sede_edit = st.selectbox("Sede", sedes_por_escopo(n_esco_edit), format_func=lambda x: x.replace("Sede ", ""))
+                        gov_editadas = st.multiselect("Governança:", opcoes_gov, default=[g for g in gov_atual_lista if g in opcoes_gov])
 
-                            if not matricula:
-                                erros.append(f"Linha {idx + 2}: username/matrícula vazio.")
-                                continue
-                            if not nome:
-                                erros.append(f"Linha {idx + 2}: Nome vazio.")
-                                continue
-                            if perfil not in perfis_validos:
-                                erros.append(f"Linha {idx + 2}: perfil inválido ({perfil}).")
-                                continue
-                            if escopo not in escopos_validos:
-                                erros.append(f"Linha {idx + 2}: escopo inválido ({escopo}).")
-                                continue
-                            if not coordenacao_padrao:
-                                erros.append(f"Linha {idx + 2}: coordenacao_padrao vazio.")
-                                continue
-
-                            registros.append((
-                                matricula, nome, hash_senha("mrs123"), perfil, escopo,
-                                "PENDENTE", "PENDENTE", coordenacao_padrao, 1, governanca
-                            ))
-
-                        if erros:
-                            st.error("❌ Foram encontrados erros na planilha:")
-                            for e in erros[:20]:
-                                st.write(f"- {e}")
-                            if len(erros) > 20:
-                                st.write(f"... e mais {len(erros) - 20} erro(s).")
-                        elif not registros:
-                            st.warning("⚠️ Nenhum registro válido encontrado.")
-                        else:
-                            conn = get_connection()
-                            try:
-                                cur = conn.cursor()
-                                execute_values(
-                                    cur,
-                                    """
-                                    INSERT INTO usuarios (
-                                        username, nome, senha_hash, perfil, escopo,
-                                        palavra_recuperacao, dica_recuperacao,
-                                        coordenacao_padrao, reset_obrigatorio, governanca
-                                    )
-                                    VALUES %s
-                                    ON CONFLICT (username) DO UPDATE SET
-                                        nome = EXCLUDED.nome,
-                                        perfil = EXCLUDED.perfil,
-                                        escopo = EXCLUDED.escopo,
-                                        coordenacao_padrao = EXCLUDED.coordenacao_padrao,
-                                        governanca = EXCLUDED.governanca
-                                    """,
-                                    registros,
-                                    page_size=500
-                                )
-                                conn.commit()
-                                cur.close()
-                            finally:
-                                release_connection(conn)
-
-                            st.session_state["msg_sucesso_user"] = f"✅ Importação concluída! {len(registros)} colaborador(es) processado(s)."
+                        if st.form_submit_button("Salvar Alterações"):
+                            conn = get_connection(); cur = conn.cursor()
+                            cur.execute(
+                                "UPDATE usuarios SET perfil=%s, escopo=%s, coordenacao_padrao=%s, governanca=%s WHERE username=%s",
+                                (n_perf_edit, n_esco_edit, n_sede_edit, ",".join(gov_editadas), usr_sel)
+                            )
+                            conn.commit(); cur.close(); release_connection(conn)
+                            st.session_state["msg_sucesso_user"] = f"Acessos de {usr_sel} atualizados!"
                             st.rerun(scope="fragment")
 
-                except Exception as e:
-                    st.error(f"❌ Erro ao processar a planilha: {e}")
-    #endregion 8.2.3
+                elif acao == "🔑 Resetar Senha":
+                    if st.button("Confirmar Reset", key="btn_reset_frag"):
+                        conn = get_connection(); cur = conn.cursor()
+                        cur.execute("UPDATE usuarios SET senha_hash = %s, reset_obrigatorio = 1 WHERE username = %s", (hash_senha("mrs123"), usr_sel))
+                        conn.commit(); cur.close(); release_connection(conn)
+                        st.session_state["msg_sucesso_user"] = f"Senha de {usr_sel} resetada!"
+                        st.rerun(scope="fragment")
+
+                elif acao == "🗑️ Excluir":
+                    if st.button("Confirmar Exclusão", type="primary", key="btn_excluir_frag"):
+                        conn = get_connection(); cur = conn.cursor()
+                        cur.execute("DELETE FROM usuarios WHERE username = %s", (usr_sel,))
+                        conn.commit(); cur.close(); release_connection(conn)
+                        st.session_state["msg_sucesso_user"] = f"Usuário {usr_sel} excluído."
+                        st.rerun(scope="fragment")
+
+#endregion 8.2.2
 #endregion 8.2
 
-#region 8.3: Tela Isolada de Gestão de Usuários
-def render_tela_usuarios():
-    col_usr_t1, col_usr_t2 = st.columns([8, 2])
-    with col_usr_t1:
-        st.title("👤 Gestão de Usuários")
-    with col_usr_t2:
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("⬅️ Voltar ao Painel", use_container_width=True):
-            st.session_state["tela_atual"] = "dashboard"
-            st.rerun()
-    st.markdown("Cadastro individual, edição, importação em massa e exclusão de colaboradores.")
-    st.markdown("---")
-    fragmento_gestao_usuarios()
+#region 8.3: Chamada do Fragmento de Gestão
+        fragmento_gestao_usuarios()
+#endregion
 
-# --- Roteamento da Tela de Gestão de Usuários (após definição) ---
-if st.session_state.get("tela_atual") == "usuarios":
-    render_tela_usuarios()
-    st.stop()
-#endregion 8.3
 #endregion SESSÃO 8
 
-# ═══ CONTROLE CENTRAL: só renderiza dashboard nas SESSÕES 9 e 10 ═══
-_is_dashboard = st.session_state.get("tela_atual", "dashboard") == "dashboard"
-
 #region SESSÃO 9: Dashboard Header e KPI Metrics
-if _is_dashboard:
-    #region 9.1: Header do Dashboard (Título + Saudação)
-    col_titulo, col_acoes = st.columns([9, 1])
 
-    with col_titulo:
-        st.title("⚡ Sistema de Gestão de Ordens de Serviço")
-        st.markdown(f"<h5 style='color: #475569; margin-top: -10px;'>Olá, <b>{st.session_state.get('username', 'Usuário')}</b> 👋</h5>", unsafe_allow_html=True)
+#region 9.1: Header do Dashboard (Título + Saudação)
+col_titulo, col_acoes = st.columns([9, 1])
 
-    with col_acoes:
-        st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
-    #endregion 9.1
+with col_titulo:
+    st.title("⚡ Sistema de Gestão de Ordens de Serviço")
+    st.markdown(f"<h5 style='color: #475569; margin-top: -10px;'>Olá, <b>{st.session_state.get('username', 'Usuário')}</b> 👋</h5>", unsafe_allow_html=True)
 
-    #region 9.2: Botões de Ação (Atualizar / Trocar Senha / Sair)
-        if st.button("🔄 Atualizar", use_container_width=True):
-            st.rerun()
+with col_acoes:
+    st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+    
+#endregion 9.1
 
-        if st.button("🔑 Trocar", use_container_width=True):
-            usr_atual = st.session_state["username"]
-            conn = get_connection()
-            cur = conn.cursor()
-            cur.execute("UPDATE usuarios SET reset_obrigatorio = 1 WHERE username = %s", (usr_atual,))
-            conn.commit()
-            cur.close()
-            release_connection(conn)
-            st.session_state.clear()
-            st.session_state["logged_in"] = False
-            st.session_state["needs_reset"] = True
-            st.session_state["reset_user"] = usr_atual
-            st.rerun()
+#region 9.2: Botões de Ação (Atualizar / Trocar Senha / Sair)
+    if st.button("🔄 Atualizar", use_container_width=True):
+        st.rerun()
+        
+    if st.button("🔑 Trocar", use_container_width=True):
+        usr_atual = st.session_state["username"]
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("UPDATE usuarios SET reset_obrigatorio = 1 WHERE username = %s", (usr_atual,))
+        conn.commit()
+        cur.close()
+        release_connection(conn)
+        
+        st.session_state.clear()
+        st.session_state["logged_in"] = False
+        st.session_state["needs_reset"] = True
+        st.session_state["reset_user"] = usr_atual
+        st.rerun()
+        
+    
+    if st.button("🚪 Sair", use_container_width=True):
+        keys_manter = {"gps_pending", "gps_trials", "origem_tipo"}
+        for key in list(st.session_state.keys()):
+            if key not in keys_manter:
+                del st.session_state[key]
+        st.session_state["logged_in"] = False
+        st.rerun()
 
-        if st.button("🚪 Sair", use_container_width=True):
-            keys_manter = {"gps_pending", "gps_trials", "origem_tipo"}
-            for key in list(st.session_state.keys()):
-                if key not in keys_manter:
-                    del st.session_state[key]
-            st.session_state["logged_in"] = False
-            st.rerun()
 
-    st.markdown("---")
-    #endregion 9.2
+st.markdown("---")
 
-    #region 9.3: Cálculo dos KPIs + CSS dos Cards
-    total_os = len(df_filtrado)
-    realizado_prazo = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_prazo)])
-    realizado_atraso = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_atraso)])
-    realizado_total = realizado_prazo + realizado_atraso
-    nao_realizado = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_aberto)])
-    taxa_conclusao = (realizado_total / total_os * 100) if total_os > 0 else 0.0
+#endregion 9.2
 
-    st.markdown("""
+#region 9.3: Cálculo dos KPIs + CSS dos Cards
+total_os = len(df_filtrado)
+realizado_prazo = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_prazo)])
+realizado_atraso = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_atraso)])
+realizado_total = realizado_prazo + realizado_atraso
+nao_realizado = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_aberto)])
+taxa_conclusao = (realizado_total / total_os * 100) if total_os > 0 else 0.0
+
+st.markdown("""
     <style>
-    .kpi-card {
-        background: linear-gradient(135deg, #1E293B 0%, #334155 100%);
-        border-radius: 14px;
-        padding: 22px 18px;
-        color: #F1F5F9;
-        box-shadow: 0 4px 14px rgba(15, 23, 42, 0.25);
-        transition: transform 0.18s ease, box-shadow 0.18s ease;
+    iframe, .stEcharts, [data-testid="stHtmlBlock"] + div iframe {
+        border-radius: 12px !important;
+        overflow: hidden !important;
     }
-    .kpi-card:hover {
-        transform: translateY(-4px);
-        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.35);
+    .kpi-header-wrapper { font-family: "Source Sans Pro", sans-serif; }
+    .kpi-header-card {
+        font-family: "Source Sans Pro", sans-serif;
+        border-radius: 12px;
+        padding: 16px 20px;
+        box-shadow: 0 4px 6px rgba(15, 23, 42, 0.08);
+        height: 140px; 
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        box-sizing: border-box;
+        margin-bottom: 15px;
     }
-    .kpi-title {
-        font-size: 13px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.6px;
-        margin-bottom: 6px;
-        color: #94A3B8;
-    }
-    .kpi-value {
-        font-size: 32px;
-        font-weight: 800;
-        margin-bottom: 2px;
-    }
-    .kpi-sub {
-        font-size: 12px;
-        color: #CBD5E1;
-    }
+    .kpi-border-gray { border-left: 5px solid #64748B; background: linear-gradient(135deg, #F8FAFC 0%, #F1F5F9 100%); }
+    .kpi-border-red { border-left: 5px solid #FF4B4B; background: linear-gradient(135deg, #FEF2F2 0%, #FEE2E2 100%); }
+    .kpi-border-green { border-left: 5px solid #10B981; background: linear-gradient(135deg, #F0FDF4 0%, #D1FAE5 100%); }
+    .kpi-border-blue { border-left: 5px solid #3B82F6; background: linear-gradient(135deg, #EFF6FF 0%, #DBEAFE 100%); }
+    .kpi-header-title { font-size: 14px; font-weight: 700; color: #1E293B; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .kpi-header-val { font-size: 32px; font-weight: 400; color: #0F172A; line-height: 1; }
+    .kpi-header-sub { font-size: 12px; font-weight: 400; margin-top: 8px; padding: 4px 10px; border-radius: 20px; display: inline-block; width: fit-content; }
+    .badge-gray { background-color: #E2E8F0; color: #475569; }
+    .badge-red { background-color: #FECACA; color: #991B1B; }
+    .badge-green { background-color: #A7F3D0; color: #065F46; }
+    .badge-blue { background-color: #DBEAFE; color: #1E40AF; }
     </style>
+""", unsafe_allow_html=True)
+
+#endregion 9.3
+
+#region 9.4: Renderização dos Cards KPI
+col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
+
+with col_kpi1:
+    st.markdown(f"""
+        <div class="kpi-header-wrapper kpi-header-card kpi-border-gray">
+            <div class="kpi-header-title">📋 Planejado (OS)</div>
+            <div class="kpi-header-val">{total_os}</div>
+            <div class="kpi-header-sub badge-gray">Total de O.S do período</div>
+        </div>
     """, unsafe_allow_html=True)
-    #endregion 9.3
 
-    #region 9.4: Renderização dos Cards KPI
-    col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
+with col_kpi2:
+    st.markdown(f"""
+        <div class="kpi-header-wrapper kpi-header-card kpi-border-red">
+            <div class="kpi-header-title">🔴 Backlog (Não Realizado)</div>
+            <div class="kpi-header-val">{nao_realizado}</div>
+            <div class="kpi-header-sub badge-red">↑ {nao_realizado} pendentes</div>
+        </div>
+    """, unsafe_allow_html=True)
 
-    with col_kpi1:
-        st.markdown(f"""<div class='kpi-card'><div class='kpi-title'>📋 Planejado (OS)</div><div class='kpi-value'>{total_os}</div><div class='kpi-sub'>Total de O.S do período</div></div>""", unsafe_allow_html=True)
+with col_kpi3:
+    st.markdown(f"""
+        <div class="kpi-header-wrapper kpi-header-card kpi-border-green">
+            <div class="kpi-header-title">🟢 Realizado (Total)</div>
+            <div class="kpi-header-val">{realizado_total}</div>
+            <div class="kpi-header-sub badge-green">↑ {realizado_prazo} no prazo / {realizado_atraso} atrasado</div>
+        </div>
+    """, unsafe_allow_html=True)
 
-    with col_kpi2:
-        st.markdown(f"""<div class='kpi-card'><div class='kpi-title'>🔴 Backlog (Não Realizado)</div><div class='kpi-value'>{nao_realizado}</div><div class='kpi-sub'>↑ {nao_realizado} pendentes</div></div>""", unsafe_allow_html=True)
+with col_kpi4:
+    st.markdown(f"""
+        <div class="kpi-header-wrapper kpi-header-card kpi-border-blue">
+            <div class="kpi-header-title">📈 Taxa de Conclusão</div>
+            <div class="kpi-header-val">{taxa_conclusao:.1f}%</div>
+            <div class="kpi-header-sub badge-blue">Aproveitamento geral</div>
+        </div>
+    """, unsafe_allow_html=True)
 
-    with col_kpi3:
-        st.markdown(f"""<div class='kpi-card'><div class='kpi-title'>🟢 Realizado (Total)</div><div class='kpi-value'>{realizado_total}</div><div class='kpi-sub'>↑ {realizado_prazo} no prazo / {realizado_atraso} atrasado</div></div>""", unsafe_allow_html=True)
-
-    with col_kpi4:
-        st.markdown(f"""<div class='kpi-card'><div class='kpi-title'>📈 Taxa de Conclusão</div><div class='kpi-value'>{taxa_conclusao:.1f}%</div><div class='kpi-sub'>Aproveitamento geral</div></div>""", unsafe_allow_html=True)
-
-    st.markdown("---")
-    #endregion 9.4
-
-else:
-    # Variáveis necessárias inicializadas para evitar NameError em telas isoladas
-    total_os = realizado_prazo = realizado_atraso = realizado_total = nao_realizado = 0
-    taxa_conclusao = 0.0
+st.markdown("---")
+#endregion
 
 #endregion SESSÃO 9
 
 #region SESSÃO 10: Abas e Renderização dos Gráficos
 
 #region 10.1: Roteamento Principal (Controle de Telas)
-tab1 = tab2 = None
-if _is_dashboard:
+if st.session_state.get("tela_atual", "dashboard") == "dashboard":
     
-# --- CONTROLE DE ABAS POR GOVERNANÇA ---
+    # --- CONTROLE DE ABAS POR GOVERNANÇA ---
     tem_mapa_campo = "Mapa de Campo" in st.session_state.get("governanca", "")
-    if tem_mapa_campo:
+    tem_painel_gerencial = "Painel Gerencial" in st.session_state.get("governanca", "")
+
+    if tem_painel_gerencial and tem_mapa_campo:
         tab1, tab2 = st.tabs(["📊 Visão Gerencial", "🗺️ Roteirização e Mapa de Campo"])
+    elif tem_mapa_campo:
+        # Técnico: só vê Roteirização (aba Gerencial oculta)
+        tab1 = None
+        tab2 = st.tabs(["🗺️ Roteirização e Mapa de Campo"])[0]
+    elif tem_painel_gerencial:
+        # Assistente: só vê Gerencial (aba Mapa oculta)
+        tab1 = st.tabs(["📊 Visão Gerencial"])[0]
+        tab2 = None
     else:
         tab1 = st.tabs(["📊 Visão Gerencial"])[0]
         tab2 = None
 #endregion
 
 #region 10.2: ABA 1 — Visão Gerencial (Indicadores)
-    with tab1:
+    if tab1 is not None:
+     with tab1:
         if st.session_state["perfil"] == "Técnico":
             st.info("🔒 Seu perfil (Técnico) tem foco operacional. Por favor, utilize a aba 'Roteirização e Mapa de Campo'.")
         else:
@@ -2911,7 +2650,6 @@ if _is_dashboard:
                         st.info("Sem datas suficientes para área.")
 
 #endregion 10.2.1
-
 #region 10.2.2: Análise Operacional (Matriz de Prioridades)
             with st.expander("Análise Operacional: Matriz de Prioridades e Execução por Categoria", expanded=True):
                 col_h1, col_h2 = st.columns([1.2, 1])
@@ -2975,7 +2713,6 @@ if _is_dashboard:
                     st_echarts(options=bar_horiz_options, height="380px", theme="streamlit", key="aba1_bar_horiz")
 
 #endregion 10.2.2
-
 #region 10.2.3: Execução por Turno e Acumulado
             with st.expander("Execução por Turno e Acumulado", expanded=True):
                 col_g3, col_g6 = st.columns(2)
@@ -3027,93 +2764,53 @@ if _is_dashboard:
                         st.info("Sem dados cronológicos.")
 
 #endregion 10.2.3
-
 #region 10.2.4: Lista Detalhada de OS (com Evidências)
-        st.subheader("📋 Lista Detalhada de OS")
+            st.subheader("📋 Lista Detalhada de OS")
+            df_lista = df_visao_base.copy().rename(columns={"Ordem servico": "OS"})
 
-        df_lista = df_filtrado.copy().rename(columns={"Ordem servico": "OS"})
-
-        # --- EVIDÊNCIAS FOTOGRÁFICAS (merge com a tabela de evidências) ---
-        try:
-            df_evidencias = carregar_evidencias_df()
-            if not df_evidencias.empty and "Ativo" in df_lista.columns:
-                col_atividade_lista = "Atividade ativo" if "Atividade ativo" in df_lista.columns else None
-                if col_atividade_lista:
-                    df_lista = df_lista.merge(
-                        df_evidencias[["ativo", "atividade", "foto_url"]],
-                        left_on=["Ativo", col_atividade_lista],
-                        right_on=["ativo", "atividade"],
-                        how="left"
-                    )
-                    df_lista["Evidência"] = df_lista["foto_url"].apply(
-                        lambda url: str(url) if pd.notna(url) and str(url).startswith("http") else None
-                    )
-                    df_lista.drop(columns=["ativo", "atividade", "foto_url"], inplace=True, errors="ignore")
+            # --- EVIDÊNCIAS FOTOGRÁFICAS (merge com a tabela de evidências) ---
+            try:
+                df_evidencias = carregar_evidencias_df()
+                if not df_evidencias.empty and "Ativo" in df_lista.columns:
+                    col_atividade_lista = "Atividade ativo" if "Atividade ativo" in df_lista.columns else None
+                    if col_atividade_lista:
+                        df_lista = df_lista.merge(
+                            df_evidencias[["ativo", "atividade", "foto_url"]],
+                            left_on=["Ativo", col_atividade_lista],
+                            right_on=["ativo", "atividade"],
+                            how="left"
+                        )
+                        df_lista["Evidência"] = df_lista["foto_url"].apply(
+                            lambda url: str(url) if pd.notna(url) and str(url).startswith("http") else None
+                        )
+                        df_lista.drop(columns=["ativo", "atividade", "foto_url"], inplace=True, errors="ignore")
+                    else:
+                        df_lista["Evidência"] = ""
                 else:
                     df_lista["Evidência"] = ""
-            else:
+            except Exception:
                 df_lista["Evidência"] = ""
-        except Exception:
-            df_lista["Evidência"] = ""
 
-        # --- TRADUÇÃO DE MATRÍCULA -> NOME NO CAMPO "CONCLUÍDO POR" ---
-        try:
-            df_users_nomes = carregar_usuarios_nomes_df()
-            if not df_users_nomes.empty and "Concluído por" in df_lista.columns:
-                df_lista["Concluído por"] = df_lista["Concluído por"].astype(str).str.strip()
+            if "Data inicial programada" in df_lista.columns:
+                df_lista["Data inicial programada"] = pd.to_datetime(df_lista["Data inicial programada"], errors="coerce").dt.strftime("%d/%m/%Y")
 
-                df_lista = df_lista.merge(
-                    df_users_nomes.rename(columns={"username": "matricula_conclusao", "nome": "nome_conclusao"}),
-                    left_on="Concluído por",
-                    right_on="matricula_conclusao",
-                    how="left"
-                )
+            if "Data/Hora Realizado" in df_lista.columns:
+                df_lista["Data/Hora Realizado"] = pd.to_datetime(
+                    df_lista["Data/Hora Realizado"], dayfirst=True, errors="coerce"
+                ).dt.strftime("%d/%m/%Y %H:%M").fillna("")
 
-                df_lista["Concluído por"] = df_lista["nome_conclusao"].where(
-                    df_lista["nome_conclusao"].notna() & (df_lista["nome_conclusao"].astype(str).str.strip() != ""),
-                    df_lista["Concluído por"]
-                )
+            colunas_ordem = ["OS", "Patio", "Ativo", "Criticidade", "Classificacao", "Descrição Longa", "Data inicial programada", "Status da Operação", "Data/Hora Realizado", "Concluído por", "Geolocalização de Baixa", "Evidência"]
 
-                df_lista.drop(columns=["matricula_conclusao", "nome_conclusao"], inplace=True, errors="ignore")
-        except Exception:
-            pass
+            for c in colunas_ordem:
+                if c not in df_lista.columns:
+                    df_lista[c] = ""
 
-        if "Data inicial programada" in df_lista.columns:
-            df_lista["Data inicial programada"] = pd.to_datetime(
-                df_lista["Data inicial programada"], errors="coerce"
-            ).dt.strftime("%d/%m/%Y")
+            if not df_lista.empty:
+                df_styled = df_lista[colunas_ordem].style.set_properties(**{'text-align': 'center'}).set_table_styles([{'selector': 'th', 'props': [('text-align', 'center')]}])
+                st.dataframe(df_styled, use_container_width=True, height=400, hide_index=True, column_config={"Evidência": st.column_config.LinkColumn("📷 Evidência", display_text="📷 Ver Foto")})
+#endregion
 
-        if "Data/Hora Realizado" in df_lista.columns:
-            df_lista["Data/Hora Realizado"] = pd.to_datetime(
-                df_lista["Data/Hora Realizado"], dayfirst=True, errors="coerce"
-            ).dt.strftime("%d/%m/%Y %H:%M").fillna("")
-
-        colunas_ordem = [
-            "OS", "Patio", "Ativo", "Criticidade", "Classificacao", "Descrição Longa",
-            "Data inicial programada", "Status da Operação", "Data/Hora Realizado",
-            "Concluído por", "Geolocalização de Baixa", "Evidência"
-        ]
-
-        for c in colunas_ordem:
-            if c not in df_lista.columns:
-                df_lista[c] = ""
-
-        if not df_lista.empty:
-            df_styled = df_lista[colunas_ordem].style.set_properties(**{'text-align': 'center'}).set_table_styles(
-                [{'selector': 'th', 'props': [('text-align', 'center')]}]
-            )
-
-            st.dataframe(
-                df_styled,
-                use_container_width=True,
-                height=400,
-                hide_index=True,
-                column_config={
-                    "Evidência": st.column_config.LinkColumn("📷 Evidência", display_text="📷 Ver Foto")
-                }
-            )
 #endregion 10.2.4
-#endregion 10.2
 
 #region 10.3: ABA 2 — Roteirização e Mapa de Campo
     if tab2 is not None:
@@ -3698,6 +3395,20 @@ if _is_dashboard:
                 colunas_exibir = ["OS", "Data da Programação", "Patio", "Ativo", "Criticidade", "Classificação", "Descrição Longa"]
 
                 col_tit_crono, col_btn_crono = st.columns([7.5, 2.5])
+                with col_btn_crono:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    excel_crono = io.BytesIO()
+                    df_export = df_tabela_campo[colunas_exibir].copy()
+                    with pd.ExcelWriter(excel_crono, engine="openpyxl") as writer:
+                        df_export.to_excel(writer, index=False, sheet_name="Cronograma")
+                    excel_crono.seek(0)
+                    st.download_button(
+                        label="🖨️ Exportar Cronograma",
+                        data=excel_crono.getvalue(),
+                        file_name=f"Cronograma_Campo_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
                 with col_tit_crono:
 #endregion 10.3.4
 
@@ -3721,6 +3432,7 @@ if _is_dashboard:
 #endregion 10.3.5
 
 #endregion 10.3
+
 #endregion SESSÃO 10
 
 #region SESSÃO 11: Tela Isolada de Governança e Auditoria
@@ -3730,7 +3442,7 @@ if st.session_state.get("tela_atual") == "governanca":
 
     col_gov_t1, col_gov_t2 = st.columns([8, 2])
     with col_gov_t1:
-        st.title("🛡️ Governança")
+        st.title("🛡️ Motor de Governança e Auditoria")
     with col_gov_t2:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("⬅️ Voltar ao Painel", use_container_width=True):
