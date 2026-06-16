@@ -1349,6 +1349,16 @@ def render_tela_admin():
                                         registros.append((chave_b, patio, "Equipamento_Denom"))
                                 break
                         
+                        # Remove duplicatas (mantém a primeira ocorrência de cada chave)
+                        chaves_vistas = set()
+                        registros_unicos = []
+                        for reg in registros:
+                            chave_upper = reg[0].upper()
+                            if chave_upper not in chaves_vistas:
+                                chaves_vistas.add(chave_upper)
+                                registros_unicos.append(reg)
+                        registros = registros_unicos
+
                         if not registros:
                             st.error("❌ Nenhum registro válido encontrado. Verifique a estrutura da planilha.")
                         else:
@@ -2789,6 +2799,26 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 
 #endregion 10.2.3
 #region 10.2.4: Lista Detalhada de OS (com Evidências)
+# --- DEBUG: Ativos sem identificação de Pátio (remover depois) ---
+            with st.expander("🔍 Diagnóstico: Ativos sem Pátio identificado", expanded=False):
+                df_sem_patio = df_visao_base[df_visao_base["Patio"].isin(["N/D", "N_D", ""])].copy()
+                total_sem = len(df_sem_patio)
+                total_geral = len(df_visao_base)
+                if total_sem > 0:
+                    st.warning(f"⚠️ **{total_sem} de {total_geral} OS** ({total_sem/total_geral*100:.1f}%) sem pátio identificado.")
+                    ativos_unicos = df_sem_patio[["Ativo"]].drop_duplicates().sort_values("Ativo").reset_index(drop=True)
+                    st.markdown(f"**{len(ativos_unicos)} ativos únicos** não resolvidos:")
+                    st.dataframe(ativos_unicos, use_container_width=True, height=300, hide_index=True)
+                    csv_debug = ativos_unicos.to_csv(index=False).encode("utf-8")
+                    st.download_button(
+                        label="⬇️ Baixar lista de Ativos sem Pátio (CSV)",
+                        data=csv_debug,
+                        file_name="ativos_sem_patio.csv",
+                        mime="text/csv"
+                    )
+                else:
+                    st.success(f"✅ Todos os {total_geral} ativos foram identificados com sucesso!")
+            # --- FIM DEBUG ---
             st.subheader("📋 Lista Detalhada de OS")
             df_lista = df_visao_base.copy().rename(columns={"Ordem servico": "OS"})
 
