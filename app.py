@@ -3397,18 +3397,60 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                 col_tit_crono, col_btn_crono = st.columns([7.5, 2.5])
                 with col_btn_crono:
                     st.markdown("<br>", unsafe_allow_html=True)
-                    excel_crono = io.BytesIO()
-                    df_export = df_tabela_campo[colunas_exibir].copy()
-                    with pd.ExcelWriter(excel_crono, engine="openpyxl") as writer:
-                        df_export.to_excel(writer, index=False, sheet_name="Cronograma")
-                    excel_crono.seek(0)
-                    st.download_button(
-                        label="🖨️ Exportar Cronograma",
-                        data=excel_crono.getvalue(),
-                        file_name=f"Cronograma_Campo_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
-                    )
+                    try:
+                        from reportlab.lib.pagesizes import A4, landscape
+                        from reportlab.lib import colors
+                        from reportlab.lib.units import mm
+                        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+                        from reportlab.lib.styles import getSampleStyleSheet
+
+                        def gerar_pdf_cronograma(df_pdf, colunas):
+                            buf = io.BytesIO()
+                            doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=10*mm, rightMargin=10*mm, topMargin=15*mm, bottomMargin=15*mm)
+                            styles = getSampleStyleSheet()
+                            elementos = []
+                            elementos.append(Paragraph("📋 Cronograma de Execução de Campo", styles["Title"]))
+                            elementos.append(Paragraph(f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')} | Origem: {st.session_state.get('local_nome', 'N/A')} | Raio: {raio_busca_km} km", styles["Normal"]))
+                            elementos.append(Spacer(1, 6*mm))
+                            header = [str(c) for c in colunas]
+                            data_rows = [header]
+                            style_cell = styles["Normal"]
+                            style_cell.fontSize = 7
+                            style_cell.leading = 9
+                            for _, row in df_pdf[colunas].iterrows():
+                                data_rows.append([Paragraph(str(v)[:80], style_cell) for v in row.values])
+                            col_widths = [45, 45, 35, 90, 45, 70, None]
+                            page_w = landscape(A4)[0] - 20*mm
+                            fixed = sum(w for w in col_widths if w is not None)
+                            col_widths[-1] = page_w - fixed
+                            tabela = Table(data_rows, colWidths=col_widths, repeatRows=1)
+                            tabela.setStyle(TableStyle([
+                                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E3A8A")),
+                                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                                ("FONTSIZE", (0, 0), (-1, 0), 8),
+                                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+                                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+                                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                            ]))
+                            elementos.append(tabela)
+                            doc.build(elementos)
+                            buf.seek(0)
+                            return buf.getvalue()
+
+                        pdf_bytes = gerar_pdf_cronograma(df_tabela_campo, colunas_exibir)
+                        st.download_button(
+                            label="🖨️ Gerar Impressão PDF",
+                            data=pdf_bytes,
+                            file_name=f"Cronograma_Campo_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True
+                        )
+                    except ImportError:
+                        st.warning("⚠️ Biblioteca 'reportlab' não instalada. Adicione ao requirements.txt.")
                 with col_tit_crono:
 #endregion 10.3.4
 
