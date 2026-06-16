@@ -1134,27 +1134,27 @@ def render_tela_admin():
     with col_adm_t1:
         st.title("⚙️ Administração de Dados")
     with col_adm_t2:
-        st.markdown("<div style='margin-top: 16px;'></div>", unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
         if st.button("⬅️ Voltar ao Painel", use_container_width=True):
             st.session_state["tela_atual"] = "dashboard"
             st.rerun()
+
     st.markdown("Faça o upload da base de **OS Programadas** para atualizar o sistema central.")
-    
+
     col_up1, col_up2 = st.columns(2)
     with col_up1:
         mes_ref = st.text_input("Mês de Referência (ex: Junho/2026)", placeholder="Mês/Ano")
     with col_up2:
-        coord_upload = st.selectbox("Coordenação da Planilha", ["Paranapiacaba", "Piaçaguera"])
-    
+        coord_upload_fallback = st.selectbox(
+            "Coordenação (usado apenas se a planilha não tiver 'Codigo departamento')",
+            ["Paranapiacaba", "Piaçaguera"]
+        )
+
     arquivo_upload = st.file_uploader("Selecione a planilha Excel ou CSV", type=["csv", "xlsx"])
-    
+
     if arquivo_upload is not None and mes_ref:
         if st.button("🚀 Processar e Salvar no Banco", use_container_width=True, type="primary"):
-            
             escopo_user = st.session_state.get("escopo", "Todas")
-            if escopo_user != "Todas" and escopo_user != coord_upload:
-                st.error(f"⚠️ **ACESSO BLOQUEADO:** Seu perfil está restrito à coordenação **{escopo_user}**.")
-                st.stop()
 
             with st.spinner("Lendo e processando dados..."):
                 try:
@@ -1162,39 +1162,117 @@ def render_tela_admin():
                         df = pd.read_csv(arquivo_upload, sep=';', encoding='utf-8-sig')
                     else:
                         df = pd.read_excel(arquivo_upload)
-                    
+
                     if "Ordem servico" not in df.columns:
                         st.error("❌ A coluna 'Ordem servico' não foi encontrada. Verifique o arquivo.")
                         return
-                    
+
                     df = df.fillna("")
                     total_linhas_arquivo = len(df)
-                    
+
+                    # =====================================================
+                    # DETECÇÃO AUTOMÁTICA DE COORDENAÇÃO
+                    # =====================================================
+                    _mapa_coord_depto = {
+                        "E.SP.IPA": "Paranapiacaba",
+                        "E.SP.IPG": "Piaçaguera",
+                    }
+
+                    col_depto = None
+                    for c in df.columns:
+                        if str(c).strip().upper().replace(" ", "") in ("CODIGODEPARTAMENTO", "CÓDIGODEPARTAMENTO", "CODIGO_DEPARTAMENTO"):
+                            col_depto = c
+                            break
+                        # Busca alternativa: Concatenar (começa com E.SP.IPA ou E.SP.IPG)
+                        if str(c).strip().upper() == "CONCATENAR" and col_depto is None:
+                            col_depto = c
+
+                    deteccao_automatica = False
+                    if col_depto is not None:
+                        # Extrai valores únicos do departamento
+                        valores_depto = df[col_depto].astype(str).str.strip().str.upper().unique()
+                        coords_detectadas = set()
+                        for val in valores_depto:
+                            for prefixo, coord_nome in _mapa_coord_depto.items():
+                                if val.startswith(prefixo) or val == prefixo:
+                                    coords_detectadas.add(coord_nome)
+                                    break
+
+                        if coords_detectadas:
+                            deteccao_automatica = True
+                            st.success(f"🔍 **Detecção automática:** Coordenação identificada pela coluna `{col_depto}` → **{', '.join(sorted(coords_detectadas))}**")
+
+                            # Cria coluna auxiliar com a coordenação de cada linha
+                            def _mapear_coord(val):
+                                v = str(val).strip().upper()
+                                for prefixo, coord_nome in _mapa_coord_depto.items():
+                                    if v.startswith(prefixo):
+                                        return coord_nome
+                                return None  # Linha sem coordenação reconhecida
+
+                            df["_coord_auto"] = df[col_depto].apply(_mapear_coord)
+
+                            # Remove linhas sem coordenação identificada
+                            df_sem_coord = df[df["_coord_auto"].isna()]
+                            if len(df_sem_coord) > 0:
+                                st.warning(f"⚠️ {len(df_sem_coord)} linhas sem coordenação identificada serão ignoradas.")
+                            df = df[df["_coord_auto"].notna()].copy()
+
+                    if not deteccao_automatica:
+                        # Fallback: usa o dropdown
+                        st.info(f"ℹ️ Coluna 'Codigo departamento' não encontrada. Usando seleção manual: **{coord_upload_fallback}**")
+                        df["_coord_auto"] = coord_upload_fallback
+
+                    # Validação de escopo
+                    coords_na_planilha = df["_coord_auto"].unique().tolist()
+                    if escopo_user != "Todas":
+                        coords_permitidas = [c for c in coords_na_planilha if c == escopo_user]
+                        if not coords_permitidas:
+                            st.error(f"⚠️ **ACESSO BLOQUEADO:** Seu perfil está restrito à coordenação **{escopo_user}**, mas a planilha contém apenas **{', '.join(coords_na_planilha)}**.")
+                            st.stop()
+                        # Filtra apenas as OS da coordenação permitida
+                        df = df[df["_coord_auto"] == escopo_user].copy()
+                        st.info(f"🔒 Filtrado para sua coordenação: **{escopo_user}** ({len(df)} linhas)")
+
+                    # =====================================================
+                    # GRAVAÇÃO (agrupa por coordenação detectada)
+                    # =====================================================
                     def conversor_brasileiro(obj):
                         if isinstance(obj, (pd.Timestamp, datetime)):
                             return obj.strftime('%d/%m/%Y')
                         return str(obj)
-                    
-                    # --- FASE 1: Preparar registros em memória ---
+
                     barra = st.progress(0, text="Preparando dados...")
-                    registros = []
+                    registros_por_coord = {}
+
                     for idx, (_, row) in enumerate(df.iterrows()):
                         os_num = str(row["Ordem servico"]).strip()
-                        if os_num:
-                            dados_json = json.dumps(row.to_dict(), default=conversor_brasileiro)
-                            registros.append((os_num, mes_ref, coord_upload, dados_json))
-                        if (idx + 1) % 200 == 0 or (idx + 1) == total_linhas_arquivo:
-                            pct = min((idx + 1) / total_linhas_arquivo, 0.5)
-                            barra.progress(pct, text=f"Preparando... {idx + 1}/{total_linhas_arquivo} linhas")
-                    
-                    # --- FASE 2: Gravar no banco em lotes ---
+                        coord_linha = row["_coord_auto"]
+                        if os_num and coord_linha:
+                            row_limpa = row.drop(labels=["_coord_auto"], errors="ignore")
+                            dados_json = json.dumps(row_limpa.to_dict(), default=conversor_brasileiro)
+                            if coord_linha not in registros_por_coord:
+                                registros_por_coord[coord_linha] = []
+                            registros_por_coord[coord_linha].append((os_num, mes_ref, coord_linha, dados_json))
+
+                        if (idx + 1) % 200 == 0 or (idx + 1) == len(df):
+                            pct = min((idx + 1) / len(df), 0.5)
+                            barra.progress(pct, text=f"Preparando... {idx + 1}/{len(df)} linhas")
+
+                    # Gravação em lote por coordenação
                     barra.progress(0.5, text="Gravando no banco de dados...")
+                    total_gravados = 0
+
                     conn = get_connection()
                     try:
                         cur = conn.cursor()
+                        todos_registros = []
+                        for coord_nome, regs in registros_por_coord.items():
+                            todos_registros.extend(regs)
+
                         lote_size = 500
-                        for i in range(0, len(registros), lote_size):
-                            lote = registros[i:i + lote_size]
+                        for i in range(0, len(todos_registros), lote_size):
+                            lote = todos_registros[i:i + lote_size]
                             execute_values(
                                 cur,
                                 """
@@ -1208,29 +1286,34 @@ def render_tela_admin():
                                 lote,
                                 page_size=lote_size
                             )
-                            pct = min(0.5 + (i + len(lote)) / len(registros) * 0.5, 1.0)
-                            barra.progress(pct, text=f"Gravando... {min(i + lote_size, len(registros))}/{len(registros)} registros")
-                        
+                            pct = min(0.5 + (i + len(lote)) / len(todos_registros) * 0.5, 1.0)
+                            barra.progress(pct, text=f"Gravando... {min(i + lote_size, len(todos_registros))}/{len(todos_registros)} registros")
+
                         conn.commit()
                         cur.close()
+                        total_gravados = len(todos_registros)
                     finally:
                         release_connection(conn)
 
                     barra.progress(1.0, text="Concluído!")
-                    st.success(f"✅ Sucesso! {len(registros)} de {total_linhas_arquivo} linhas foram processadas.")
+
+                    # Resumo por coordenação
+                    resumo_partes = []
+                    for coord_nome, regs in registros_por_coord.items():
+                        resumo_partes.append(f"**{coord_nome}**: {len(regs)} OS")
+                    resumo_txt = " | ".join(resumo_partes)
+
+                    st.success(f"✅ Sucesso! {total_gravados} OS processadas → {resumo_txt}")
                     st.cache_data.clear()
                     time.sleep(1.5)
                     st.rerun()
-                    
-                except Exception as e:
 
-                    st.error(f"❌  Ocorreu um erro ao processar o arquivo: {e}")
+                except Exception as e:
+                    st.error(f"❌ Ocorreu um erro ao processar o arquivo: {e}")
+
     elif arquivo_upload is not None:
         st.warning("⚠️ Preencha o Mês e a Coordenação antes de processar.")
 
-    # ==============================================
-    # HISTÓRICO DE UPLOADS (aba recolhível)
-    # ==============================================
     st.markdown("---")
 #endregion 3.8.1
 
