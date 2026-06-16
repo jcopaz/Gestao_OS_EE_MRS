@@ -749,8 +749,10 @@ def preparar_df_visao(df_base: pd.DataFrame, filtro_visao: str) -> pd.DataFrame:
     df_visao = df_base.copy()
 
     if filtro_visao != "Todas":
+        _kw_map = {"Paranapiacaba": "paranap", "Piaçaguera": "piac"}
+        _kw = _kw_map.get(filtro_visao, filtro_visao.lower()[:5])
         df_visao = df_visao[
-            df_visao["Coordenacao"].str.contains(filtro_visao, case=False, na=False, regex=False)
+            df_visao["Coordenacao"].str.lower().str.contains(_kw, na=False, regex=False)
         ].copy()
 
     df_visao["Status_norm"] = df_visao["Status da Operação"].astype(str).str.strip().str.upper()
@@ -2029,8 +2031,10 @@ def carregar_base_sem_overlay(
 
     # 4. Aplica o filtro de escopo de quem está logado
     if escopo_usuario != "Todas":
+        _kw_map = {"Paranapiacaba": "paranap", "Piaçaguera": "piac"}
+        _kw = _kw_map.get(escopo_usuario, escopo_usuario.lower()[:5])
         df_base_final = df_base_final[
-            df_base_final["Coordenacao"].str.contains(escopo_usuario, case=False, na=False, regex=False)
+            df_base_final["Coordenacao"].str.lower().str.contains(_kw, na=False, regex=False)
         ]
 
     return df_base_final
@@ -2053,7 +2057,9 @@ def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, bai
     df_base["Ordem servico"] = df_base["Ordem servico"].astype(str)
 
     if escopo_usuario != "Todas":
-        df_baixas = df_baixas[df_baixas["coordenacao"].str.contains(escopo_usuario, case=False, na=False)]
+        _kw_map = {"Paranapiacaba": "paranap", "Piaçaguera": "piac"}
+        _kw = _kw_map.get(escopo_usuario, escopo_usuario.lower()[:5])
+        df_baixas = df_baixas[df_baixas["coordenacao"].str.lower().str.contains(_kw, na=False, regex=False)]
 
     # Correção Ponto 3: Incluindo a geolocalização no cruzamento
     colunas_overlay = ["Status da Operação", "Data/Hora Realizado", "Concluído por", "Geolocalização de Baixa"]
