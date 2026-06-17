@@ -748,11 +748,50 @@ def classificar_turno(dt):
 def preparar_df_visao(df_base: pd.DataFrame, filtro_visao: str) -> pd.DataFrame:
     df_visao = df_base.copy()
 
+    # --- NORMALIZAÇÃO DEFENSIVA DA COLUNA DE COORDENAÇÃO ---
+    # Garante que a coluna existe (pode ser "Coordenacao" ou "coordenacao")
+    col_coord = None
+    for candidata in ["Coordenacao", "coordenacao", "COORDENACAO"]:
+        if candidata in df_visao.columns:
+            col_coord = candidata
+            break
+
+    if col_coord is None:
+        # Se não existe nenhuma variante, cria com valor padrão
+        df_visao["Coordenacao"] = "N/D"
+        col_coord = "Coordenacao"
+    elif col_coord != "Coordenacao":
+        # Padroniza o nome da coluna para "Coordenacao" (capital C)
+        df_visao = df_visao.rename(columns={col_coord: "Coordenacao"})
+        col_coord = "Coordenacao"
+
+    # --- NORMALIZAÇÃO DOS VALORES (resolve ç, case, espaços) ---
+    _mapa_norm_coord = {
+        "PARANAPIACABA": "Paranapiacaba",
+        "PIAÇAGUERA": "Piaçaguera",
+        "PIACAGUERA": "Piaçaguera",   # sem cedilha
+        "IPG": "Piaçaguera",
+        "IPA": "Paranapiacaba",
+        "E.SP.IPG": "Piaçaguera",
+        "E.SP.IPA": "Paranapiacaba",
+    }
+
+    def _normalizar_coord(val):
+        if pd.isna(val) or str(val).strip() == "":
+            return "N/D"
+        v = str(val).strip().upper()
+        return _mapa_norm_coord.get(v, str(val).strip())
+
+    df_visao["Coordenacao"] = df_visao["Coordenacao"].apply(_normalizar_coord)
+
+    # --- FILTRO SEGURO (comparação exata após normalização) ---
     if filtro_visao != "Todas":
+        filtro_norm = _normalizar_coord(filtro_visao)
         df_visao = df_visao[
-            df_visao["Coordenacao"].str.contains(filtro_visao, case=False, na=False, regex=False)
+            df_visao["Coordenacao"] == filtro_norm
         ].copy()
 
+    # --- COLUNAS DERIVADAS (mantidas como estavam) ---
     df_visao["Status_norm"] = df_visao["Status da Operação"].astype(str).str.strip().str.upper()
     df_visao["dt_realizado"] = df_visao["Data/Hora Realizado"].apply(parse_datahora_realizado)
     df_visao["Turno"] = df_visao["dt_realizado"].apply(classificar_turno)
@@ -760,52 +799,11 @@ def preparar_df_visao(df_base: pd.DataFrame, filtro_visao: str) -> pd.DataFrame:
     df_visao["dt_prog_filtro"] = pd.to_datetime(df_visao["Data inicial programada"], errors="coerce")
     df_visao["Turno_Filtro"] = df_visao["Turno"].fillna("Pendente (Sem Turno)")
 
+    # --- COLUNA DE TIPO DE INTERVALO (normaliza nome se necessário) ---
+    if "TIPO_INTERVALO_CAN" in df_visao.columns and "Tipo_Intervalo" not in df_visao.columns:
+        df_visao["Tipo_Intervalo"] = df_visao["TIPO_INTERVALO_CAN"]
+
     return df_visao
-
-def aplicar_filtros_sidebar(
-    df_visao: pd.DataFrame,
-    patios_selecionados: list,
-    classif_selecionadas: list,
-    turnos_selecionados: list,
-    start_date, end_date,
-    status_sel: str,
-    intervalo_sel: str = "Todas"
-) -> pd.DataFrame:
-
-    df_filtrado = df_visao[
-        (df_visao["Patio"].isin(patios_selecionados)) &
-        (df_visao["Classificacao"].isin(classif_selecionadas)) &
-        (df_visao["Turno_Filtro"].isin(turnos_selecionados)) &
-        (df_visao["dt_prog_filtro"].dt.date >= start_date) &
-        (df_visao["dt_prog_filtro"].dt.date <= end_date)
-    ].copy()
-
-    if status_sel == "Todas Concluídas":
-        df_filtrado = df_filtrado[
-            df_filtrado["Status_norm"].isin(_status_prazo | _status_atraso)
-        ]
-    elif status_sel == "Concluídas no Prazo":
-        df_filtrado = df_filtrado[
-            df_filtrado["Status_norm"].isin(_status_prazo)
-        ]
-    elif status_sel == "Concluídas com Atraso":
-        df_filtrado = df_filtrado[
-            df_filtrado["Status_norm"].isin(_status_atraso)
-        ]
-
-    elif status_sel == "Pendentes":
-        df_filtrado = df_filtrado[
-            df_filtrado["Status_norm"].isin(_status_aberto)
-        ]
-
-    # --- FILTRO DE INTERVALO ---
-    if intervalo_sel == "Com Intervalo" and "Tipo_Intervalo" in df_filtrado.columns:
-        df_filtrado = df_filtrado[df_filtrado["Tipo_Intervalo"] == "Com Intervalo"]
-    elif intervalo_sel == "Sem Intervalo" and "Tipo_Intervalo" in df_filtrado.columns:
-        df_filtrado = df_filtrado[df_filtrado["Tipo_Intervalo"] == "Sem Intervalo"]
-
-    return df_filtrado
-
 #endregion
 
 #region 3.7: Calendário Mensal de Demanda por Pátio
@@ -2111,9 +2109,19 @@ def carregar_base_sem_overlay(
     df_base_final = pd.concat(dfs_tratados, ignore_index=True)
 
     # 4. Aplica o filtro de escopo de quem está logado
+    
     if escopo_usuario != "Todas":
+        _mapa_escopo = {
+            "PARANAPIACABA": "Paranapiacaba",
+            "PIAÇAGUERA": "Piaçaguera",
+            "PIACAGUERA": "Piaçaguera",
+        }
+        escopo_norm = _mapa_escopo.get(escopo_usuario.strip().upper(), escopo_usuario.strip())
         df_base_final = df_base_final[
-            df_base_final["Coordenacao"].str.contains(escopo_usuario, case=False, na=False, regex=False)
+            df_base_final["Coordenacao"].apply(
+                lambda x: str(x).strip().upper() == escopo_norm.upper()
+                if pd.notna(x) else False
+            )
         ]
 
     return df_base_final
