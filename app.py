@@ -2677,7 +2677,14 @@ df_base = aplicar_overlay_baixas(
 )
 
 st.session_state["df_os"] = df_base
+
 df_visao = preparar_df_visao(df_base, filtro_visao)
+
+# --- GUARD: se base vazia após filtros, mostra aviso e para ---
+if df_visao.empty or "dt_prog_filtro" not in df_visao.columns:
+    st.info("📋 Nenhuma OS encontrada. Faça o upload das planilhas em **⚙️ Dados** para começar.")
+    st.stop()
+
 #endregion
 
 #region 7.3: Filtros da Sidebar
