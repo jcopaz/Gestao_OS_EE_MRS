@@ -823,36 +823,37 @@ def render_tela_admin():
         try:
             if ver_tudo:
                 query_hist = """
-                SELECT 
-                    coordenacao AS "Coordenação",
-                    MAX((data_upload AT TIME ZONE 'UTC') AT TIME ZONE 'America/Sao_Paulo') AS "Último Upload",
-                    COUNT(*) AS "Linhas Carregadas"
-                FROM os_programadas
-                WHERE coordenacao = %s
-                GROUP BY coordenacao
-                ORDER BY MAX(data_upload) DESC
-                """
+                        SELECT coordenacao AS "Coordenação",
+                            MAX(data_upload) AS "Último Upload",
+                            COUNT(*) AS "Linhas Carregadas"
+                        FROM os_programadas
+                        GROUP BY coordenacao
+                        ORDER BY MAX(data_upload) DESC
+                    """
                 df_hist = pd.read_sql_query(query_hist, conn)
             else:
                 # Filtra pela coordenação do usuário
                 filtro_coord = escopo_user if escopo_user else "Paranapiacaba"
                 query_hist = """
-                SELECT 
-                    coordenacao AS "Coordenação",
-                    MAX((data_upload AT TIME ZONE 'UTC') AT TIME ZONE 'America/Sao_Paulo') AS "Último Upload",
-                    COUNT(*) AS "Linhas Carregadas"
-                FROM os_programadas
-                WHERE coordenacao = %s
-                GROUP BY coordenacao
-                ORDER BY MAX(data_upload) DESC
-                """
+                        SELECT coordenacao AS "Coordenação",
+                            MAX(data_upload) AS "Último Upload",
+                            COUNT(*) AS "Linhas Carregadas"
+                        FROM os_programadas
+                        WHERE coordenacao = %s
+                        GROUP BY coordenacao
+                        ORDER BY MAX(data_upload) DESC
+                    """
                 df_hist = pd.read_sql_query(query_hist, conn, params=(filtro_coord,))
         finally:
             release_connection(conn)
         
         if not df_hist.empty:
-            # Formata a data para o padrão brasileiro
-            df_hist["Último Upload"] = pd.to_datetime(df_hist["Último Upload"]).dt.strftime("%d/%m/%Y %H:%M")
+            # Formata a data e fuso horário direto no Pandas (Evita erro de sintaxe do PostgreSQL)
+            df_hist["Último Upload"] = pd.to_datetime(df_hist["Último Upload"])
+            if df_hist["Último Upload"].dt.tz is None:
+                df_hist["Último Upload"] = df_hist["Último Upload"].dt.tz_localize("UTC")
+            df_hist["Último Upload"] = df_hist["Último Upload"].dt.tz_convert("America/Sao_Paulo").dt.strftime("%d/%m/%Y %H:%M")
+            
             df_hist["Linhas Carregadas"] = df_hist["Linhas Carregadas"].astype(int)
             
             if ver_tudo:
@@ -873,8 +874,7 @@ def render_tela_admin():
             st.info(f"📦 **Total de OS na base:** {total_geral:,} registros".replace(",", "."))
         else:
             st.info("Nenhum upload realizado até o momento.")
-    st.markdown("---")
-#endregion 3.8.2
+    #endregion 3.8.2
 
     #region 3.8.3: Upload de Mapeamento de Pátios
     with st.expander("🗺️ Mapeamento de Ativos → Pátios", expanded=False):
