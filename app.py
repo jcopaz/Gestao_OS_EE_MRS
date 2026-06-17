@@ -743,8 +743,11 @@ def resumir_demanda_calendario(df_base_cal: pd.DataFrame, ano: int, mes: int, di
     return {"dia_ref": dia_atual_ref, "qtd_patios": int(qtd_patios), "total_os": int(total_os), "patio_prioritario": patio_prioritario_txt, "serie_total_os_mes": serie_total_os_mes, "labels_mes": labels_mes}
 
 @st.cache_data(show_spinner=False)
+#region 3.7.4: Resumo de Conclusões por Turno
 def resumir_conclusoes_por_turno_data(df_base_cal: pd.DataFrame, data_ref) -> dict:
-    if df_base_cal.empty: return {"labels": ["00h-07h", "07h-16h", "16h-00h"], "valores": [0, 0, 0], "titulo": "Quantidade de OS Concluídas", "subtitulo": "Sem dados"}
+    ordem_turnos = ["Turno Dia (07h-19h)", "Administrativo (08h-17h30)", "Turno Noite (19h-07h)"]
+    if df_base_cal.empty: return {"labels": ordem_turnos, "valores": [0, 0, 0], "titulo": "Quantidade de OS Concluídas", "subtitulo": "Sem dados"}
+    
     df = df_base_cal.copy()
     if "dt_prog_filtro" not in df.columns: df["dt_prog_filtro"] = pd.to_datetime(df["Data inicial programada"], errors="coerce")
     if "dt_realizado" not in df.columns: df["dt_realizado"] = df["Data/Hora Realizado"].apply(parse_datahora_realizado)
@@ -754,7 +757,7 @@ def resumir_conclusoes_por_turno_data(df_base_cal: pd.DataFrame, data_ref) -> di
     data_ref, hoje_ref = pd.to_datetime(data_ref).date(), datetime.now().date()
     df_realizadas = df[df["Status_norm"].isin(_status_prazo | _status_atraso)].copy()
 
-    if df_realizadas.empty: return {"labels": ["00h-07h", "07h-16h", "16h-00h"], "valores": [0, 0, 0], "titulo": "Quantidade de OS Concluídas", "subtitulo": "Sem dados"}
+    if df_realizadas.empty: return {"labels": ordem_turnos, "valores": [0, 0, 0], "titulo": "Quantidade de OS Concluídas", "subtitulo": "Sem dados"}
     if data_ref <= hoje_ref:
         df_ref = df_realizadas[pd.to_datetime(df_realizadas["dt_realizado"], errors="coerce").dt.date == data_ref].copy()
         subtitulo = f"Concluídas em {data_ref.strftime('%d/%m/%Y')}"
@@ -763,7 +766,7 @@ def resumir_conclusoes_por_turno_data(df_base_cal: pd.DataFrame, data_ref) -> di
         subtitulo = f"Antecipadas para {data_ref.strftime('%d/%m/%Y')}"
 
     serie = df_ref.groupby("Turno").size() if not df_ref.empty else pd.Series(dtype=int)
-    return {"labels": ["00h-07h", "07h-16h", "16h-00h"], "valores": [int(serie.get(t, 0)) for t in ["00h-07h", "07h-16h", "16h-00h"]], "titulo": "Quantidade de OS Concluídas", "subtitulo": subtitulo}
+    return {"labels": ordem_turnos, "valores": [int(serie.get(t, 0)) for t in ordem_turnos], "titulo": "Quantidade de OS Concluídas", "subtitulo": subtitulo}
 #endregion 3.7
 
 #region 3.8: Administração de Dados (render_tela_admin)
@@ -1010,6 +1013,7 @@ def render_tela_admin():
 #endregion 3.8
 
 #endregion SESSÃO 3
+#endregion
 
 #region SESSÃO 4: Banco de Coordenadas Fixo
 
@@ -1071,6 +1075,7 @@ def obter_base_padrao_usuario():
     coord = COORDENADAS_FIXAS.get(chave_coord, COORDENADAS_FIXAS["IPA"])
     return float(coord[0]), float(coord[1]), nome_exibicao
 #endregion SESSÃO 4
+#endregion
 
 #region SESSÃO 5: ETL (Carregamento e Tratamento)
 ETL_VERSION = "v6_leitura_crua_status_avancado"
@@ -1307,20 +1312,32 @@ def gerar_base_simulada(qtd: int = 800, seed: int = 42, pct_p: int = 45, pct_ok:
         stt = df.at[i, "Status da Operação"]
         if stt == "Não Realizado": continue
         prog = pd.to_datetime(df.at[i, "Data inicial programada"])
-        turno = rng.choice(["00h-07h", "07h-16h", "16h-00h"], p=[0.15, 0.60, 0.25])
-        if turno == "00h-07h": hh = int(rng.integers(0, 7))
-        elif turno == "07h-16h": hh = int(rng.integers(7, 16))
-        else: hh = int(rng.integers(16, 24))
-        mm = int(rng.integers(0, 60))
-
+        
         if stt == "Realizado": delta = int(rng.integers(0, 4)); real_date = (prog - pd.Timedelta(days=delta)).to_pydatetime()
         else: delta = int(rng.integers(1, 11)); real_date = (prog + pd.Timedelta(days=delta)).to_pydatetime()
+
+        # --- NOVA LÓGICA DE SIMULAÇÃO DOS TURNOS ---
+        turno_alvo = rng.choice(["Administrativo", "Turno Dia", "Turno Noite"], p=[0.45, 0.35, 0.20])
+        
+        if turno_alvo == "Administrativo":
+            # Força dia de semana para o Administrativo
+            while real_date.weekday() >= 5: real_date -= pd.Timedelta(days=1)
+            hh, mm = int(rng.integers(8, 16)), int(rng.integers(0, 59))
+        elif turno_alvo == "Turno Noite":
+            # Qualquer dia, mas horário noturno
+            hh, mm = int(rng.choice([19, 20, 21, 22, 23, 0, 1, 2, 3, 4, 5, 6])), int(rng.integers(0, 59))
+        else:
+            # Turno Dia: Força fim de semana para garantir que o sistema leia como "Turno Dia" puro
+            while real_date.weekday() < 5: real_date += pd.Timedelta(days=1)
+            hh, mm = int(rng.integers(7, 18)), int(rng.integers(0, 59))
 
         real_dt = real_date.replace(hour=hh, minute=mm, second=0, microsecond=0)
         df.at[i, "Data/Hora Realizado"] = formatar_dt_br(real_dt)
         duracao_mins = int(rng.integers(20, 240))
         ini_dt = real_dt - pd.Timedelta(minutes=duracao_mins)
         tec = rng.choice(tecnicos_mock)
+        
+        # Simula Fraude de GPS (para pegar na Governança)
         gps_str = f"Lat: -23.{rng.integers(100,999)}, Lon: -46.{rng.integers(100,999)}"
         if rng.random() < 0.1: gps_str = "Sede IPA (Lat: -23.767, Lon: -46.344)"
 
@@ -1464,7 +1481,7 @@ else: min_date, max_date = datetime.now().date() - pd.Timedelta(days=30), dateti
 
 lista_patios = sorted(df_visao["Patio"].dropna().astype(str).unique().tolist())
 lista_classificacoes = ["Confiabilidade e Segurança", "Segurança", "Confiabilidade"]
-lista_turnos = ["00h-07h", "07h-16h", "16h-00h", "Pendente (Sem Turno)"]
+lista_turnos = ["Turno Dia (07h-19h)", "Administrativo (08h-17h30)", "Turno Noite (19h-07h)", "Pendente (Sem Turno)"]
 status_opcoes = ["Todos", "Todas Concluídas", "Concluídas no Prazo", "Concluídas com Atraso", "Pendentes", "Atrasado"]
 
 def _sanear_lista_filtro(chave: str, opcoes: list[str], padrao: list[str]):
@@ -1850,7 +1867,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                 elif taxa_conclusao <= 80: gauge_color = cor_prazo
                 else: gauge_color = cor_real
 
-                #region 10.2.1: Resumo Executivo (Gauge + Rosca + Área)
+#region 10.2.1: Resumo Executivo (Gauge + Rosca + Área)
                 with st.expander("Resumo Executivo (Geral)", expanded=True):
                     col_g1, col_g2, col_g5 = st.columns(3)
                     with col_g1:
@@ -1909,7 +1926,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         else: st.info("Sem datas suficientes para área.")
                 #endregion 10.2.1
 
-                #region 10.2.2: Análise Operacional (Matriz de Prioridades)
+#region 10.2.2: Análise Operacional (Matriz de Prioridades)
                 with st.expander("Análise Operacional: Matriz de Prioridades e Execução por Categoria", expanded=True):
                     col_h1, col_h2 = st.columns([1.2, 1])
                     with col_h1:
@@ -1956,17 +1973,17 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         }, height="380px", theme="streamlit", key="aba1_bar_horiz")
                 #endregion 10.2.2
 
-                #region 10.2.3: Execução por Turno e Acumulado
+#region 10.2.3: Execução por Turno e Acumulado
                 with st.expander("Execução por Turno e Acumulado", expanded=True):
                     col_g3, col_g6 = st.columns(2)
-                    _cor_turno = { "00h-07h": "#4F46E5", "07h-16h": "#3B82F6", "16h-00h": "#06B6D4" }
+                    _cor_turno = { "Turno Dia (07h-19h)": "#F59E0B", "Administrativo (08h-17h30)": "#3B82F6", "Turno Noite (19h-07h)": "#4F46E5" }
                     with col_g3:
                         st.markdown("#### Realizado por Turno")
-                        x_turnos = ["00h-07h", "07h-16h", "16h-00h"]
+                        x_turnos = ["Turno Dia (07h-19h)", "Administrativo (08h-17h30)", "Turno Noite (19h-07h)"]
                         _cnt_t = df_visao_base[df_visao_base["Status_norm"].isin(_status_prazo | _status_atraso)].groupby("Turno").size()
                         y_vals = [int(_cnt_t.get(t, 0)) for t in x_turnos]
                         st_echarts(options={
-                            "tooltip": {"trigger": "axis"}, "xAxis": {"type": "category", "data": x_turnos}, "yAxis": {"type": "value"},
+                            "tooltip": {"trigger": "axis"}, "xAxis": {"type": "category", "data": x_turnos, "axisLabel": {"interval": 0, "fontSize": 10}}, "yAxis": {"type": "value"},
                             "toolbox": {"show": True, "feature": {"magicType": {"type": ["line", "bar"], "title": {"line": "Linha", "bar": "Barra"}}, "restore": {"title": "Restaurar"}, "saveAsImage": {"title": "Salvar Imagem"}}},
                             "grid": {"left": "5%", "right": "5%", "bottom": "15%", "top": "15%", "containLabel": True},
                             "series": [{"type": "bar", "barWidth": "55%", "label": {"show": True, "position": "inside", "formatter": "{c}", "color": "#FFFFFF", "fontWeight": "bold"}, "data": [{"value": v, "name": t, "itemStyle": {"color": _cor_turno.get(t, "#94A3B8")}} for t, v in zip(x_turnos, y_vals)]}],
@@ -1977,7 +1994,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         df_linhas_plot = df_visao_base.dropna(subset=["dia_realizado"]).copy()
                         if not df_linhas_plot.empty:
                             _idx_dt = pd.date_range(start=df_linhas_plot["dia_realizado"].min(), end=df_linhas_plot["dia_realizado"].max(), freq="D")
-                            _series_t = [{"name": _t, "type": "line", "smooth": True, "data": (df_linhas_plot[df_linhas_plot["Turno"] == _t].groupby("dia_realizado").size().reindex(_idx_dt, fill_value=0).cumsum()).tolist(), "lineStyle": {"color": _cor_turno[_t], "width": 3}, "itemStyle": {"color": _cor_turno[_t]}} for _t in ["00h-07h", "07h-16h", "16h-00h"]]
+                            _series_t = [{"name": _t, "type": "line", "smooth": True, "data": (df_linhas_plot[df_linhas_plot["Turno"] == _t].groupby("dia_realizado").size().reindex(_idx_dt, fill_value=0).cumsum()).tolist(), "lineStyle": {"color": _cor_turno[_t], "width": 3}, "itemStyle": {"color": _cor_turno[_t]}} for _t in x_turnos]
                             st_echarts(options={
                                 "tooltip": {"trigger": "axis"}, "legend": {"top": "bottom"},
                                 "toolbox": {"show": True, "feature": {"magicType": {"type": ["line", "bar", "stack"], "title": {"line": "Linha", "bar": "Barra", "stack": "Empilhado"}}, "restore": {"title": "Restaurar"}, "saveAsImage": {"title": "Salvar Imagem"}}},
@@ -1988,7 +2005,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         else: st.info("Sem dados cronológicos.")
                 #endregion 10.2.3
 
-                #region 10.2.4: Lista Detalhada de OS (com Evidências)
+#region 10.2.4: Lista Detalhada de OS (com Evidências)
                 st.subheader("📋 Lista Detalhada de OS")
                 df_lista = df_visao_base.copy().rename(columns={"Ordem servico": "OS"})
                 try:
@@ -2018,7 +2035,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
         with tab2:
             df_recomendado = pd.DataFrame()
             
-            #region 10.3.1: CSS + Calendário Mensal + Cards + Turno
+#region 10.3.1: CSS + Calendário Mensal + Cards + Turno
             st.markdown("### 📅 Agenda Mensal de Demanda por Pátio")
             st.markdown("""
                 <style>
@@ -2112,14 +2129,12 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         st.markdown(f"<div style='margin-bottom: 16px;'></div><div class='kpi-wrapper kpi-card-red'><div class='kpi-title-red'>Pátio Prioritário</div><div class='kpi-val-red'>{resumo_card['patio_prioritario']}</div><div class='kpi-sub-red'>Critério: backlog + prioridade</div></div>", unsafe_allow_html=True)
 
                     with col_turno:
-                        _cor_turno_aba2 = { "00h-07h": "#4F46E5", "07h-16h": "#3B82F6", "16h-00h": "#06B6D4" }
+                        _cor_turno_aba2 = { "Turno Dia (07h-19h)": "#F59E0B", "Administrativo (08h-17h30)": "#3B82F6", "Turno Noite (19h-07h)": "#4F46E5" }
                         dados_formatados_turno = [{"value": val, "itemStyle": { "color": _cor_turno_aba2.get(lbl, "#3B82F6"), "borderRadius": [0, 6, 6, 0] }} for lbl, val in zip(resumo_turno["labels"], resumo_turno["valores"])]
-                        with st.container(border=True):
-                            st_echarts(options={ "title": {"text": resumo_turno["titulo"], "subtext": resumo_turno["subtitulo"], "left": "center", "top": "5%"}, "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}}, "grid": { "left": "18%", "right": "10%", "bottom": "12%", "top": "24%", "containLabel": True }, "xAxis": { "type": "value", "minInterval": 1 }, "yAxis": { "type": "category", "data": resumo_turno["labels"], "axisLine": { "show": False }, "axisTick": { "show": False }}, "series": [{"name": "OS Concluídas", "type": "bar", "data": dados_formatados_turno, "barWidth": "42%", "label": { "show": True, "position": "right", "color": "#1E293B", "fontWeight": "bold"}}] }, height="435px", theme="streamlit", key="chart_conclusoes_turno_data")
             st.markdown("---")
             #endregion 10.3.1
 
-            #region 10.3.2: Navegação Geográfica Operacional (GPS + Raio)
+ #region 10.3.2: Navegação Geográfica Operacional (GPS + Raio)
             st.markdown("### 🗺️ Navegação Geográfica Operacional")
             col_mapa, col_acao = st.columns([6, 4], gap="large")
 
@@ -2184,7 +2199,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                 if not df_recomendado.empty:
             #endregion 10.3.2
 
-            #region 10.3.3: Formulário de Baixa de OS + Evidências (fragment)
+ #region 10.3.3: Formulário de Baixa de OS + Evidências (fragment)
                     @st.fragment
                     def renderizar_bloco_apontamento():
                         st.markdown("---")
@@ -2272,7 +2287,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     st.markdown("---")
             #endregion 10.3.3
 
-            #region 10.3.4: Mapa Interativo Otimizado (Cache da Malha)
+ #region 10.3.4: Mapa Interativo Otimizado (Cache da Malha)
             with col_mapa:
                 lat_centro = min(max(lat_origem, -25.50), -19.50)
                 lon_centro = min(max(lon_origem, -53.50), -44.00)
@@ -2302,7 +2317,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
             st.markdown("---")
             #endregion 10.3.4
 
-            #region 10.3.5: Cronograma de Execução de Campo (Tabela/PDF)
+#region 10.3.5: Cronograma de Execução de Campo (Tabela/PDF)
             if not df_recomendado.empty:
                 df_tabela_campo = df_recomendado.copy().rename(columns={"Ordem servico": "OS", "Classificacao": "Classificação"})
                 df_tabela_campo["Data da Programação"] = df_tabela_campo["dt_prog_filtro"].dt.strftime("%d/%m/%Y")
