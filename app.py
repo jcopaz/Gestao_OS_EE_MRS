@@ -571,9 +571,24 @@ def parse_datahora_realizado(valor):
 def classificar_turno(dt):
     if pd.isna(dt): return None
     h = int(dt.hour)
-    if 0 <= h < 7: return "00h-07h"
-    if 7 <= h < 16: return "07h-16h"
-    return "16h-00h"
+    m = int(dt.minute)
+    wd = dt.weekday() # 0=Seg, 1=Ter, ..., 5=Sab, 6=Dom
+    
+    # 1. Turno Noite: Todos os dias das 19h as 06h59
+    if h >= 19 or h < 7:
+        return "Turno Noite (19h-07h)"
+        
+    # 2. Dias de Semana (Segunda a Sexta)
+    if wd < 5:
+        # Administrativo: 08:00 as 17:30
+        if (h > 8 and h < 17) or (h == 8) or (h == 17 and m <= 30):
+            return "Administrativo (08h-17h30)"
+        else:
+            # Janelas do Revezamento Dia durante a semana (07h as 07h59 e 17h31 as 18h59)
+            return "Turno Dia (07h-19h)"
+    else:
+        # 3. Finais de Semana: Revezamento Dia integral (07h as 18h59)
+        return "Turno Dia (07h-19h)"
 #endregion
 
 #region 3.6: Auxiliares da Sidebar — Preparação e Filtros (Blindagem)
