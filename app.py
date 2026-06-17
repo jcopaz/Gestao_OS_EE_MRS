@@ -806,6 +806,60 @@ def preparar_df_visao(df_base: pd.DataFrame, filtro_visao: str) -> pd.DataFrame:
     return df_visao
 #endregion
 
+#region 3.6.1: Aplicar Filtros da Sidebar (aplicar_filtros_sidebar)
+def aplicar_filtros_sidebar(
+    df_visao: pd.DataFrame,
+    patios_selecionados: list,
+    classif_selecionadas: list,
+    turnos_selecionados: list,
+    start_date,
+    end_date,
+    status_sel: str = "Todos",
+    intervalo_sel: str = "Todas"
+) -> pd.DataFrame:
+    """Aplica todos os filtros da sidebar sobre o DataFrame já preparado pela preparar_df_visao."""
+    df = df_visao.copy()
+
+    # 1. Filtro de Período (Data Programada)
+    if "dt_prog_filtro" in df.columns:
+        mask_data = (
+            (df["dt_prog_filtro"].dt.date >= start_date) &
+            (df["dt_prog_filtro"].dt.date <= end_date)
+        ) | df["dt_prog_filtro"].isna()
+        df = df[mask_data]
+
+    # 2. Filtro de Pátios
+    if patios_selecionados:
+        df = df[df["Patio"].isin(patios_selecionados)]
+
+    # 3. Filtro de Classificação
+    if classif_selecionadas:
+        df = df[df["Classificacao"].isin(classif_selecionadas)]
+
+    # 4. Filtro de Turno
+    if turnos_selecionados and "Turno_Filtro" in df.columns:
+        df = df[df["Turno_Filtro"].isin(turnos_selecionados)]
+
+    # 5. Filtro de Status
+    if status_sel != "Todos" and "Status_norm" in df.columns:
+        if status_sel == "Todas Concluídas":
+            df = df[df["Status_norm"].isin(_status_prazo | _status_atraso)]
+        elif status_sel == "Concluídas no Prazo":
+            df = df[df["Status_norm"].isin(_status_prazo)]
+        elif status_sel == "Concluídas com Atraso":
+            df = df[df["Status_norm"].isin(_status_atraso)]
+        elif status_sel == "Pendentes":
+            df = df[df["Status_norm"].isin(_status_aberto)]
+        elif status_sel == "Atrasado":
+            df = df[df["Status_norm"] == "ATRASADO"]
+
+    # 6. Filtro de Tipo de Intervalo
+    if intervalo_sel != "Todas" and "Tipo_Intervalo" in df.columns:
+        df = df[df["Tipo_Intervalo"] == intervalo_sel]
+
+    return df
+#endregion 3.6.1
+
 #region 3.7: Calendário Mensal de Demanda por Pátio
 import calendar as pycal
 from datetime import date
