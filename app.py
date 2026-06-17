@@ -748,8 +748,12 @@ def classificar_turno(dt):
 def preparar_df_visao(df_base: pd.DataFrame, filtro_visao: str) -> pd.DataFrame:
     df_visao = df_base.copy()
 
+    # --- GUARD: se base vazia OU sem colunas essenciais, retorna vazio ---
+    _colunas_obrigatorias = ["Status da Operação", "Data/Hora Realizado", "Data inicial programada"]
+    if df_visao.empty or not all(col in df_visao.columns for col in _colunas_obrigatorias):
+        return pd.DataFrame()
+
     # --- NORMALIZAÇÃO DEFENSIVA DA COLUNA DE COORDENAÇÃO ---
-    # Garante que a coluna existe (pode ser "Coordenacao" ou "coordenacao")
     col_coord = None
     for candidata in ["Coordenacao", "coordenacao", "COORDENACAO"]:
         if candidata in df_visao.columns:
@@ -757,11 +761,9 @@ def preparar_df_visao(df_base: pd.DataFrame, filtro_visao: str) -> pd.DataFrame:
             break
 
     if col_coord is None:
-        # Se não existe nenhuma variante, cria com valor padrão
         df_visao["Coordenacao"] = "N/D"
         col_coord = "Coordenacao"
     elif col_coord != "Coordenacao":
-        # Padroniza o nome da coluna para "Coordenacao" (capital C)
         df_visao = df_visao.rename(columns={col_coord: "Coordenacao"})
         col_coord = "Coordenacao"
 
@@ -769,7 +771,7 @@ def preparar_df_visao(df_base: pd.DataFrame, filtro_visao: str) -> pd.DataFrame:
     _mapa_norm_coord = {
         "PARANAPIACABA": "Paranapiacaba",
         "PIAÇAGUERA": "Piaçaguera",
-        "PIACAGUERA": "Piaçaguera",   # sem cedilha
+        "PIACAGUERA": "Piaçaguera",
         "IPG": "Piaçaguera",
         "IPA": "Paranapiacaba",
         "E.SP.IPG": "Piaçaguera",
@@ -791,7 +793,7 @@ def preparar_df_visao(df_base: pd.DataFrame, filtro_visao: str) -> pd.DataFrame:
             df_visao["Coordenacao"] == filtro_norm
         ].copy()
 
-    # --- COLUNAS DERIVADAS (mantidas como estavam) ---
+    # --- COLUNAS DERIVADAS ---
     df_visao["Status_norm"] = df_visao["Status da Operação"].astype(str).str.strip().str.upper()
     df_visao["dt_realizado"] = df_visao["Data/Hora Realizado"].apply(parse_datahora_realizado)
     df_visao["Turno"] = df_visao["dt_realizado"].apply(classificar_turno)
@@ -799,7 +801,7 @@ def preparar_df_visao(df_base: pd.DataFrame, filtro_visao: str) -> pd.DataFrame:
     df_visao["dt_prog_filtro"] = pd.to_datetime(df_visao["Data inicial programada"], errors="coerce")
     df_visao["Turno_Filtro"] = df_visao["Turno"].fillna("Pendente (Sem Turno)")
 
-    # --- COLUNA DE TIPO DE INTERVALO (normaliza nome se necessário) ---
+    # --- COLUNA DE TIPO DE INTERVALO ---
     if "TIPO_INTERVALO_CAN" in df_visao.columns and "Tipo_Intervalo" not in df_visao.columns:
         df_visao["Tipo_Intervalo"] = df_visao["TIPO_INTERVALO_CAN"]
 
