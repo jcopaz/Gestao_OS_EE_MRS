@@ -1193,6 +1193,15 @@ def render_tela_admin():
             st.session_state["tela_atual"] = "dashboard"
             st.rerun()
 
+    # --- MENSAGENS DE SUCESSO PÓS-RERUN ---
+    if "msg_upload_os" in st.session_state:
+        st.success(st.session_state["msg_upload_os"])
+        del st.session_state["msg_upload_os"]
+
+    if "msg_upload_mapa" in st.session_state:
+        st.success(st.session_state["msg_upload_mapa"])
+        del st.session_state["msg_upload_mapa"]
+
     st.markdown("Faça o upload da base de **OS Programadas** para atualizar o sistema central.")
 
     col_up1, col_up2 = st.columns(2)
@@ -1357,9 +1366,8 @@ def render_tela_admin():
                         resumo_partes.append(f"**{coord_nome}**: {len(regs)} OS")
                     resumo_txt = " | ".join(resumo_partes)
 
-                    st.success(f"✅ Sucesso! {total_gravados} OS processadas → {resumo_txt}")
+                    st.session_state["msg_upload_os"] = f"✅ Sucesso! {total_gravados} OS processadas → {resumo_txt}"
                     st.cache_data.clear()
-                    time.sleep(1.5)
                     st.rerun()
 
                 except Exception as e:
@@ -1383,26 +1391,29 @@ def render_tela_admin():
         try:
             if ver_tudo:
                 query_hist = """
-                        SELECT coordenacao AS "Coordenação",
-                            MAX(data_upload AT TIME ZONE 'America/Sao_Paulo') AS "Último Upload",
-                            COUNT(*) AS "Linhas Carregadas"
-                        FROM os_programadas
-                        GROUP BY coordenacao
-                        ORDER BY MAX(data_upload) DESC
-                    """
+                SELECT 
+                    coordenacao AS "Coordenação",
+                    MAX((data_upload AT TIME ZONE 'UTC') AT TIME ZONE 'America/Sao_Paulo') AS "Último Upload",
+                    COUNT(*) AS "Linhas Carregadas"
+                FROM os_programadas
+                WHERE coordenacao = %s
+                GROUP BY coordenacao
+                ORDER BY MAX(data_upload) DESC
+                """
                 df_hist = pd.read_sql_query(query_hist, conn)
             else:
                 # Filtra pela coordenação do usuário
                 filtro_coord = escopo_user if escopo_user else "Paranapiacaba"
                 query_hist = """
-                        SELECT coordenacao AS "Coordenação",
-                            MAX(data_upload AT TIME ZONE 'America/Sao_Paulo') AS "Último Upload",
-                            COUNT(*) AS "Linhas Carregadas"
-                        FROM os_programadas
-                        WHERE coordenacao = %s
-                        GROUP BY coordenacao
-                        ORDER BY MAX(data_upload) DESC
-                    """
+                SELECT 
+                    coordenacao AS "Coordenação",
+                    MAX((data_upload AT TIME ZONE 'UTC') AT TIME ZONE 'America/Sao_Paulo') AS "Último Upload",
+                    COUNT(*) AS "Linhas Carregadas"
+                FROM os_programadas
+                WHERE coordenacao = %s
+                GROUP BY coordenacao
+                ORDER BY MAX(data_upload) DESC
+                """
                 df_hist = pd.read_sql_query(query_hist, conn, params=(filtro_coord,))
         finally:
             release_connection(conn)
@@ -1532,9 +1543,8 @@ def render_tela_admin():
                                 release_connection(conn)
                             
                             barra.progress(1.0, text="Concluído!")
-                            st.success(f"✅ Mapeamento atualizado com {len(registros)} registros!")
+                            st.session_state["msg_upload_mapa"] = f"✅ Mapeamento atualizado com {len(registros)} registros!"
                             st.cache_data.clear()
-                            time.sleep(1.5)
                             st.rerun()
                     except Exception as e:
                         st.error(f"❌ Erro ao processar: {e}")
@@ -1558,39 +1568,82 @@ def render_tela_admin():
 #endregion 3.8.3
 
 #region 3.8.4: Exportação SAP
-    if "Exportar SAP" in st.session_state.get("governanca", ""):
-        st.markdown("---")
-        st.subheader("⬇️ Exportação SAP")
-        st.markdown("Gere o arquivo consolidado com os apontamentos de campo para importação no SAP.")
+if "Exportar SAP" in st.session_state.get("governanca", ""):
+    st.markdown("---")
+    st.subheader("⬇️ Exportação SAP")
+    st.markdown("Gere o arquivo consolidado com os apontamentos de campo para importação no SAP.")
+
+    if "sap_massa_bytes" not in st.session_state:
+        st.session_state["sap_massa_bytes"] = None
+    if "sap_massa_nome" not in st.session_state:
+        st.session_state["sap_massa_nome"] = ""
+
+    if st.button("📦 Preparar Arquivo SAP (Massa)", use_container_width=False, type="primary", key="btn_preparar_sap_massa"):
         with st.spinner("Preparando base de dados para exportação..."):
-            df_bruto = carregar_base_sem_overlay(
-                usar_sim=False, qtd_sim=0, seed_sim=0,
-                escopo_usuario=st.session_state.get("escopo", "Todas"),
-                etl_version=ETL_VERSION
-            )
-            df_completo = aplicar_overlay_baixas(
-                df_base_bruto=df_bruto,
-                escopo_usuario=st.session_state.get("escopo", "Todas"),
-                baixas_mtime=time.time()
-            )
-            if not df_completo.empty:
-                df_completo["Status_norm"] = df_completo["Status da Operação"].astype(str).str.strip().str.upper()
-                tem_concluida = df_completo["Status_norm"].isin(_status_prazo | _status_atraso).any()
-                if tem_concluida:
-                    arquivo_sap = gerar_excel_sap_bytes(df_completo)
-                    if arquivo_sap:
-                        st.download_button(
-                            label="⬇️ Gerar Arquivo SAP (Massa)",
-                            data=arquivo_sap,
-                            file_name=f"Baixa_Massa_SAP_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            use_container_width=False,
-                            type="primary"
-                        )
+            try:
+                # Usa o MESMO hash de baixas da aplicação, sem quebrar cache a cada render
+                def _hash_baixas_export():
+                    conn = get_connection()
+                    try:
+                        cur = conn.cursor()
+                        cur.execute("SELECT COUNT(*), MAX(os) FROM baixas")
+                        row = cur.fetchone()
+                        cur.close()
+                        return f"{row[0]}_{row[1]}"
+                    finally:
+                        release_connection(conn)
+
+                baixas_hash_export = _hash_baixas_export()
+
+                df_bruto = carregar_base_sem_overlay(
+                    usar_sim=False,
+                    qtd_sim=0,
+                    seed_sim=0,
+                    escopo_usuario=st.session_state.get("escopo", "Todas"),
+                    etl_version=ETL_VERSION
+                )
+
+                df_completo = aplicar_overlay_baixas(
+                    df_base_bruto=df_bruto,
+                    escopo_usuario=st.session_state.get("escopo", "Todas"),
+                    baixas_mtime=baixas_hash_export
+                )
+
+                if df_completo.empty:
+                    st.warning("A base de dados central está vazia.")
+                    st.session_state["sap_massa_bytes"] = None
+                    st.session_state["sap_massa_nome"] = ""
                 else:
-                    st.info("⚠️ Nenhuma OS concluída encontrada para exportação no momento.")
-            else:
-                st.warning("A base de dados central está vazia.")
+                    df_completo["Status_norm"] = df_completo["Status da Operação"].astype(str).str.strip().str.upper()
+                    tem_concluida = df_completo["Status_norm"].isin(_status_prazo | _status_atraso).any()
+
+                    if not tem_concluida:
+                        st.info("⚠️ Nenhuma OS concluída encontrada para exportação no momento.")
+                        st.session_state["sap_massa_bytes"] = None
+                        st.session_state["sap_massa_nome"] = ""
+                    else:
+                        arquivo_sap = gerar_excel_sap_bytes(df_completo)
+                        if arquivo_sap:
+                            st.session_state["sap_massa_bytes"] = arquivo_sap
+                            st.session_state["sap_massa_nome"] = f"Baixa_Massa_SAP_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+                            st.success("✅ Arquivo SAP preparado com sucesso.")
+                        else:
+                            st.info("⚠️ Não foi possível gerar o arquivo SAP.")
+                            st.session_state["sap_massa_bytes"] = None
+                            st.session_state["sap_massa_nome"] = ""
+            except Exception as e:
+                st.error(f"❌ Erro ao preparar exportação SAP: {e}")
+                st.session_state["sap_massa_bytes"] = None
+                st.session_state["sap_massa_nome"] = ""
+
+    if st.session_state.get("sap_massa_bytes"):
+        st.download_button(
+            label="⬇️ Gerar Arquivo SAP (Massa)",
+            data=st.session_state["sap_massa_bytes"],
+            file_name=st.session_state["sap_massa_nome"],
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=False
+        )
 #endregion 3.8.4
 
 #region 3.8.5: Importação de Baixas em Massa (IW47)
