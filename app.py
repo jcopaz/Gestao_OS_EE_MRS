@@ -748,11 +748,52 @@ def classificar_turno(dt):
 def preparar_df_visao(df_base: pd.DataFrame, filtro_visao: str) -> pd.DataFrame:
     df_visao = df_base.copy()
 
+    # --- GUARD: se base vazia OU sem colunas essenciais, retorna vazio ---
+    _colunas_obrigatorias = ["Status da Operação", "Data/Hora Realizado", "Data inicial programada"]
+    if df_visao.empty or not all(col in df_visao.columns for col in _colunas_obrigatorias):
+        return pd.DataFrame()
+
+    # --- NORMALIZAÇÃO DEFENSIVA DA COLUNA DE COORDENAÇÃO ---
+    col_coord = None
+    for candidata in ["Coordenacao", "coordenacao", "COORDENACAO"]:
+        if candidata in df_visao.columns:
+            col_coord = candidata
+            break
+
+    if col_coord is None:
+        df_visao["Coordenacao"] = "N/D"
+        col_coord = "Coordenacao"
+    elif col_coord != "Coordenacao":
+        df_visao = df_visao.rename(columns={col_coord: "Coordenacao"})
+        col_coord = "Coordenacao"
+
+    # --- NORMALIZAÇÃO DOS VALORES (resolve ç, case, espaços) ---
+    _mapa_norm_coord = {
+        "PARANAPIACABA": "Paranapiacaba",
+        "PIAÇAGUERA": "Piaçaguera",
+        "PIACAGUERA": "Piaçaguera",
+        "IPG": "Piaçaguera",
+        "IPA": "Paranapiacaba",
+        "E.SP.IPG": "Piaçaguera",
+        "E.SP.IPA": "Paranapiacaba",
+    }
+
+    def _normalizar_coord(val):
+        if pd.isna(val) or str(val).strip() == "":
+            return "N/D"
+        v = str(val).strip().upper()
+        return _mapa_norm_coord.get(v, str(val).strip())
+
+    df_visao["Coordenacao"] = df_visao["Coordenacao"].apply(_normalizar_coord)
+
+    # --- FILTRO SEGURO (comparação exata após normalização) ---
     if filtro_visao != "Todas":
+        filtro_norm = _normalizar_coord(filtro_visao)
         df_visao = df_visao[
-            df_visao["Coordenacao"].str.contains(filtro_visao, case=False, na=False)
+            df_visao["Coordenacao"] == filtro_norm
         ].copy()
 
+    # --- COLUNAS DERIVADAS ---
     df_visao["Status_norm"] = df_visao["Status da Operação"].astype(str).str.strip().str.upper()
     df_visao["dt_realizado"] = df_visao["Data/Hora Realizado"].apply(parse_datahora_realizado)
     df_visao["Turno"] = df_visao["dt_realizado"].apply(classificar_turno)
@@ -760,8 +801,14 @@ def preparar_df_visao(df_base: pd.DataFrame, filtro_visao: str) -> pd.DataFrame:
     df_visao["dt_prog_filtro"] = pd.to_datetime(df_visao["Data inicial programada"], errors="coerce")
     df_visao["Turno_Filtro"] = df_visao["Turno"].fillna("Pendente (Sem Turno)")
 
-    return df_visao
+    # --- COLUNA DE TIPO DE INTERVALO ---
+    if "TIPO_INTERVALO_CAN" in df_visao.columns and "Tipo_Intervalo" not in df_visao.columns:
+        df_visao["Tipo_Intervalo"] = df_visao["TIPO_INTERVALO_CAN"]
 
+    return df_visao
+#endregion
+
+#region 3.6.1: Aplicar Filtros da Sidebar (aplicar_filtros_sidebar)
 def aplicar_filtros_sidebar(
     df_visao: pd.DataFrame,
     patios_selecionados: list,
@@ -769,35 +816,51 @@ def aplicar_filtros_sidebar(
     turnos_selecionados: list,
     start_date,
     end_date,
-    status_sel: str
+    status_sel: str = "Todos",
+    intervalo_sel: str = "Todas"
 ) -> pd.DataFrame:
-    df_filtrado = df_visao[
-        (df_visao["Patio"].isin(patios_selecionados)) &
-        (df_visao["Classificacao"].isin(classif_selecionadas)) &
-        (df_visao["Turno_Filtro"].isin(turnos_selecionados)) &
-        (df_visao["dt_prog_filtro"].dt.date >= start_date) &
-        (df_visao["dt_prog_filtro"].dt.date <= end_date)
-    ].copy()
+    """Aplica todos os filtros da sidebar sobre o DataFrame já preparado pela preparar_df_visao."""
+    df = df_visao.copy()
 
-    if status_sel == "Todas Concluídas":
-        df_filtrado = df_filtrado[
-            df_filtrado["Status_norm"].isin(_status_prazo | _status_atraso)
-        ]
-    elif status_sel == "Concluídas no Prazo":
-        df_filtrado = df_filtrado[
-            df_filtrado["Status_norm"].isin(_status_prazo)
-        ]
-    elif status_sel == "Concluídas com Atraso":
-        df_filtrado = df_filtrado[
-            df_filtrado["Status_norm"].isin(_status_atraso)
-        ]
-    elif status_sel == "Pendentes":
-        df_filtrado = df_filtrado[
-            df_filtrado["Status_norm"].isin(_status_aberto)
-        ]
+    # 1. Filtro de Período (Data Programada)
+    if "dt_prog_filtro" in df.columns:
+        mask_data = (
+            (df["dt_prog_filtro"].dt.date >= start_date) &
+            (df["dt_prog_filtro"].dt.date <= end_date)
+        ) | df["dt_prog_filtro"].isna()
+        df = df[mask_data]
 
-    return df_filtrado
-#endregion
+    # 2. Filtro de Pátios
+    if patios_selecionados:
+        df = df[df["Patio"].isin(patios_selecionados)]
+
+    # 3. Filtro de Classificação
+    if classif_selecionadas:
+        df = df[df["Classificacao"].isin(classif_selecionadas)]
+
+    # 4. Filtro de Turno
+    if turnos_selecionados and "Turno_Filtro" in df.columns:
+        df = df[df["Turno_Filtro"].isin(turnos_selecionados)]
+
+    # 5. Filtro de Status
+    if status_sel != "Todos" and "Status_norm" in df.columns:
+        if status_sel == "Todas Concluídas":
+            df = df[df["Status_norm"].isin(_status_prazo | _status_atraso)]
+        elif status_sel == "Concluídas no Prazo":
+            df = df[df["Status_norm"].isin(_status_prazo)]
+        elif status_sel == "Concluídas com Atraso":
+            df = df[df["Status_norm"].isin(_status_atraso)]
+        elif status_sel == "Pendentes":
+            df = df[df["Status_norm"].isin(_status_aberto)]
+        elif status_sel == "Atrasado":
+            df = df[df["Status_norm"] == "ATRASADO"]
+
+    # 6. Filtro de Tipo de Intervalo
+    if intervalo_sel != "Todas" and "Tipo_Intervalo" in df.columns:
+        df = df[df["Tipo_Intervalo"] == intervalo_sel]
+
+    return df
+#endregion 3.6.1
 
 #region 3.7: Calendário Mensal de Demanda por Pátio
 import calendar as pycal
@@ -1125,27 +1188,27 @@ def render_tela_admin():
     with col_adm_t1:
         st.title("⚙️ Administração de Dados")
     with col_adm_t2:
-        st.markdown("<div style='margin-top: 16px;'></div>", unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
         if st.button("⬅️ Voltar ao Painel", use_container_width=True):
             st.session_state["tela_atual"] = "dashboard"
             st.rerun()
+
     st.markdown("Faça o upload da base de **OS Programadas** para atualizar o sistema central.")
-    
+
     col_up1, col_up2 = st.columns(2)
     with col_up1:
         mes_ref = st.text_input("Mês de Referência (ex: Junho/2026)", placeholder="Mês/Ano")
     with col_up2:
-        coord_upload = st.selectbox("Coordenação da Planilha", ["Paranapiacaba", "Piaçaguera"])
-    
+        coord_upload_fallback = st.selectbox(
+            "Coordenação (usado apenas se a planilha não tiver 'Codigo departamento')",
+            ["Paranapiacaba", "Piaçaguera"]
+        )
+
     arquivo_upload = st.file_uploader("Selecione a planilha Excel ou CSV", type=["csv", "xlsx"])
-    
+
     if arquivo_upload is not None and mes_ref:
         if st.button("🚀 Processar e Salvar no Banco", use_container_width=True, type="primary"):
-            
             escopo_user = st.session_state.get("escopo", "Todas")
-            if escopo_user != "Todas" and escopo_user != coord_upload:
-                st.error(f"⚠️ **ACESSO BLOQUEADO:** Seu perfil está restrito à coordenação **{escopo_user}**.")
-                st.stop()
 
             with st.spinner("Lendo e processando dados..."):
                 try:
@@ -1153,76 +1216,158 @@ def render_tela_admin():
                         df = pd.read_csv(arquivo_upload, sep=';', encoding='utf-8-sig')
                     else:
                         df = pd.read_excel(arquivo_upload)
-                    
+
                     if "Ordem servico" not in df.columns:
                         st.error("❌ A coluna 'Ordem servico' não foi encontrada. Verifique o arquivo.")
                         return
-                    
+
                     df = df.fillna("")
                     total_linhas_arquivo = len(df)
-                    
+
+                    # =====================================================
+                    # DETECÇÃO AUTOMÁTICA DE COORDENAÇÃO
+                    # =====================================================
+                    _mapa_coord_depto = {
+                        "E.SP.IPA": "Paranapiacaba",
+                        "E.SP.IPG": "Piaçaguera",
+                    }
+
+                    col_depto = None
+                    for c in df.columns:
+                        if str(c).strip().upper().replace(" ", "") in ("CODIGODEPARTAMENTO", "CÓDIGODEPARTAMENTO", "CODIGO_DEPARTAMENTO"):
+                            col_depto = c
+                            break
+                        # Busca alternativa: Concatenar (começa com E.SP.IPA ou E.SP.IPG)
+                        if str(c).strip().upper() == "CONCATENAR" and col_depto is None:
+                            col_depto = c
+
+                    deteccao_automatica = False
+                    if col_depto is not None:
+                        # Extrai valores únicos do departamento
+                        valores_depto = df[col_depto].astype(str).str.strip().str.upper().unique()
+                        coords_detectadas = set()
+                        for val in valores_depto:
+                            for prefixo, coord_nome in _mapa_coord_depto.items():
+                                if val.startswith(prefixo) or val == prefixo:
+                                    coords_detectadas.add(coord_nome)
+                                    break
+
+                        if coords_detectadas:
+                            deteccao_automatica = True
+                            st.success(f"🔍 **Detecção automática:** Coordenação identificada pela coluna `{col_depto}` → **{', '.join(sorted(coords_detectadas))}**")
+
+                            # Cria coluna auxiliar com a coordenação de cada linha
+                            def _mapear_coord(val):
+                                v = str(val).strip().upper()
+                                for prefixo, coord_nome in _mapa_coord_depto.items():
+                                    if v.startswith(prefixo):
+                                        return coord_nome
+                                return None  # Linha sem coordenação reconhecida
+
+                            df["_coord_auto"] = df[col_depto].apply(_mapear_coord)
+
+                            # Remove linhas sem coordenação identificada
+                            df_sem_coord = df[df["_coord_auto"].isna()]
+                            if len(df_sem_coord) > 0:
+                                st.warning(f"⚠️ {len(df_sem_coord)} linhas sem coordenação identificada serão ignoradas.")
+                            df = df[df["_coord_auto"].notna()].copy()
+
+                    if not deteccao_automatica:
+                        # Fallback: usa o dropdown
+                        st.info(f"ℹ️ Coluna 'Codigo departamento' não encontrada. Usando seleção manual: **{coord_upload_fallback}**")
+                        df["_coord_auto"] = coord_upload_fallback
+
+                    # Validação de escopo
+                    coords_na_planilha = df["_coord_auto"].unique().tolist()
+                    if escopo_user != "Todas":
+                        coords_permitidas = [c for c in coords_na_planilha if c == escopo_user]
+                        if not coords_permitidas:
+                            st.error(f"⚠️ **ACESSO BLOQUEADO:** Seu perfil está restrito à coordenação **{escopo_user}**, mas a planilha contém apenas **{', '.join(coords_na_planilha)}**.")
+                            st.stop()
+                        # Filtra apenas as OS da coordenação permitida
+                        df = df[df["_coord_auto"] == escopo_user].copy()
+                        st.info(f"🔒 Filtrado para sua coordenação: **{escopo_user}** ({len(df)} linhas)")
+
+                    # =====================================================
+                    # GRAVAÇÃO (agrupa por coordenação detectada)
+                    # =====================================================
                     def conversor_brasileiro(obj):
                         if isinstance(obj, (pd.Timestamp, datetime)):
                             return obj.strftime('%d/%m/%Y')
                         return str(obj)
-                    
-                    # --- FASE 1: Preparar registros em memória ---
+
                     barra = st.progress(0, text="Preparando dados...")
-                    registros = []
+                    registros_por_coord = {}
+
                     for idx, (_, row) in enumerate(df.iterrows()):
                         os_num = str(row["Ordem servico"]).strip()
-                        if os_num:
-                            dados_json = json.dumps(row.to_dict(), default=conversor_brasileiro)
-                            registros.append((os_num, mes_ref, coord_upload, dados_json))
-                        if (idx + 1) % 200 == 0 or (idx + 1) == total_linhas_arquivo:
-                            pct = min((idx + 1) / total_linhas_arquivo, 0.5)
-                            barra.progress(pct, text=f"Preparando... {idx + 1}/{total_linhas_arquivo} linhas")
-                    
-                    # --- FASE 2: Gravar no banco em lotes ---
+                        coord_linha = row["_coord_auto"]
+                        if os_num and coord_linha:
+                            row_limpa = row.drop(labels=["_coord_auto"], errors="ignore")
+                            dados_json = json.dumps(row_limpa.to_dict(), default=conversor_brasileiro)
+                            if coord_linha not in registros_por_coord:
+                                registros_por_coord[coord_linha] = []
+                            registros_por_coord[coord_linha].append((os_num, mes_ref, coord_linha, dados_json))
+
+                        if (idx + 1) % 200 == 0 or (idx + 1) == len(df):
+                            pct = min((idx + 1) / len(df), 0.5)
+                            barra.progress(pct, text=f"Preparando... {idx + 1}/{len(df)} linhas")
+
+                    # Gravação em lote por coordenação
                     barra.progress(0.5, text="Gravando no banco de dados...")
+                    total_gravados = 0
+
                     conn = get_connection()
                     try:
                         cur = conn.cursor()
+                        todos_registros = []
+                        for coord_nome, regs in registros_por_coord.items():
+                            todos_registros.extend(regs)
+
                         lote_size = 500
-                        for i in range(0, len(registros), lote_size):
-                            lote = registros[i:i + lote_size]
+                        for i in range(0, len(todos_registros), lote_size):
+                            lote = todos_registros[i:i + lote_size]
                             execute_values(
                                 cur,
                                 """
                                 INSERT INTO os_programadas (os, mes_referencia, coordenacao, dados_completos)
                                 VALUES %s
-                                ON CONFLICT (os) DO UPDATE 
-                                SET mes_referencia = EXCLUDED.mes_referencia,
+                                ON CONFLICT (os) DO UPDATE SET
+                                    mes_referencia = EXCLUDED.mes_referencia,
                                     coordenacao = EXCLUDED.coordenacao,
-                                    dados_completos = EXCLUDED.dados_completos,
-                                    data_upload = CURRENT_TIMESTAMP
+                                    dados_completos = EXCLUDED.dados_completos
                                 """,
                                 lote,
                                 page_size=lote_size
                             )
-                            pct = min(0.5 + (i + len(lote)) / len(registros) * 0.5, 1.0)
-                            barra.progress(pct, text=f"Gravando... {min(i + lote_size, len(registros))}/{len(registros)} registros")
-                        
+                            pct = min(0.5 + (i + len(lote)) / len(todos_registros) * 0.5, 1.0)
+                            barra.progress(pct, text=f"Gravando... {min(i + lote_size, len(todos_registros))}/{len(todos_registros)} registros")
+
                         conn.commit()
                         cur.close()
+                        total_gravados = len(todos_registros)
                     finally:
                         release_connection(conn)
 
                     barra.progress(1.0, text="Concluído!")
-                    st.success(f"✅ Sucesso! {len(registros)} de {total_linhas_arquivo} linhas foram processadas.")
+
+                    # Resumo por coordenação
+                    resumo_partes = []
+                    for coord_nome, regs in registros_por_coord.items():
+                        resumo_partes.append(f"**{coord_nome}**: {len(regs)} OS")
+                    resumo_txt = " | ".join(resumo_partes)
+
+                    st.success(f"✅ Sucesso! {total_gravados} OS processadas → {resumo_txt}")
                     st.cache_data.clear()
                     time.sleep(1.5)
                     st.rerun()
-                    
-                except Exception as e:
 
-                    st.error(f"❌  Ocorreu um erro ao processar o arquivo: {e}")
+                except Exception as e:
+                    st.error(f"❌ Ocorreu um erro ao processar o arquivo: {e}")
+
     elif arquivo_upload is not None:
         st.warning("⚠️ Preencha o Mês e a Coordenação antes de processar.")
 
-    # ==============================================
-    # HISTÓRICO DE UPLOADS (aba recolhível)
-    # ==============================================
     st.markdown("---")
 #endregion 3.8.1
 
@@ -1238,28 +1383,26 @@ def render_tela_admin():
         try:
             if ver_tudo:
                 query_hist = """
-                    SELECT 
-                        coordenacao AS "Coordenação",
-                        MAX(data_upload) AS "Último Upload",
-                        COUNT(*) AS "Linhas Carregadas"
-                    FROM os_programadas
-                    GROUP BY coordenacao
-                    ORDER BY MAX(data_upload) DESC
-                """
+                        SELECT coordenacao AS "Coordenação",
+                            MAX(data_upload AT TIME ZONE 'America/Sao_Paulo') AS "Último Upload",
+                            COUNT(*) AS "Linhas Carregadas"
+                        FROM os_programadas
+                        GROUP BY coordenacao
+                        ORDER BY MAX(data_upload) DESC
+                    """
                 df_hist = pd.read_sql_query(query_hist, conn)
             else:
                 # Filtra pela coordenação do usuário
                 filtro_coord = escopo_user if escopo_user else "Paranapiacaba"
                 query_hist = """
-                    SELECT 
-                        coordenacao AS "Coordenação",
-                        MAX(data_upload) AS "Último Upload",
-                        COUNT(*) AS "Linhas Carregadas"
-                    FROM os_programadas
-                    WHERE coordenacao = %s
-                    GROUP BY coordenacao
-                    ORDER BY MAX(data_upload) DESC
-                """
+                        SELECT coordenacao AS "Coordenação",
+                            MAX(data_upload AT TIME ZONE 'America/Sao_Paulo') AS "Último Upload",
+                            COUNT(*) AS "Linhas Carregadas"
+                        FROM os_programadas
+                        WHERE coordenacao = %s
+                        GROUP BY coordenacao
+                        ORDER BY MAX(data_upload) DESC
+                    """
                 df_hist = pd.read_sql_query(query_hist, conn, params=(filtro_coord,))
         finally:
             release_connection(conn)
@@ -1449,6 +1592,241 @@ def render_tela_admin():
             else:
                 st.warning("A base de dados central está vazia.")
 #endregion 3.8.4
+
+#region 3.8.5: Importação de Baixas em Massa (IW47)
+    st.markdown("---")
+    st.subheader("📥 Importação de Baixas em Massa (IW47)")
+    st.markdown("Carregue a planilha **IW47** exportada do SAP para concluir as OS já executadas manualmente.")
+    st.caption("Colunas esperadas: **Nº pessoal** (A), **Nome do empregado** (B), **Ordem** (D), **Data de início de execução real** (F), **Hora de início** (G), **Data real do fim** (H), **Hora real do fim** (I), **Centro trab.(real)** (O)")
+
+    coord_baixa = st.selectbox("Coordenação das Baixas", ["Paranapiacaba", "Piaçaguera"], key="coord_baixa_massa")
+    arquivo_iw47 = st.file_uploader("Selecione a planilha IW47", type=["xlsx", "csv"], key="upload_iw47_massa")
+
+    if arquivo_iw47 is not None:
+        if st.button("🚀 Processar Baixas em Massa", use_container_width=True, type="primary", key="btn_processar_iw47"):
+            with st.spinner("Processando baixas da IW47..."):
+                try:
+                    # 1. Leitura
+                    if arquivo_iw47.name.lower().endswith(".csv"):
+                        df_iw = pd.read_csv(arquivo_iw47, sep=None, engine="python", encoding="utf-8-sig")
+                    else:
+                        df_iw = pd.read_excel(arquivo_iw47)
+
+                    df_iw.columns = [str(c).strip() for c in df_iw.columns]
+
+                    # 2. Identificar colunas por posição (SAP pode ter nomes variados)
+                    col_matricula = df_iw.columns[0]   # A: Nº pessoal
+                    col_nome      = df_iw.columns[1]   # B: Nome do empregado
+                    col_ordem     = df_iw.columns[3]   # D: Ordem
+                    col_dt_ini    = df_iw.columns[5]   # F: Data início execução real
+                    col_hr_ini    = df_iw.columns[6]   # G: Hora início (decimal)
+                    col_dt_fim    = df_iw.columns[7]   # H: Data real fim execução
+                    col_hr_fim    = df_iw.columns[8]   # I: Hora real fim (decimal)
+                    col_centro    = df_iw.columns[14]   # O: Centro trab.(real)
+
+                    df_iw[col_ordem] = df_iw[col_ordem].astype(str).str.strip()
+                    df_iw[col_matricula] = df_iw[col_matricula].astype(str).str.strip()
+                    df_iw[col_nome] = df_iw[col_nome].astype(str).str.strip()
+
+                    # 3. Converter horários decimais do Excel → HH:MM:SS
+                    def decimal_para_hms(val):
+                        try:
+                            frac = float(val)
+                            if frac < 0:
+                                frac = 0
+                            total_seg = int(round(frac * 86400))
+                            h = (total_seg // 3600) % 24
+                            m = (total_seg % 3600) // 60
+                            s = total_seg % 60
+                            return f"{h:02d}:{m:02d}:{s:02d}"
+                        except Exception:
+                            return "00:00:00"
+
+                    df_iw["_hr_ini_str"] = df_iw[col_hr_ini].apply(decimal_para_hms)
+                    df_iw["_hr_fim_str"] = df_iw[col_hr_fim].apply(decimal_para_hms)
+
+                    # 4. Formatar datas para dd/mm/yyyy
+                    def formatar_data(val):
+                        try:
+                            dt = pd.to_datetime(val, dayfirst=True, errors="coerce")
+                            if pd.isna(dt):
+                                dt = pd.to_datetime(val, errors="coerce")
+                            return dt.strftime("%d/%m/%Y") if pd.notna(dt) else ""
+                        except Exception:
+                            return ""
+
+                    df_iw["_dt_ini_br"] = df_iw[col_dt_ini].apply(formatar_data)
+                    df_iw["_dt_fim_br"] = df_iw[col_dt_fim].apply(formatar_data)
+
+                    # 5. Coordenação
+                    def mapear_coord(centro):
+                        c = str(centro).upper()
+                        if "IPG" in c or "PIACAGUERA" in c or "PIAÇAGUERA" in c:
+                            return "Piaçaguera"
+                        return "Paranapiacaba"
+
+                    df_iw["_coordenacao"] = df_iw[col_centro].apply(mapear_coord)
+
+                    # 6. Agrupar por OS → primeiro executante = concluido_por, demais = equipe
+                    grupos = df_iw.groupby(col_ordem)
+
+                    registros_baixa = []
+                    for os_id, grp in grupos:
+                        if not os_id or os_id == "nan":
+                            continue
+
+                        # Pega dados da primeira linha (horários e datas)
+                        first = grp.iloc[0]
+                        dt_ini_br = first["_dt_ini_br"]
+                        hr_ini    = first["_hr_ini_str"]
+                        dt_fim_br = first["_dt_fim_br"]
+                        hr_fim    = first["_hr_fim_str"]
+                        coord     = first["_coordenacao"]
+
+                        # Executantes únicos (por matrícula)
+                        executantes = grp[[col_matricula, col_nome]].drop_duplicates(subset=[col_matricula])
+                        principal_mat = str(executantes.iloc[0][col_matricula]).strip()
+
+                        if len(executantes) > 1:
+                            co_exec = [str(r[col_matricula]).strip() for _, r in executantes.iloc[1:].iterrows()]
+                            equipe_str = ", ".join(co_exec)
+                        else:
+                            equipe_str = "Sozinho"
+
+                        # Concatena data/hora para realizado_em (formato do app)
+                        realizado_em = f"{dt_fim_br} {hr_fim[:5]}" if dt_fim_br else ""
+
+                        registros_baixa.append({
+                            "os": os_id,
+                            "concluido_por": principal_mat,
+                            "equipe": equipe_str,
+                            "realizado_em": realizado_em,
+                            "coordenacao": coord,
+                            "data_inicio": dt_ini_br,
+                            "hora_inicio": hr_ini,
+                            "data_fim": dt_fim_br,
+                            "hora_fim": hr_fim,
+                        })
+
+                    if not registros_baixa:
+                        st.warning("⚠️ Nenhuma OS válida encontrada na planilha.")
+                    else:
+                        # 7. Cruzar com base de OS para determinar status
+                        conn = get_connection()
+                        try:
+                            df_os_prog = pd.read_sql_query(
+                                "SELECT os, dados_completos->>'Data inicial programada' AS dt_prog FROM os_programadas",
+                                conn
+                            )
+                        finally:
+                            release_connection(conn)
+
+                        mapa_dt_prog = {}
+                        for _, row_p in df_os_prog.iterrows():
+                            os_key = str(row_p["os"]).strip()
+                            try:
+                                mapa_dt_prog[os_key] = pd.to_datetime(row_p["dt_prog"], dayfirst=True, errors="coerce")
+                            except Exception:
+                                mapa_dt_prog[os_key] = pd.NaT
+
+                        # 8. Buscar OS que já têm baixa no banco (não sobrescrever)
+                        conn2 = get_connection()
+                        try:
+                            df_ja_baixadas = pd.read_sql_query("SELECT os FROM baixas", conn2)
+                        finally:
+                            release_connection(conn2)
+                        os_ja_baixadas = set(df_ja_baixadas["os"].astype(str).str.strip().tolist()) if not df_ja_baixadas.empty else set()
+
+                        registros_novos = [r for r in registros_baixa if r["os"] not in os_ja_baixadas]
+                        os_ignoradas = len(registros_baixa) - len(registros_novos)
+                        registros_baixa = registros_novos
+
+                        if os_ignoradas > 0:
+                            st.info(f"ℹ️ **{os_ignoradas} OS** já possuem baixa no sistema e serão **preservadas** (GPS/foto não serão sobrescritas).")
+
+                        if not registros_baixa:
+                            st.warning("⚠️ Todas as OS da planilha já possuem baixa no sistema. Nenhuma nova baixa gravada.")
+                        else:
+                            # 9. Gravação em lote
+                            barra = st.progress(0, text="Preparando gravação em lote...")
+
+                            lote_valores = []
+                            for reg in registros_baixa:
+                                dt_prog = mapa_dt_prog.get(reg["os"], pd.NaT)
+                                try:
+                                    dt_exec = pd.to_datetime(reg["data_fim"], format="%d/%m/%Y", errors="coerce")
+                                except Exception:
+                                    dt_exec = pd.NaT
+
+                                if pd.isna(dt_prog) or pd.isna(dt_exec):
+                                    status = "Realizado"
+                                elif dt_exec.date() <= dt_prog.date():
+                                    status = "Realizado"
+                                else:
+                                    status = "Realizado Fora da Data de Programação"
+
+                                lote_valores.append((
+                                    reg["os"], status, reg["realizado_em"], reg["coordenacao"],
+                                    reg["concluido_por"], "Baixa Manual", reg["equipe"],
+                                    reg["data_inicio"], reg["hora_inicio"],
+                                    reg["data_fim"], reg["hora_fim"]
+                                ))
+
+                            barra.progress(0.3, text="Gravando no banco em lote...")
+
+                            conn_lote = get_connection()
+                            try:
+                                cur_lote = conn_lote.cursor()
+                                execute_values(
+                                    cur_lote,
+                                    """
+                                    INSERT INTO baixas (os, status, realizado_em, coordenacao, concluido_por,
+                                        geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim)
+                                    VALUES %s
+                                    ON CONFLICT (os) DO UPDATE SET
+                                        status = EXCLUDED.status,
+                                        realizado_em = EXCLUDED.realizado_em,
+                                        concluido_por = EXCLUDED.concluido_por,
+                                        geolocalizacao_baixa = EXCLUDED.geolocalizacao_baixa,
+                                        equipe = EXCLUDED.equipe,
+                                        data_inicio = EXCLUDED.data_inicio,
+                                        hora_inicio = EXCLUDED.hora_inicio,
+                                        data_fim = EXCLUDED.data_fim,
+                                        hora_fim = EXCLUDED.hora_fim
+                                    """,
+                                    lote_valores,
+                                    page_size=500
+                                )
+                                conn_lote.commit()
+                                cur_lote.close()
+                                gravados = len(lote_valores)
+                                erros_gravar = 0
+                            except Exception as e_lote:
+                                conn_lote.rollback()
+                                gravados = 0
+                                erros_gravar = len(lote_valores)
+                                st.error(f"❌ Erro na gravação em lote: {e_lote}")
+                            finally:
+                                release_connection(conn_lote)
+
+                            barra.progress(1.0, text="Concluído!")
+
+                            st.success(f"✅ Importação concluída! **{gravados}** OS gravadas com sucesso.")
+                            if erros_gravar > 0:
+                                st.warning(f"⚠️ {erros_gravar} OS com erro na gravação.")
+
+                            total_linhas = len(df_iw)
+                            os_unicas = df_iw[col_ordem].nunique()
+                            st.info(f"📊 Resumo: **{total_linhas}** linhas → **{os_unicas}** OS únicas → **{gravados}** baixas novas")
+
+                            st.cache_data.clear()
+                            time.sleep(2)
+                            st.rerun()
+
+                except Exception as e:
+                    st.error(f"❌ Erro ao processar a planilha IW47: {e}")
+    #endregion 3.8.5
+
 #endregion 3.8
 #endregion SESSÃO 3
 
@@ -1644,6 +2022,18 @@ def tratar_df_os(df: pd.DataFrame):
 
     df["DATA_PROG_CAN"] = df[col_data_prog].apply(parse_data_programada)
     df["DESC_LONGA_CAN"] = df[col_desc].astype(str).str.strip() if col_desc else ""
+    # --- TIPO DE INTERVALO (Sem Intervalo / Com Intervalo) ---
+    col_sem_int = pick_first_existing(df, ["SEM INTERVALO", "S_I", "SEM_INTERVALO"])
+    col_com_int = pick_first_existing(df, ["COM INTERVALO", "C_I", "COM_INTERVALO"])
+    def _classificar_intervalo(row):
+        si = str(row[col_sem_int]).strip().upper() if col_sem_int and pd.notna(row.get(col_sem_int)) else ""
+        ci = str(row[col_com_int]).strip().upper() if col_com_int and pd.notna(row.get(col_com_int)) else ""
+        if si in ("S_I", "SI", "S"):
+            return "Sem Intervalo"
+        if ci in ("C_I", "CI", "C"):
+            return "Com Intervalo"
+        return "N/D"
+    df["TIPO_INTERVALO_CAN"] = df.apply(_classificar_intervalo, axis=1) if (col_sem_int or col_com_int) else "N/D"
 
     df["Classificacao"] = df["ATIVIDADE_CAN"].apply(classificar_atividade)
     crit = df["PRIORIDADE_CAN"].apply(extrair_criticidade)
@@ -1686,6 +2076,7 @@ def tratar_df_os(df: pd.DataFrame):
         "Hxh Plano": df["HXH_CAN"],
         "Criticidade_rank": df["Criticidade_rank"],
         "Nivel_Prioridade": df["Nivel_Prioridade"],
+        "TIPO_INTERVALO_CAN": df["TIPO_INTERVALO_CAN"],
     })
 
     return df_out
@@ -1729,6 +2120,7 @@ def carregar_base_sem_overlay(
     escopo_usuario: str,
     etl_version: str
 ) -> pd.DataFrame:
+
     if usar_sim:
         pct_p = st.session_state.get("sim_pct_pendente", 45)
         pct_ok = st.session_state.get("sim_pct_prazo", 40)
@@ -1738,7 +2130,9 @@ def carregar_base_sem_overlay(
     # 1. Conecta ao Neon e puxa os dados salvos pelo Admin/Assistente
     conn = get_connection()
     try:
-        df_raw_db = pd.read_sql_query("SELECT coordenacao, dados_completos FROM os_programadas", conn)
+        df_raw_db = pd.read_sql_query(
+            "SELECT os, coordenacao, dados_completos FROM os_programadas", conn
+        )
     except Exception as e:
         df_raw_db = pd.DataFrame()
     finally:
@@ -1747,26 +2141,121 @@ def carregar_base_sem_overlay(
     if df_raw_db.empty:
         return pd.DataFrame()
 
+    # =====================================================
+    # FIX 1: Tratar coordenacao NULL antes do groupby
+    # =====================================================
+    # Mapeamento de fallback: tenta extrair coordenação do JSON (dados_completos)
+    _mapa_depto_fallback = {
+        "E.SP.IPA": "Paranapiacaba",
+        "E.SP.IPG": "Piaçaguera",
+    }
+
+    def _resolver_coord_null(row):
+        """Se coordenacao é NULL, tenta descobrir pelo JSON."""
+        coord = row["coordenacao"]
+        if pd.notna(coord) and str(coord).strip() != "":
+            return str(coord).strip()
+
+        # Tenta extrair do JSON
+        dados = row["dados_completos"]
+        if isinstance(dados, str):
+            try:
+                dados = json.loads(dados)
+            except Exception:
+                return "N/D"
+
+        if isinstance(dados, dict):
+            # Tenta "Codigo departamento"
+            for chave in ["Codigo departamento", "CODIGO DEPARTAMENTO", "Concatenar", "CONCATENAR"]:
+                val = str(dados.get(chave, "")).strip().upper()
+                if val:
+                    for prefixo, coord_nome in _mapa_depto_fallback.items():
+                        if val.startswith(prefixo):
+                            return coord_nome
+        return "N/D"
+
+    df_raw_db["coordenacao"] = df_raw_db.apply(_resolver_coord_null, axis=1)
+
+    # =====================================================
+    # FIX 2: Normalizar coordenação antes do groupby
+    # =====================================================
+    _mapa_norm = {
+        "PARANAPIACABA": "Paranapiacaba",
+        "PIAÇAGUERA": "Piaçaguera",
+        "PIACAGUERA": "Piaçaguera",
+        "IPG": "Piaçaguera",
+        "IPA": "Paranapiacaba",
+        "E.SP.IPG": "Piaçaguera",
+        "E.SP.IPA": "Paranapiacaba",
+    }
+
+    df_raw_db["coordenacao"] = df_raw_db["coordenacao"].apply(
+        lambda v: _mapa_norm.get(str(v).strip().upper(), str(v).strip())
+        if pd.notna(v) and str(v).strip() != ""
+        else "N/D"
+    )
+
+    # =====================================================
+    # FIX 3: Atualizar banco para corrigir NULLs de uma vez
+    # =====================================================
+    # Corrige registros que tinham NULL e agora foram resolvidos
+    registros_corrigir = df_raw_db[
+        (df_raw_db["coordenacao"] != "N/D")
+    ][["os", "coordenacao"]].values.tolist()
+
+    if registros_corrigir:
+        conn_fix = get_connection()
+        try:
+            cur_fix = conn_fix.cursor()
+            for os_id, coord_val in registros_corrigir:
+                cur_fix.execute(
+                    "UPDATE os_programadas SET coordenacao = %s WHERE os = %s AND (coordenacao IS NULL OR coordenacao = '')",
+                    (coord_val, os_id)
+                )
+            conn_fix.commit()
+            cur_fix.close()
+        except Exception:
+            conn_fix.rollback()
+        finally:
+            release_connection(conn_fix)
+
+    # =====================================================
+    # 2. Agrupa por coordenação e remonta o DataFrame
+    # =====================================================
     dfs_tratados = []
-    
-    # 2. Agrupa por coordenação e remonta o formato Excel a partir do JSON do banco
-    for coord, group in df_raw_db.groupby("coordenacao"):
+
+    for coord, group in df_raw_db.groupby("coordenacao", dropna=False):
+        # Normaliza coord do grupo
+        coord_str = str(coord).strip() if pd.notna(coord) else "N/D"
+        coord_str = _mapa_norm.get(coord_str.upper(), coord_str)
+
         lista_linhas = []
         for _, row in group.iterrows():
             dados = row["dados_completos"]
             if isinstance(dados, str):
-                dados = json.loads(dados)
+                try:
+                    dados = json.loads(dados)
+                except Exception:
+                    continue
             lista_linhas.append(dados)
-            
+
         if lista_linhas:
             df_bruto_coord = pd.DataFrame(lista_linhas)
             try:
                 df_tratado_coord = tratar_df_os(df_bruto_coord)
-                df_tratado_coord["Coordenacao"] = coord
+                df_tratado_coord["Coordenacao"] = coord_str
                 dfs_tratados.append(df_tratado_coord)
             except Exception as e:
+                # =============================================
+                # FIX 4: NÃO engolir erro silenciosamente
+                # =============================================
                 import logging
-                logging.warning(f"[ETL] Erro ao tratar coordenação '{coord}': {e}")
+                logging.error(f"[ETL] ERRO ao tratar coordenação '{coord_str}': {e}")
+                # Tenta mostrar no Streamlit se possível
+                try:
+                    st.warning(f"⚠️ Erro ao processar OS da coordenação **{coord_str}**: {e}")
+                except Exception:
+                    pass
 
     if not dfs_tratados:
         return pd.DataFrame()
@@ -1775,8 +2264,17 @@ def carregar_base_sem_overlay(
 
     # 4. Aplica o filtro de escopo de quem está logado
     if escopo_usuario != "Todas":
+        _mapa_escopo = {
+            "PARANAPIACABA": "Paranapiacaba",
+            "PIAÇAGUERA": "Piaçaguera",
+            "PIACAGUERA": "Piaçaguera",
+        }
+        escopo_norm = _mapa_escopo.get(escopo_usuario.strip().upper(), escopo_usuario.strip())
         df_base_final = df_base_final[
-            df_base_final["Coordenacao"].str.contains(escopo_usuario, case=False, na=False)
+            df_base_final["Coordenacao"].apply(
+                lambda x: str(x).strip().upper() == escopo_norm.upper()
+                if pd.notna(x) else False
+            )
         ]
 
     return df_base_final
@@ -1799,7 +2297,7 @@ def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, bai
     df_base["Ordem servico"] = df_base["Ordem servico"].astype(str)
 
     if escopo_usuario != "Todas":
-        df_baixas = df_baixas[df_baixas["coordenacao"].str.contains(escopo_usuario, case=False, na=False)]
+        df_baixas = df_baixas[df_baixas["coordenacao"].str.contains(escopo_usuario, case=False, na=False, regex=False)]
 
     # Correção Ponto 3: Incluindo a geolocalização no cruzamento
     colunas_overlay = ["Status da Operação", "Data/Hora Realizado", "Concluído por", "Geolocalização de Baixa"]
@@ -2179,7 +2677,14 @@ df_base = aplicar_overlay_baixas(
 )
 
 st.session_state["df_os"] = df_base
+
 df_visao = preparar_df_visao(df_base, filtro_visao)
+
+# --- GUARD: se base vazia após filtros, mostra aviso e para ---
+if df_visao.empty or "dt_prog_filtro" not in df_visao.columns:
+    st.info("📋 Nenhuma OS encontrada. Faça o upload das planilhas em **⚙️ Dados** para começar.")
+    st.stop()
+
 #endregion
 
 #region 7.3: Filtros da Sidebar
@@ -2250,6 +2755,13 @@ def fragmento_filtros_sidebar_seguro():
         turnos_default = _sanear_lista_filtro("filtro_turnos", lista_turnos, lista_turnos)
         st.multiselect("Turno", lista_turnos, default=turnos_default, key="filtro_turnos")
 
+        intervalo_opcoes = ["Todas", "Com Intervalo", "Sem Intervalo"]
+        intervalo_default = st.session_state.get("filtro_intervalo_sel", "Todas")
+        if intervalo_default not in intervalo_opcoes:
+            intervalo_default = "Todas"
+        st.session_state["filtro_intervalo_sel"] = intervalo_default
+        st.selectbox("Tipo de Intervalo", intervalo_opcoes, index=intervalo_opcoes.index(intervalo_default), key="filtro_intervalo_sel")
+
         status_default = st.session_state.get("filtro_status_sel", "Todos")
         if status_default not in status_opcoes:
             status_default = "Todos"
@@ -2274,6 +2786,8 @@ classif_selecionadas = st.session_state.get("filtro_classificacoes", list(lista_
 turnos_selecionados = st.session_state.get("filtro_turnos", list(lista_turnos))
 status_sel = st.session_state.get("filtro_status_sel", "Todos")
 
+intervalo_sel = st.session_state.get("filtro_intervalo_sel", "Todas")
+
 df_filtrado = aplicar_filtros_sidebar(
     df_visao=df_visao,
     patios_selecionados=patios_selecionados,
@@ -2281,7 +2795,8 @@ df_filtrado = aplicar_filtros_sidebar(
     turnos_selecionados=turnos_selecionados,
     start_date=start_date,
     end_date=end_date,
-    status_sel=status_sel
+    status_sel=status_sel,
+    intervalo_sel=intervalo_sel
 )
 #endregion
 #endregion
@@ -3019,6 +3534,32 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     
             if data_ref_card.year != int(st.session_state["cal_ref_ano"]) or data_ref_card.month != int(st.session_state["cal_ref_mes"]):
                 data_ref_card = dia_ref_default
+
+            # --- FILTRO DE INTERVALO NA ROTEIRIZAÇÃO ---
+            st.markdown("#### 🔧 Tipo de OS")
+            if "filtro_intervalo_campo" not in st.session_state:
+                st.session_state["filtro_intervalo_campo"] = "Todas"
+            col_int1, col_int2, col_int3 = st.columns(3)
+            with col_int1:
+                if st.button("📋 Todas", use_container_width=True, type="primary" if st.session_state["filtro_intervalo_campo"] == "Todas" else "secondary"):
+                    st.session_state["filtro_intervalo_campo"] = "Todas"
+                    st.rerun()
+            with col_int2:
+                if st.button("🔒 Com Intervalo", use_container_width=True, type="primary" if st.session_state["filtro_intervalo_campo"] == "Com Intervalo" else "secondary"):
+                    st.session_state["filtro_intervalo_campo"] = "Com Intervalo"
+                    st.rerun()
+            with col_int3:
+                if st.button("🔓 Sem Intervalo", use_container_width=True, type="primary" if st.session_state["filtro_intervalo_campo"] == "Sem Intervalo" else "secondary"):
+                    st.session_state["filtro_intervalo_campo"] = "Sem Intervalo"
+                    st.rerun()
+            st.markdown("---")
+
+            # Aplica filtro de intervalo em toda a Aba 2
+            _filtro_int_campo = st.session_state.get("filtro_intervalo_campo", "Todas")
+            if _filtro_int_campo != "Todas" and "Tipo_Intervalo" in df_visao.columns:
+                df_visao = df_visao[df_visao["Tipo_Intervalo"] == _filtro_int_campo].copy()
+                if "df_filtrado" in locals():
+                    df_filtrado = df_filtrado[df_filtrado["Tipo_Intervalo"] == _filtro_int_campo].copy()
 
             mostrar_calendario = st.toggle("📅 Mostrar Agenda Mensal de Demanda por Pátio e Turno", value=False)
 
