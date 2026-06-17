@@ -2118,6 +2118,7 @@ def carregar_base_sem_overlay(
     escopo_usuario: str,
     etl_version: str
 ) -> pd.DataFrame:
+
     if usar_sim:
         pct_p = st.session_state.get("sim_pct_pendente", 45)
         pct_ok = st.session_state.get("sim_pct_prazo", 40)
@@ -2127,7 +2128,9 @@ def carregar_base_sem_overlay(
     # 1. Conecta ao Neon e puxa os dados salvos pelo Admin/Assistente
     conn = get_connection()
     try:
-        df_raw_db = pd.read_sql_query("SELECT coordenacao, dados_completos FROM os_programadas", conn)
+        df_raw_db = pd.read_sql_query(
+            "SELECT os, coordenacao, dados_completos FROM os_programadas", conn
+        )
     except Exception as e:
         df_raw_db = pd.DataFrame()
     finally:
@@ -2136,26 +2139,121 @@ def carregar_base_sem_overlay(
     if df_raw_db.empty:
         return pd.DataFrame()
 
+    # =====================================================
+    # FIX 1: Tratar coordenacao NULL antes do groupby
+    # =====================================================
+    # Mapeamento de fallback: tenta extrair coordenação do JSON (dados_completos)
+    _mapa_depto_fallback = {
+        "E.SP.IPA": "Paranapiacaba",
+        "E.SP.IPG": "Piaçaguera",
+    }
+
+    def _resolver_coord_null(row):
+        """Se coordenacao é NULL, tenta descobrir pelo JSON."""
+        coord = row["coordenacao"]
+        if pd.notna(coord) and str(coord).strip() != "":
+            return str(coord).strip()
+
+        # Tenta extrair do JSON
+        dados = row["dados_completos"]
+        if isinstance(dados, str):
+            try:
+                dados = json.loads(dados)
+            except Exception:
+                return "N/D"
+
+        if isinstance(dados, dict):
+            # Tenta "Codigo departamento"
+            for chave in ["Codigo departamento", "CODIGO DEPARTAMENTO", "Concatenar", "CONCATENAR"]:
+                val = str(dados.get(chave, "")).strip().upper()
+                if val:
+                    for prefixo, coord_nome in _mapa_depto_fallback.items():
+                        if val.startswith(prefixo):
+                            return coord_nome
+        return "N/D"
+
+    df_raw_db["coordenacao"] = df_raw_db.apply(_resolver_coord_null, axis=1)
+
+    # =====================================================
+    # FIX 2: Normalizar coordenação antes do groupby
+    # =====================================================
+    _mapa_norm = {
+        "PARANAPIACABA": "Paranapiacaba",
+        "PIAÇAGUERA": "Piaçaguera",
+        "PIACAGUERA": "Piaçaguera",
+        "IPG": "Piaçaguera",
+        "IPA": "Paranapiacaba",
+        "E.SP.IPG": "Piaçaguera",
+        "E.SP.IPA": "Paranapiacaba",
+    }
+
+    df_raw_db["coordenacao"] = df_raw_db["coordenacao"].apply(
+        lambda v: _mapa_norm.get(str(v).strip().upper(), str(v).strip())
+        if pd.notna(v) and str(v).strip() != ""
+        else "N/D"
+    )
+
+    # =====================================================
+    # FIX 3: Atualizar banco para corrigir NULLs de uma vez
+    # =====================================================
+    # Corrige registros que tinham NULL e agora foram resolvidos
+    registros_corrigir = df_raw_db[
+        (df_raw_db["coordenacao"] != "N/D")
+    ][["os", "coordenacao"]].values.tolist()
+
+    if registros_corrigir:
+        conn_fix = get_connection()
+        try:
+            cur_fix = conn_fix.cursor()
+            for os_id, coord_val in registros_corrigir:
+                cur_fix.execute(
+                    "UPDATE os_programadas SET coordenacao = %s WHERE os = %s AND (coordenacao IS NULL OR coordenacao = '')",
+                    (coord_val, os_id)
+                )
+            conn_fix.commit()
+            cur_fix.close()
+        except Exception:
+            conn_fix.rollback()
+        finally:
+            release_connection(conn_fix)
+
+    # =====================================================
+    # 2. Agrupa por coordenação e remonta o DataFrame
+    # =====================================================
     dfs_tratados = []
-    
-    # 2. Agrupa por coordenação e remonta o formato Excel a partir do JSON do banco
-    for coord, group in df_raw_db.groupby("coordenacao"):
+
+    for coord, group in df_raw_db.groupby("coordenacao", dropna=False):
+        # Normaliza coord do grupo
+        coord_str = str(coord).strip() if pd.notna(coord) else "N/D"
+        coord_str = _mapa_norm.get(coord_str.upper(), coord_str)
+
         lista_linhas = []
         for _, row in group.iterrows():
             dados = row["dados_completos"]
             if isinstance(dados, str):
-                dados = json.loads(dados)
+                try:
+                    dados = json.loads(dados)
+                except Exception:
+                    continue
             lista_linhas.append(dados)
-            
+
         if lista_linhas:
             df_bruto_coord = pd.DataFrame(lista_linhas)
             try:
                 df_tratado_coord = tratar_df_os(df_bruto_coord)
-                df_tratado_coord["Coordenacao"] = coord
+                df_tratado_coord["Coordenacao"] = coord_str
                 dfs_tratados.append(df_tratado_coord)
             except Exception as e:
+                # =============================================
+                # FIX 4: NÃO engolir erro silenciosamente
+                # =============================================
                 import logging
-                logging.warning(f"[ETL] Erro ao tratar coordenação '{coord}': {e}")
+                logging.error(f"[ETL] ERRO ao tratar coordenação '{coord_str}': {e}")
+                # Tenta mostrar no Streamlit se possível
+                try:
+                    st.warning(f"⚠️ Erro ao processar OS da coordenação **{coord_str}**: {e}")
+                except Exception:
+                    pass
 
     if not dfs_tratados:
         return pd.DataFrame()
@@ -2163,7 +2261,6 @@ def carregar_base_sem_overlay(
     df_base_final = pd.concat(dfs_tratados, ignore_index=True)
 
     # 4. Aplica o filtro de escopo de quem está logado
-    
     if escopo_usuario != "Todas":
         _mapa_escopo = {
             "PARANAPIACABA": "Paranapiacaba",
