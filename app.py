@@ -2311,23 +2311,19 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     df_evidencias = carregar_evidencias_df()
                     col_atividade_lista = "Atividade ativo" if "Atividade ativo" in df_lista.columns else None
                     
-                    # Faz o cruzamento para pegar as fotos do modo Online (Supabase)
+                    # Faz o cruzamento para pegar as fotos do modo Online/Offline (Supabase)
                     if not df_evidencias.empty and "Ativo" in df_lista.columns and col_atividade_lista:
                         df_lista = df_lista.merge(df_evidencias[["ativo", "atividade", "foto_url"]], left_on=["Ativo", col_atividade_lista], right_on=["ativo", "atividade"], how="left")
                     else: 
                         df_lista["foto_url"] = None
 
-                    # --- LÓGICA HÍBRIDA DE EVIDÊNCIAS ---
-                    def obter_link_ou_foto(row):
-                        # 1º Tenta pegar a foto do modo Offline (Base64 salva direto na OS do Neon)
-                        if "foto_evidencia" in row and pd.notna(row["foto_evidencia"]) and str(row["foto_evidencia"]).startswith("data:image"):
-                            return str(row["foto_evidencia"])
-                        # 2º Tenta pegar a foto do modo Online (Link HTTP do Supabase)
-                        elif "foto_url" in row and pd.notna(row["foto_url"]) and str(row["foto_url"]).startswith("http"):
+                    # Filtra para exibir na tabela APENAS se for um link HTTP da nuvem (Evita pesar a tela com Base64)
+                    def obter_link(row):
+                        if "foto_url" in row and pd.notna(row["foto_url"]) and str(row["foto_url"]).startswith("http"):
                             return str(row["foto_url"])
                         return None
 
-                    df_lista["Evidência"] = df_lista.apply(obter_link_ou_foto, axis=1)
+                    df_lista["Evidência"] = df_lista.apply(obter_link, axis=1)
                     
                     # Limpa as colunas auxiliares
                     df_lista.drop(columns=["ativo", "atividade", "foto_url"], inplace=True, errors="ignore")
@@ -2348,8 +2344,8 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         use_container_width=True, 
                         height=400, 
                         hide_index=True, 
-                        # A MÁGICA FINAL: Transforma a coluna em uma miniatura de Imagem!
-                        column_config={"Evidência": st.column_config.ImageColumn("📷 Evidência")}
+                        # Retornando para a coluna de Link Leve!
+                        column_config={"Evidência": st.column_config.LinkColumn("📷 Evidência", display_text="🔗 Abrir Foto")}
                     )
 #endregion 10.2.4
 

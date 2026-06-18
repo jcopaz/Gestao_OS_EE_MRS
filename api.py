@@ -12,6 +12,8 @@ from fastapi import FastAPI, Form, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 from PIL.ExifTags import TAGS, GPSTAGS
+import requests
+from PIL import Image, ImageOps
 
 # Lógica de Retry para lidar com o "Cold Start" (Banco dormindo) do Neon PostgreSQL
 pool_conexoes = None
@@ -82,7 +84,47 @@ def extrair_gps_exif(image: Image.Image):
     except Exception as e:
         print(f"Erro ao ler EXIF: {e}")
     return None, None
+def upload_foto_supabase(arquivo_bytes: bytes, nome_arquivo: str) -> str:
+    url_base = os.environ.get("SUPABASE_URL")
+    chave = os.environ.get("SUPABASE_KEY")
+    if not url_base or not chave: return ""
+    
+    upload_url = f"{url_base}/storage/v1/object/evidencias/{nome_arquivo}"
+    try:
+        img = Image.open(io.BytesIO(arquivo_bytes))
+        img = ImageOps.exif_transpose(img) # Corrige foto deitada
+        if img.mode != 'RGB': img = img.convert('RGB')
+        img.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
+        out = io.BytesIO()
+        img.save(out, format='JPEG', quality=75, optimize=True)
+        bytes_comprimidos = out.getvalue()
+    except Exception:
+        bytes_comprimidos = arquivo_bytes
 
+    headers = {
+        "Authorization": f"Bearer {chave}", "apikey": chave,
+        "Content-Type": "image/jpeg", "x-upsert": "true"
+    }
+    resp = requests.post(upload_url, headers=headers, data=bytes_comprimidos)
+    if resp.status_code in (200, 201):
+        return f"{url_base}/storage/v1/object/public/evidencias/{nome_arquivo}"
+    return ""
+
+def upsert_evidencia(ativo: str, atividade: str, foto_url: str, os_referencia: str, concluido_por: str, geolocalizacao: str):
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO evidencias (ativo, atividade, foto_url, os_referencia, concluido_por, geolocalizacao, data_upload)
+            VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (ativo, atividade) DO UPDATE SET
+                foto_url = EXCLUDED.foto_url, os_referencia = EXCLUDED.os_referencia,
+                concluido_por = EXCLUDED.concluido_por, geolocalizacao = EXCLUDED.geolocalizacao, data_upload = CURRENT_TIMESTAMP;
+        """, (str(ativo), str(atividade), str(foto_url), str(os_referencia), str(concluido_por), str(geolocalizacao)))
+        conn.commit()
+        cur.close()
+    finally: release_connection(conn)
+    
 def upsert_baixa(os_id, status, realizado_em_str, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim, foto_b64):
     conn = get_connection()
     try:
@@ -176,24 +218,36 @@ async def sincronizar_baixa_offline(
     
     equipe_formatada = acompanhante if acompanhante.strip() else "Sozinho"
 
-    await foto.seek(0) # Volta o cursor pro início (caso o EXIF tenha lido antes)
+    await foto.seek(0)
     foto_bytes = await foto.read()
-    foto_base64 = f"data:image/jpeg;base64,{base64.b64encode(foto_bytes).decode('utf-8')}"
+    geo_string = f"Offline Sync - {fonte_gps} (Lat: {lat_final:.6f}, Lon: {lon_final:.6f})"
 
-    # Salva no Banco de Dados
+    # 1. TENTA O FLUXO PERFEITO (Supabase)
+    nome_foto = f"{ativo_id}_OS{os_id}_offline.jpg".replace(" ", "_")
+    url_supabase = upload_foto_supabase(foto_bytes, nome_foto)
+
+    if url_supabase:
+        # Sucesso! Salva o link na tabela de evidências e deixa o Base64 vazio no Neon.
+        upsert_evidencia(ativo_id, "Baixa Offline", url_supabase, os_id, usuario, geo_string)
+        foto_b64 = "" 
+    else:
+        # 2. FALLBACK DE SEGURANÇA: Se o Supabase falhar, salva como Base64 para não perder a prova.
+        foto_b64 = f"data:image/jpeg;base64,{base64.b64encode(foto_bytes).decode('utf-8')}"
+
+    # Salva os dados textuais da OS
     upsert_baixa(
         os_id=os_id, 
         status="Realizado", 
         realizado_em_str=formatar_dt_br(hora_apontamento), 
         coordenacao="Sincronização Offline", 
         concluido_por=usuario, 
-        geolocalizacao_baixa=f"Offline Sync - {fonte_gps} (Lat: {lat_final:.6f}, Lon: {lon_final:.6f})",
+        geolocalizacao_baixa=geo_string,
         equipe=equipe_formatada, 
         data_inicio=hora_apontamento.strftime("%d/%m/%Y"), 
         hora_inicio=horario_inicio, 
         data_fim=hora_apontamento.strftime("%d/%m/%Y"), 
         hora_fim=horario_fim,
-        foto_b64=foto_base64  # <-- Mandamos a foto pro banco!
+        foto_b64=foto_b64
     )
 
     dist_km_float = float(dist_km)
