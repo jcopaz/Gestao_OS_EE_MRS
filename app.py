@@ -1110,10 +1110,16 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     <div class="card" style="border-left: 4px solid #10B981;">
         <h3>🔄 Sincronização e Fila</h3>
         <p>OS aguardando envio: <span id="contadorFila" style="font-weight:bold; font-size:18px;">0</span></p>
+        
+        <div class="input-group" style="margin-top: 10px; margin-bottom: 10px;">
+            <label>🛠️ Token de Debug (Para Testes):</label>
+            <input type="text" id="debugToken" placeholder="Digite o token (ex: mrs2026)">
+        </div>
+
         <button id="btnSync" class="sync" onclick="sincronizarDados()">Enviar Dados Localizados</button>
         <button id="btnLimpar" style="background-color: #EF4444;" onclick="limparTudo()">🗑️ Limpar Filas e Reiniciar</button>
     </div>
-    
+
     <h3 style="color: #475569;">Sua Rota Offline</h3>
     
     <div class="input-group">
@@ -1274,15 +1280,25 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             if (baixas.length === 0) return;
             document.getElementById('btnSync').disabled = true;
             document.getElementById('btnSync').innerText = "Sincronizando... Aguarde!";
+            const tokenTeste = document.getElementById('debugToken').value;
 
             for (let baixa of baixas) {{
                 let fd = new FormData();
-                fd.append("os_id", baixa.os_id); fd.append("ativo_id", baixa.ativo_id); fd.append("usuario", baixa.usuario);
-                fd.append("lat_browser", baixa.lat); fd.append("lon_browser", baixa.lon); fd.append("data_hora_local", baixa.data_hora);
+                fd.append("os_id", baixa.os_id); 
+                fd.append("ativo_id", baixa.ativo_id); 
+                fd.append("usuario", baixa.usuario);
+                fd.append("lat_browser", baixa.lat); 
+                fd.append("lon_browser", baixa.lon); 
+                fd.append("data_hora_local", baixa.data_hora);
                 fd.append("acompanhante", baixa.acompanhante); 
                 fd.append("horario_inicio", baixa.horario_inicio); 
                 fd.append("horario_fim", baixa.horario_fim);
                 fd.append("foto", baixa.foto, "evidencia.jpg");
+                
+                // SE O CAMPO NÃO ESTIVER VAZIO, ENVIA PARA A API
+                if (tokenTeste) {{
+                    fd.append("debug_token", tokenTeste);
+                }}
 
                 try {{
                     let res = await fetch(API_URL, {{ method: "POST", body: fd }});
@@ -1881,7 +1897,7 @@ def fragmento_filtros_sidebar_seguro():
         if isinstance(data_selecionada, tuple) and len(data_selecionada) == 2:
             st.session_state["filtro_start_date"], st.session_state["filtro_end_date"] = data_selecionada
         st.rerun() # Força o re-run apenas quando clicar em Aplicar
-        
+
 with st.sidebar: fragmento_filtros_sidebar_seguro()
 
 start_date = st.session_state.get("filtro_start_date", min_date)
