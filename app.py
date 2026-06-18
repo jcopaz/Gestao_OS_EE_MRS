@@ -39,17 +39,47 @@ if not st.session_state.get("logged_in", False):
 #region 1.3: Conexão com Banco de Dados e Constantes de Status
 @st.cache_resource
 def init_connection_pool():
-    return psycopg2.pool.SimpleConnectionPool(
-        1, 20, st.secrets["NEON_POSTGRES_URL"]
-    )
+    import time
+    max_retries = 10
+    
+    for tentativa in range(max_retries):
+        try:
+            # Adicionando um timeout de conexão para não travar o pooler do Neon
+            return psycopg2.pool.SimpleConnectionPool(
+                1, 20, 
+                dsn=st.secrets["NEON_POSTGRES_URL"],
+                connect_timeout=10
+            )
+        except psycopg2.OperationalError as e:
+            if tentativa == max_retries - 1:
+                raise e # Se falhar 10 vezes, aí sim repassa o erro
+            print(f"⚠️ Banco de dados Neon acordando... Tentativa {tentativa + 1} de {max_retries}. Aguardando 4 segundos.")
+            time.sleep(4)
 
 pool_conexoes = init_connection_pool()
 
 def get_connection():
-    return pool_conexoes.getconn()
+    global pool_conexoes # A declaração global OBRIGATORIAMENTE precisa ser a primeira linha
+    
+    # Tenta pegar a conexão do pool. Se estiver "morta" (fechada pelo Neon), recria o pool.
+    try:
+        conn = pool_conexoes.getconn()
+        # Teste rápido ("ping") para ver se a conexão está realmente viva
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+        return conn
+    except (psycopg2.OperationalError, psycopg2.InterfaceError, AttributeError):
+        print("🔄 Conexão perdida ou inválida. Recriando conexão com o banco...")
+        st.cache_resource.clear()
+        pool_conexoes = init_connection_pool()
+        return pool_conexoes.getconn()
 
 def release_connection(conn):
-    pool_conexoes.putconn(conn)
+    if pool_conexoes is not None:
+        try:
+            pool_conexoes.putconn(conn)
+        except Exception:
+            pass # Ignora erros ao devolver conexões mortas ao pool
 
 def hash_senha(senha):
     return hashlib.sha256(senha.encode()).hexdigest()
@@ -152,7 +182,6 @@ for _key, _val in _defaults_session.items():
     if _key not in st.session_state:
         st.session_state[_key] = _val
 #endregion
-
 #endregion SESSÃO 1
 
 #region SESSÃO 2: Barreira de Login com Governança e GPS Obrigatório
@@ -417,8 +446,15 @@ def upsert_baixa(os_id: str, status: str, realizado_em_str: str, coordenacao: st
 
 def carregar_baixas_df() -> pd.DataFrame:
     conn = get_connection()
-    try: df = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa FROM baixas", conn)
-    finally: release_connection(conn)
+    try: 
+        # CORREÇÃO: Adicionamos a foto_evidencia na leitura do Neon!
+        df = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, foto_evidencia FROM baixas", conn)
+    except Exception:
+        # Fallback caso a coluna ainda não exista em algum ambiente
+        df = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa FROM baixas", conn)
+    finally: 
+        release_connection(conn)
+        
     if not df.empty: df["os"] = df["os"].astype(str)
     return df
 #endregion
@@ -649,9 +685,12 @@ def aplicar_filtros_sidebar(
     if "dt_prog_filtro" in df.columns:
         mask_data = ((df["dt_prog_filtro"].dt.date >= start_date) & (df["dt_prog_filtro"].dt.date <= end_date)) | df["dt_prog_filtro"].isna()
         df = df[mask_data]
-    if patios_selecionados: df = df[df["Patio"].isin(patios_selecionados)]
-    if classif_selecionadas: df = df[df["Classificacao"].isin(classif_selecionadas)]
-    if turnos_selecionados and "Turno_Filtro" in df.columns: df = df[df["Turno_Filtro"].isin(turnos_selecionados)]
+    if patios_selecionados: 
+        df = df[df["Patio"].isin(patios_selecionados)]
+    if classif_selecionadas: 
+        df = df[df["Classificacao"].isin(classif_selecionadas)]
+    if turnos_selecionados and "Turno_Filtro" in df.columns: 
+        df = df[df["Turno_Filtro"].isin(turnos_selecionados)]
     if status_sel != "Todos" and "Status_norm" in df.columns:
         if status_sel == "Todas Concluídas": df = df[df["Status_norm"].isin(_status_prazo | _status_atraso)]
         elif status_sel == "Concluídas no Prazo": df = df[df["Status_norm"].isin(_status_prazo)]
@@ -747,6 +786,8 @@ def resumir_demanda_calendario(df_base_cal: pd.DataFrame, ano: int, mes: int, di
     return {"dia_ref": dia_atual_ref, "qtd_patios": int(qtd_patios), "total_os": int(total_os), "patio_prioritario": patio_prioritario_txt, "serie_total_os_mes": serie_total_os_mes, "labels_mes": labels_mes}
 
 @st.cache_data(show_spinner=False)
+#endregion
+
 #region 3.7.4: Resumo de Conclusões por Turno
 def resumir_conclusoes_por_turno_data(df_base_cal: pd.DataFrame, data_ref) -> dict:
     ordem_turnos = ["Turno Dia (07h-19h)", "Administrativo (08h-17h30)", "Turno Noite (19h-07h)"]
@@ -1016,7 +1057,1096 @@ def render_tela_admin():
     #endregion 3.8.5
 #endregion 3.8
 
-#endregion SESSÃO 3
+#region 3.9: Gerador Offline - Produção (HTML/JS completo)
+def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
+    if df_pendentes.empty:
+        return b""
+
+    colunas_export = ["Ordem servico", "Ativo", "Atividade ativo", "Patio", "Criticidade"]
+    if "Descrição Longa" in df_pendentes.columns:
+        colunas_export.append("Descrição Longa")
+
+    df_export = df_pendentes.head(100)[colunas_export].fillna("")
+    os_json = df_export.to_json(orient="records", force_ascii=False)
+
+    usuarios_equipe = ["Sozinho (Nenhum)"]
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT username FROM usuarios")
+        for row in cur.fetchall():
+            username = str(row[0]).strip()
+            if username and username != usuario:
+                usuarios_equipe.append(username)
+        cur.close()
+    except Exception:
+        pass
+    finally:
+        release_connection(conn)
+
+    usuarios_json = json.dumps(usuarios_equipe, ensure_ascii=False)
+
+    html_final = f"""
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SGO MRS - Modo Offline ({usuario})</title>
+    <style>
+        * {{
+            box-sizing: border-box;
+        }}
+        body {{
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+            background: #F8FAFC;
+            color: #0F172A;
+        }}
+        .container {{
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 16px;
+        }}
+        .topbar {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+            padding: 12px 16px;
+            border-radius: 12px;
+            background: #FFFFFF;
+            box-shadow: 0 2px 10px rgba(15, 23, 42, 0.08);
+        }}
+        .title {{
+            margin: 0;
+            font-size: 22px;
+            font-weight: 700;
+            color: #1E3A8A;
+        }}
+        .subtitle {{
+            margin: 4px 0 0 0;
+            font-size: 14px;
+            color: #475569;
+        }}
+        .status-badge {{
+            padding: 8px 12px;
+            border-radius: 999px;
+            font-size: 13px;
+            font-weight: 700;
+            color: #FFFFFF;
+            background: #64748B;
+            white-space: nowrap;
+        }}
+        .status-online {{
+            background: #16A34A;
+        }}
+        .status-offline {{
+            background: #DC2626;
+        }}
+        .grid {{
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 16px;
+        }}
+        .card {{
+            background: #FFFFFF;
+            border-radius: 12px;
+            padding: 16px;
+            box-shadow: 0 2px 10px rgba(15, 23, 42, 0.08);
+        }}
+        .card h2 {{
+            margin-top: 0;
+            margin-bottom: 10px;
+            font-size: 18px;
+            color: #1E293B;
+        }}
+        .toolbar {{
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }}
+        .toolbar-3 {{
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 12px;
+        }}
+        .field {{
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin-bottom: 12px;
+        }}
+        .field label {{
+            font-size: 13px;
+            color: #334155;
+            font-weight: 600;
+        }}
+        .field input,
+        .field select,
+        .field textarea {{
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #CBD5E1;
+            border-radius: 10px;
+            font-size: 14px;
+            background: #FFFFFF;
+        }}
+        .btn {{
+            width: 100%;
+            border: none;
+            border-radius: 10px;
+            padding: 12px 14px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 700;
+        }}
+        .btn-primary {{
+            background: #1D4ED8;
+            color: #FFFFFF;
+        }}
+        .btn-success {{
+            background: #059669;
+            color: #FFFFFF;
+        }}
+        .btn-danger {{
+            background: #DC2626;
+            color: #FFFFFF;
+        }}
+        .btn-secondary {{
+            background: #E2E8F0;
+            color: #0F172A;
+        }}
+        .btn:disabled {{
+            opacity: 0.55;
+            cursor: not-allowed;
+        }}
+        .info-box {{
+            padding: 12px;
+            border-radius: 10px;
+            margin-bottom: 12px;
+            font-size: 14px;
+        }}
+        .info-blue {{
+            background: #EFF6FF;
+            color: #1D4ED8;
+            border: 1px solid #BFDBFE;
+        }}
+        .info-yellow {{
+            background: #FEF3C7;
+            color: #92400E;
+            border: 1px solid #FCD34D;
+        }}
+        .info-red {{
+            background: #FEF2F2;
+            color: #991B1B;
+            border: 1px solid #FECACA;
+        }}
+        .queue-counter {{
+            font-size: 28px;
+            font-weight: 800;
+            color: #0F172A;
+            margin: 0;
+        }}
+        .os-list {{
+            display: grid;
+            gap: 12px;
+        }}
+        .os-item {{
+            border: 1px solid #E2E8F0;
+            border-radius: 12px;
+            padding: 14px;
+            background: #FFFFFF;
+        }}
+        .os-item.locked {{
+            background: #F8FAFC;
+            color: #94A3B8;
+            border-color: #E2E8F0;
+            pointer-events: none;
+            opacity: 0.75;
+        }}
+        .os-header {{
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 10px;
+        }}
+        .os-title {{
+            font-size: 16px;
+            font-weight: 800;
+            color: #0F172A;
+        }}
+        .chip {{
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 700;
+            background: #E2E8F0;
+            color: #334155;
+        }}
+        .chip-critical {{
+            background: #FEE2E2;
+            color: #991B1B;
+        }}
+        .os-grid {{
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }}
+        .os-meta {{
+            font-size: 13px;
+            color: #475569;
+            margin: 4px 0;
+        }}
+        .desc-box {{
+            padding: 10px;
+            background: #F8FAFC;
+            border-radius: 10px;
+            border: 1px solid #E2E8F0;
+            font-size: 13px;
+            color: #334155;
+        }}
+        .small {{
+            font-size: 12px;
+            color: #64748B;
+        }}
+        .footer-space {{
+            height: 24px;
+        }}
+        @media (max-width: 768px) {{
+            .toolbar,
+            .toolbar-3,
+            .os-grid {{
+                grid-template-columns: 1fr;
+            }}
+            .os-header {{
+                flex-direction: column;
+                align-items: flex-start;
+            }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="topbar">
+            <div>
+                <h1 class="title">⚡ Sistema de Gestão de Ordens de Serviço</h1>
+                <p class="subtitle">Modo Offline de Produção • Operador: <strong>{usuario}</strong></p>
+            </div>
+            <div id="statusOnline" class="status-badge status-offline">📡 Offline</div>
+        </div>
+
+        <div class="grid">
+            <div class="card">
+                <h2>🔄 Sincronização e Fila</h2>
+                <div class="toolbar-3">
+                    <div>
+                        <p class="small">OS aguardando envio</p>
+                        <p class="queue-counter" id="filaCount">0</p>
+                    </div>
+                    <div class="field">
+                        <label for="apiUrl">API Produção</label>
+                        <input id="apiUrl" type="text" value="https://SEU-ENDPOINT.onrender.com/sincronizar_baixa_offline">
+                    </div>
+                    <div class="field">
+                        <label for="apiKey">X-API-Key (placeholder)</label>
+                        <input id="apiKey" type="password" value="SUBSTITUA_AQUI">
+                    </div>
+                </div>
+
+                <div class="toolbar" style="margin-top: 12px;">
+                    <button id="btnSync" class="btn btn-success">Enviar Dados Localizados</button>
+                    <button id="btnClear" class="btn btn-danger">🗑️ Limpar Filas e Reiniciar</button>
+                </div>
+
+                <div id="syncMsg" class="info-box info-blue" style="margin-top: 12px;">
+                    O pacote salva as OS localmente e envia quando houver conexão disponível.
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>🧭 Dados Operacionais</h2>
+
+                <div class="toolbar">
+                    <div class="field">
+                        <label for="filtroAtivo">🔍 Filtrar por Ativo</label>
+                        <input id="filtroAtivo" type="text" placeholder="Todos os Ativos na Rota">
+                    </div>
+                    <div class="field">
+                        <label for="acompanhanteGlobal">👥 Acompanhante / Equipe (aplica a todas as OS)</label>
+                        <select id="acompanhanteGlobal"></select>
+                    </div>
+                </div>
+
+                <div id="criticaAlert" class="info-box info-yellow" style="display:none;">
+                    ⚠️ <strong>Foco Operacional:</strong> Existem OS Críticas (Muito Alta). As demais ficam bloqueadas até que estas sejam concluídas.
+                </div>
+
+                <div class="toolbar">
+                    <button id="btnSalvarLote" class="btn btn-primary">💾 Gravar OS(s) Preenchida(s)</button>
+                    <button id="btnCapturarGps" class="btn btn-secondary">📍 Atualizar GPS Atual</button>
+                </div>
+
+                <div id="gpsInfo" class="info-box info-blue" style="margin-top: 12px;">
+                    GPS ainda não capturado.
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>📋 Sua Rota Offline</h2>
+                <div id="osList" class="os-list"></div>
+            </div>
+        </div>
+
+        <div class="footer-space"></div>
+    </div>
+
+    <script>
+        const OS_DATA = {os_json};
+        const USUARIOS_EQUIPE = {usuarios_json};
+        const USUARIO_LOGADO = {json.dumps(usuario, ensure_ascii=False)};
+
+        const DB_NAME = "sgo_mrs_offline_prod";
+        const STORE_NAME = "apontamentos";
+        let db = null;
+        let gpsAtual = null;
+
+        function abrirDB() {{
+            return new Promise((resolve, reject) => {{
+                const req = indexedDB.open(DB_NAME, 1);
+
+                req.onupgradeneeded = (event) => {{
+                    const database = event.target.result;
+                    if (!database.objectStoreNames.contains(STORE_NAME)) {{
+                        const store = database.createObjectStore(STORE_NAME, {{ keyPath: "id", autoIncrement: true }});
+                        store.createIndex("os_id", "os_id", {{ unique: false }});
+                        store.createIndex("status_sync", "status_sync", {{ unique: false }});
+                    }}
+                }};
+
+                req.onsuccess = () => {{
+                    db = req.result;
+                    resolve(db);
+                }};
+
+                req.onerror = () => reject(req.error);
+            }});
+        }}
+
+        function txStore(mode = "readonly") {{
+            const tx = db.transaction(STORE_NAME, mode);
+            return tx.objectStore(STORE_NAME);
+        }}
+
+        function setStatusOnline() {{
+            const el = document.getElementById("statusOnline");
+            if (navigator.onLine) {{
+                el.textContent = "📡 Online";
+                el.className = "status-badge status-online";
+            }} else {{
+                el.textContent = "📡 Offline";
+                el.className = "status-badge status-offline";
+            }}
+        }}
+
+        function setSyncMsg(texto, tipo = "blue") {{
+            const el = document.getElementById("syncMsg");
+            el.textContent = texto;
+            el.className = "info-box " + (tipo === "red" ? "info-red" : tipo === "yellow" ? "info-yellow" : "info-blue");
+        }}
+
+        function setGpsInfo(texto, tipo = "blue") {{
+            const el = document.getElementById("gpsInfo");
+            el.textContent = texto;
+            el.className = "info-box " + (tipo === "red" ? "info-red" : tipo === "yellow" ? "info-yellow" : "info-blue");
+        }}
+
+        function popularEquipe() {{
+            const sel = document.getElementById("acompanhanteGlobal");
+            sel.innerHTML = "";
+            USUARIOS_EQUIPE.forEach((nome) => {{
+                const opt = document.createElement("option");
+                opt.value = nome;
+                opt.textContent = nome;
+                sel.appendChild(opt);
+            }});
+        }}
+
+        function haOSCriticaPendente(lista) {{
+            return lista.some((os) => String(os.Criticidade || "").trim().toUpperCase() === "MUITO ALTA");
+        }}
+
+        function renderListaOS() {{
+            const filtro = document.getElementById("filtroAtivo").value.trim().toUpperCase();
+            const osList = document.getElementById("osList");
+            osList.innerHTML = "";
+
+            const listaBase = OS_DATA.filter((item) => {{
+                const ativo = String(item.Ativo || "").toUpperCase();
+                const atividade = String(item["Atividade ativo"] || "").toUpperCase();
+                const osId = String(item["Ordem servico"] || "").toUpperCase();
+                return !filtro || ativo.includes(filtro) || atividade.includes(filtro) || osId.includes(filtro);
+            }});
+
+            const temCritica = haOSCriticaPendente(listaBase);
+            document.getElementById("criticaAlert").style.display = temCritica ? "block" : "none";
+
+            listaBase.forEach((item, idx) => {{
+                const osId = String(item["Ordem servico"] || "").trim();
+                const ativo = String(item.Ativo || "").trim();
+                const atividade = String(item["Atividade ativo"] || "").trim();
+                const patio = String(item.Patio || "").trim();
+                const criticidade = String(item.Criticidade || "").trim();
+                const desc = String(item["Descrição Longa"] || "").trim();
+                const isCritica = criticidade.toUpperCase() === "MUITO ALTA";
+                const locked = temCritica && !isCritica;
+
+                const wrapper = document.createElement("div");
+                wrapper.className = "os-item" + (locked ? " locked" : "");
+
+                wrapper.innerHTML = `
+                    <div class="os-header">
+                        <div class="os-title">OS ${{osId}}</div>
+                        <div class="chip ${{isCritica ? "chip-critical" : ""}}">${{criticidade || "Sem criticidade"}}</div>
+                    </div>
+
+                    <div class="os-meta"><strong>Ativo:</strong> ${{ativo}}</div>
+                    <div class="os-meta"><strong>Atividade:</strong> ${{atividade}}</div>
+                    <div class="os-meta"><strong>Pátio:</strong> ${{patio}}</div>
+
+                    ${{desc ? `<div class="desc-box" style="margin: 10px 0;"><strong>Descrição:</strong><br>${{desc}}</div>` : ""}}
+
+                    <div class="os-grid" style="margin-top: 10px;">
+                        <div class="field">
+                            <label for="ini_${{idx}}">Horário Início</label>
+                            <input id="ini_${{idx}}" type="time">
+                        </div>
+                        <div class="field">
+                            <label for="fim_${{idx}}">Horário Fim</label>
+                            <input id="fim_${{idx}}" type="time">
+                        </div>
+                    </div>
+
+                    <div class="field">
+                        <label for="foto_${{idx}}">📷 Evidência Fotográfica</label>
+                        <input id="foto_${{idx}}" type="file" accept=".jpg,.jpeg,.png,image/*" capture="environment">
+                    </div>
+
+                    <div class="field">
+                        <label>
+                            <input id="sel_${{idx}}" type="checkbox" ${{locked ? "disabled" : ""}}>
+                            Marcar esta OS para gravação offline
+                        </label>
+                    </div>
+                `;
+                osList.appendChild(wrapper);
+            }});
+        }}
+
+        function calcularDuracaoHoras(inicio, fim) {{
+            if (!inicio || !fim) return null;
+
+            const [hi, mi] = inicio.split(":").map(Number);
+            const [hf, mf] = fim.split(":").map(Number);
+
+            let minsIni = hi * 60 + mi;
+            let minsFim = hf * 60 + mf;
+
+            if (minsFim < minsIni) {{
+                minsFim += 24 * 60;
+            }}
+
+            return (minsFim - minsIni) / 60.0;
+        }}
+
+        async function capturarGPS() {{
+            return new Promise((resolve) => {{
+                if (!navigator.geolocation) {{
+                    setGpsInfo("Este navegador não suporta geolocalização.", "red");
+                    return resolve(null);
+                }}
+
+                navigator.geolocation.getCurrentPosition(
+                    (pos) => {{
+                        gpsAtual = {{
+                            lat: Number(pos.coords.latitude),
+                            lon: Number(pos.coords.longitude),
+                            accuracy: pos.coords.accuracy || null,
+                            timestamp: new Date().toISOString()
+                        }};
+                        setGpsInfo(`GPS capturado: Lat ${{gpsAtual.lat.toFixed(6)}}, Lon ${{gpsAtual.lon.toFixed(6)}}`, "blue");
+                        resolve(gpsAtual);
+                    }},
+                    (err) => {{
+                        setGpsInfo(`Falha ao capturar GPS: ${{err.message}}`, "red");
+                        resolve(null);
+                    }},
+                    {{
+                        enableHighAccuracy: true,
+                        timeout: 15000,
+                        maximumAge: 0
+                    }}
+                );
+            }});
+        }}
+
+        async function blobToBase64(blob) {{
+            return new Promise((resolve, reject) => {{
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+            }});
+        }}
+
+        async function salvarSelecionadasNoLote() {{
+            const acompanhanteGlobal = document.getElementById("acompanhanteGlobal").value || "Sozinho (Nenhum)";
+            const selecionadas = [];
+
+            for (let i = 0; i < OS_DATA.length; i += 1) {{
+                const checkbox = document.getElementById(`sel_${{i}}`);
+                if (!checkbox || !checkbox.checked) continue;
+
+                const inicio = document.getElementById(`ini_${{i}}`)?.value || "";
+                const fim = document.getElementById(`fim_${{i}}`)?.value || "";
+                const fileInput = document.getElementById(`foto_${{i}}`);
+                const foto = fileInput?.files?.[0] || null;
+                const osItem = OS_DATA[i];
+
+                if (!inicio || !fim) {{
+                    alert(`Preencha início e fim da OS ${{osItem["Ordem servico"]}}.`);
+                    return;
+                }}
+
+                if (!foto) {{
+                    alert(`Anexe uma foto para a OS ${{osItem["Ordem servico"]}}.`);
+                    return;
+                }}
+
+                const duracaoHoras = calcularDuracaoHoras(inicio, fim);
+                if (duracaoHoras !== null && duracaoHoras > 12) {{
+                    const ok = confirm(
+                        `A duração calculada da OS ${{osItem["Ordem servico"]}} é de ${{duracaoHoras.toFixed(1)}}h. Confirma gravar mesmo assim?`
+                    );
+                    if (!ok) {{
+                        return;
+                    }}
+                }}
+
+                const payload = {{
+                    os_id: String(osItem["Ordem servico"] || "").trim(),
+                    ativo_id: String(osItem["Ativo"] || "").trim(),
+                    usuario: USUARIO_LOGADO,
+                    acompanhante: acompanhanteGlobal === "Sozinho (Nenhum)" ? "" : acompanhanteGlobal,
+                    horario_inicio: inicio.length === 5 ? `${{inicio}}:00` : inicio,
+                    horario_fim: fim.length === 5 ? `${{fim}}:00` : fim,
+                    data_hora_local: new Date().toISOString(),
+                    lat_browser: gpsAtual ? gpsAtual.lat : 0.0,
+                    lon_browser: gpsAtual ? gpsAtual.lon : 0.0,
+                    criticidade: String(osItem["Criticidade"] || "").trim(),
+                    status_sync: "pendente",
+                    foto_blob: foto,
+                    criado_em: new Date().toISOString()
+                }};
+
+                selecionadas.push(payload);
+            }}
+
+            if (!selecionadas.length) {{
+                alert("Nenhuma OS marcada para gravação.");
+                return;
+            }}
+
+            await Promise.all(
+                selecionadas.map((item) => new Promise((resolve, reject) => {{
+                    const req = txStore("readwrite").add(item);
+                    req.onsuccess = () => resolve(true);
+                    req.onerror = () => reject(req.error);
+                }}))
+            );
+
+            await atualizarFila();
+            setSyncMsg(`${{selecionadas.length}} OS gravada(s) localmente com sucesso.`, "blue");
+            alert(`✅ ${{selecionadas.length}} OS gravada(s) na fila offline.`);
+        }}
+
+        async function atualizarFila() {{
+            return new Promise((resolve, reject) => {{
+                const req = txStore("readonly").getAll();
+                req.onsuccess = () => {{
+                    const registros = req.result || [];
+                    const pendentes = registros.filter((r) => r.status_sync === "pendente");
+                    document.getElementById("filaCount").textContent = String(pendentes.length);
+                    resolve(pendentes.length);
+                }};
+                req.onerror = () => reject(req.error);
+            }});
+        }}
+
+        async function limparFila() {{
+            const ok = confirm("Deseja realmente apagar toda a fila local e reiniciar o pacote offline?");
+            if (!ok) return;
+
+            await new Promise((resolve, reject) => {{
+                const req = txStore("readwrite").clear();
+                req.onsuccess = () => resolve(true);
+                req.onerror = () => reject(req.error);
+            }});
+
+            await atualizarFila();
+            setSyncMsg("Fila local apagada com sucesso.", "yellow");
+        }}
+
+        async function sincronizarFila() {{
+            const apiUrl = document.getElementById("apiUrl").value.trim();
+            const apiKey = document.getElementById("apiKey").value.trim();
+
+            if (!apiUrl) {{
+                alert("Preencha a URL da API de Produção.");
+                return;
+            }}
+            if (!apiKey) {{
+                alert("Preencha o X-API-Key para sincronização.");
+                return;
+            }}
+            if (!navigator.onLine) {{
+                alert("Sem internet. Conecte-se antes de sincronizar.");
+                return;
+            }}
+
+            const registros = await new Promise((resolve, reject) => {{
+                const req = txStore("readonly").getAll();
+                req.onsuccess = () => resolve(req.result || []);
+                req.onerror = () => reject(req.error);
+            }});
+
+            const pendentes = registros.filter((r) => r.status_sync === "pendente");
+            if (!pendentes.length) {{
+                setSyncMsg("Nenhuma OS pendente para sincronizar.", "yellow");
+                return;
+            }}
+
+            let sucesso = 0;
+            let falha = 0;
+
+            for (const item of pendentes) {{
+                try {{
+                    const formData = new FormData();
+                    formData.append("os_id", item.os_id);
+                    formData.append("ativo_id", item.ativo_id);
+                    formData.append("usuario", item.usuario);
+                    formData.append("lat_browser", String(item.lat_browser ?? 0.0));
+                    formData.append("lon_browser", String(item.lon_browser ?? 0.0));
+                    formData.append("data_hora_local", item.data_hora_local);
+                    formData.append("acompanhante", item.acompanhante || "");
+                    formData.append("horario_inicio", item.horario_inicio);
+                    formData.append("horario_fim", item.horario_fim);
+                    formData.append("foto", item.foto_blob, `${{item.ativo_id}}_${{item.os_id}}.jpg`);
+
+                    const resp = await fetch(apiUrl, {{
+                        method: "POST",
+                        headers: {{
+                            "x-api-key": apiKey
+                        }},
+                        body: formData
+                    }});
+
+                    if (!resp.ok) {{
+                        const textoErro = await resp.text();
+                        throw new Error(textoErro || `HTTP ${{resp.status}}`);
+                    }}
+
+                    await new Promise((resolve, reject) => {{
+                        const reqUpdate = txStore("readwrite").put({{
+                            ...item,
+                            status_sync: "sincronizado",
+                            sincronizado_em: new Date().toISOString()
+                        }});
+                        reqUpdate.onsuccess = () => resolve(true);
+                        reqUpdate.onerror = () => reject(reqUpdate.error);
+                    }});
+
+                    sucesso += 1;
+                }} catch (e) {{
+                    console.error("Falha na sincronização da OS", item.os_id, e);
+                    falha += 1;
+                }}
+            }}
+
+            await atualizarFila();
+
+            if (falha === 0) {{
+                setSyncMsg(`Sincronização concluída com sucesso. ${{sucesso}} OS enviada(s).`, "blue");
+            }} else {{
+                setSyncMsg(`Sincronização parcial. ${{sucesso}} enviada(s) e ${{falha}} falha(s).`, "yellow");
+            }}
+        }}
+
+        async function bootstrap() {{
+            await abrirDB();
+            setStatusOnline();
+            popularEquipe();
+            renderListaOS();
+            await atualizarFila();
+
+            window.addEventListener("online", () => {{
+                setStatusOnline();
+            }});
+            window.addEventListener("offline", () => {{
+                setStatusOnline();
+            }});
+
+            document.getElementById("filtroAtivo").addEventListener("input", renderListaOS);
+            document.getElementById("btnCapturarGps").addEventListener("click", capturarGPS);
+            document.getElementById("btnSalvarLote").addEventListener("click", salvarSelecionadasNoLote);
+            document.getElementById("btnSync").addEventListener("click", sincronizarFila);
+            document.getElementById("btnClear").addEventListener("click", limparFila);
+        }}
+
+        bootstrap().catch((err) => {{
+            console.error(err);
+            alert("Falha ao inicializar o pacote offline.");
+        }});
+    </script>
+</body>
+</html>
+"""
+    return html_final.encode("utf-8")
+#endregion 3.9
+
+#region 3.10: Gerador Offline - Estrutura do Corpo (HTML)
+    html_body = f"""
+<body>
+    <div id="networkStatus" class="status-bar online">📡 Online</div>
+    <div class="card" style="border-left: 4px solid #10B981;">
+        <h3>🔄 Sincronização e Fila</h3>
+        <p>OS aguardando envio: <span id="contadorFila" style="font-weight:bold; font-size:18px;">0</span></p>
+        
+        <div class="input-group" style="margin-top: 10px; margin-bottom: 10px;">
+            <label>🛠️ Token de Debug (Para Testes):</label>
+            <input type="text" id="debugToken" placeholder="Digite o token (ex: mrs2026)">
+        </div>
+
+        <button id="btnSync" class="sync" onclick="sincronizarDados()">Enviar Dados Localizados</button>
+        <button id="btnLimpar" style="background-color: #EF4444;" onclick="limparTudo()">🗑️ Limpar Filas e Reiniciar</button>
+    </div>
+    
+    <h3 style="color: #475569;">Sua Rota Offline</h3>
+    
+    <div class="input-group">
+        <label>🔍 Filtrar por Ativo:</label>
+        <select id="filtroAtivo" onchange="renderizarOS()">
+            <option value="TODOS">Todos os Ativos na Rota</option>
+        </select>
+        
+        <label style="margin-top: 10px;">👥 Acompanhante / Equipe (Aplica a todas as OS):</label>
+        <select id="acompGlobal">
+            {opcoes_usuarios}
+        </select>
+    </div>
+
+    <div id="alertaFoco" class="alerta-foco">
+        ⚠️ <b>Foco Operacional:</b> Existem OS Críticas (Muito Alta). As demais estão bloqueadas até que estas sejam concluídas.
+    </div>
+
+    <button onclick="salvarLotePreenchido()" style="background-color: #F59E0B; font-size: 18px; margin-bottom: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">💾 Gravar OS(s) Preenchida(s)</button>
+
+    <div id="listaOS"></div>"""
+#endregion 3.10
+
+#region 3.11: Gerador Offline - Lógica JS Core (Banco Local e Renderização)
+    js_core = f"""
+    <script>
+        const API_URL = "https://api-sgo-mrs.onrender.com/sincronizar_baixa_offline";
+        const OS_DADOS = {os_json};
+        const USUARIO = "{usuario}";
+        
+        let db = null;
+        let filaMemoria = []; 
+        let osConcluidasSessao = new Set();
+
+        const ativosUnicos = [...new Set(OS_DADOS.map(os => os.Ativo))].sort();
+        const selectAtivo = document.getElementById("filtroAtivo");
+        ativosUnicos.forEach(ativo => {{
+            selectAtivo.innerHTML += `<option value="${{ativo}}">${{ativo}}</option>`;
+        }});
+
+        try {{
+            const request = indexedDB.open("SGO_Offline_DB", 3);
+            request.onupgradeneeded = (e) => {{
+                db = e.target.result;
+                if (!db.objectStoreNames.contains("baixas")) {{
+                    db.createObjectStore("baixas", {{ keyPath: "os_id" }});
+                }}
+            }};
+            request.onsuccess = (e) => {{ db = e.target.result; atualizarContador(); renderizarOS(); }};
+            request.onerror = (e) => {{ console.warn("Navegador bloqueou DB."); renderizarOS(); }};
+        }} catch (err) {{ console.warn("Erro BD local", err); renderizarOS(); }}
+
+        function updateNetworkStatus() {{
+            const statusDiv = document.getElementById('networkStatus');
+            if (navigator.onLine) {{
+                statusDiv.className = 'status-bar online'; statusDiv.innerText = '📡 Conectado - Sincronização Ativa';
+                sincronizarDados();
+            }} else {{
+                statusDiv.className = 'status-bar offline'; statusDiv.innerText = '🚫 Área de Sombra (Modo Offline)';
+            }}
+        }}
+        window.addEventListener('online', updateNetworkStatus);
+        window.addEventListener('offline', updateNetworkStatus);
+
+        function renderizarOS() {{
+            const container = document.getElementById("listaOS");
+            const ativoSel = document.getElementById("filtroAtivo").value;
+            const alerta = document.getElementById("alertaFoco");
+            container.innerHTML = "";
+
+            let osFiltradas = OS_DADOS.filter(os => !osConcluidasSessao.has(os['Ordem servico']));
+            
+            if (ativoSel !== "TODOS") {{
+                osFiltradas = osFiltradas.filter(os => os.Ativo === ativoSel);
+            }}
+
+            const temMuitoAlta = osFiltradas.some(os => os.Criticidade === "Muito Alta");
+            alerta.style.display = temMuitoAlta ? "block" : "none";
+
+            osFiltradas.forEach(os => {{
+                const isBloqueada = temMuitoAlta && os.Criticidade !== "Muito Alta";
+                const classeCard = isBloqueada ? "card card-bloqueado" : "card";
+                const msgBloqueio = isBloqueada ? `<div style="color:#EF4444; font-weight:bold; font-size:12px; margin-bottom:8px;">🔒 Conclua a OS Prioritária para liberar.</div>` : ``;
+                const btnInputsDisabled = isBloqueada ? "disabled" : "";
+
+                const descLonga = os['Descrição Longa'] ? os['Descrição Longa'] : 'N/A';
+                const badgeCrit = os.Criticidade === "Muito Alta" ? `<div class="badge-crit">⚠️ ${{os.Criticidade}}</div>` : `<div style="font-size:12px; color:#64748B; margin-bottom:5px;">${{os.Criticidade}}</div>`;
+                
+                container.innerHTML += `
+                    <div class="${{classeCard}}" id="card_${{os['Ordem servico']}}">
+                        ${{msgBloqueio}}
+                        ${{badgeCrit}}
+                        <h4 style="margin:0 0 5px 0;">📍 ${{os.Patio}} | OS: ${{os['Ordem servico']}}</h4>
+                        <p style="margin:0 0 10px 0; font-size:14px; line-height: 1.4;">
+                            <b>Ativo:</b> ${{os.Ativo}}<br>
+                            <b>Descrição:</b> ${{descLonga}}<br>
+                            <b>Ação:</b> ${{os['Atividade ativo']}}
+                        </p>
+                        
+                        <div class="input-group">
+                            <label>Início (Obrigatório):</label>
+                            <input type="time" id="hora_ini_${{os['Ordem servico']}}" ${{btnInputsDisabled}}>
+                            <label>Fim (Obrigatório):</label>
+                            <input type="time" id="hora_fim_${{os['Ordem servico']}}" ${{btnInputsDisabled}}>
+                        </div>
+
+                        <input type="file" id="foto_${{os['Ordem servico']}}" accept="image/*" capture="environment" style="width: 100%; margin-bottom: 5px;" ${{btnInputsDisabled}}>
+                    </div>`;
+            }});
+        }}"""
+#endregion 3.11
+
+#region 3.12: Gerador Offline - Lógica JS de Lote e Confirmação de Tempo
+    js_lote = f"""
+        async function salvarLotePreenchido() {{
+            let osParaSalvar = [];
+            let osIncompletas = [];
+            
+            let temMuitoAlta = OS_DADOS.filter(os => !osConcluidasSessao.has(os['Ordem servico'])).some(os => os.Criticidade === "Muito Alta");
+
+            for (let os of OS_DADOS) {{
+                let os_id = os['Ordem servico'];
+                if (osConcluidasSessao.has(os_id)) continue;
+                if (temMuitoAlta && os.Criticidade !== "Muito Alta") continue; 
+
+                let horaIni = document.getElementById(`hora_ini_${{os_id}}`);
+                let horaFim = document.getElementById(`hora_fim_${{os_id}}`);
+                let fotoInput = document.getElementById(`foto_${{os_id}}`);
+
+                if (!horaIni) continue; 
+
+                let isPreenchida = horaIni.value || horaFim.value || fotoInput.files.length > 0;
+                let isCompleta = horaIni.value && horaFim.value && fotoInput.files.length > 0;
+
+                if (isPreenchida && !isCompleta) {{
+                    osIncompletas.push(os_id);
+                }} else if (isCompleta) {{
+                    
+                    let [hI, mI] = horaIni.value.split(':').map(Number);
+                    let [hF, mF] = horaFim.value.split(':').map(Number);
+                    let minIni = hI * 60 + mI;
+                    let minFim = hF * 60 + mF;
+                    
+                    let duracaoMin = minFim < minIni ? (24 * 60 - minIni) + minFim : minFim - minIni;
+
+                    if (duracaoMin > 12 * 60) {{
+                        // CORREÇÃO AQUI: Chaves duplas {{ }} em volta da matemática do JS
+                        let resposta = confirm(`⚠️ Atenção na OS ${{os_id}}:\\n\\nA duração calculada é de ${{(duracaoMin/60).toFixed(1)}} horas. Está correto?\\n\\n(Se o serviço terminou à tarde, lembre-se de usar 13:00 em vez de 01:00). Clique em OK para confirmar e salvar.`);
+                        if (!resposta) {{
+                            return; 
+                        }}
+                    }}
+
+                    osParaSalvar.push({{
+                        os_id: os_id,
+                        ativo_id: os.Ativo,
+                        horario_inicio: horaIni.value,
+                        horario_fim: horaFim.value,
+                        fotoBlob: fotoInput.files[0]
+                    }});
+                }}
+            }}
+
+            if (osIncompletas.length > 0) {{
+                alert(`⚠️ Atenção! As seguintes OS estão preenchidas pela metade: ${{osIncompletas.join(", ")}}.\\n\\nPreencha todos os horários e a foto delas, ou apague os dados para continuar.`);
+                return;
+            }}
+
+            if (osParaSalvar.length === 0) {{
+                alert("Nenhuma OS foi totalmente preenchida. Informe horários e foto para gravar.");
+                return;
+            }}
+
+            const acomp = document.getElementById(`acompGlobal`).value;
+            const dataHora = new Date().toISOString();
+
+            navigator.geolocation.getCurrentPosition(
+                (pos) => {{ gravarNoBanco(osParaSalvar, acomp, dataHora, pos.coords.latitude, pos.coords.longitude); }}, 
+                (err) => {{ gravarNoBanco(osParaSalvar, acomp, dataHora, 0.0, 0.0); }}, 
+                {{ enableHighAccuracy: true, timeout: 10000 }}
+            );
+        }}
+
+        function gravarNoBanco(listaOS, acomp, dataHora, lat, lon) {{
+            let totalSalvas = 0;
+
+            const finalizarProcesso = () => {{
+                alert(`✅ ${{totalSalvas}} OS(s) gravada(s) com sucesso no celular!`);
+                renderizarOS();
+                atualizarContador();
+                if(navigator.onLine) sincronizarDados();
+            }};
+
+            if (db) {{
+                const tx = db.transaction("baixas", "readwrite");
+                for (let os of listaOS) {{
+                    const baixa = {{ 
+                        os_id: os.os_id, ativo_id: os.ativo_id, lat: lat, lon: lon, 
+                        data_hora: dataHora, foto: os.fotoBlob, usuario: USUARIO,
+                        acompanhante: acomp, horario_inicio: os.horario_inicio, horario_fim: os.horario_fim
+                    }};
+                    tx.objectStore("baixas").put(baixa);
+                    osConcluidasSessao.add(os.os_id);
+                    totalSalvas++;
+                }}
+                tx.oncomplete = finalizarProcesso;
+            }} else {{
+                for (let os of listaOS) {{
+                    const baixa = {{ 
+                        os_id: os.os_id, ativo_id: os.ativo_id, lat: lat, lon: lon, 
+                        data_hora: dataHora, foto: os.fotoBlob, usuario: USUARIO,
+                        acompanhante: acomp, horario_inicio: os.horario_inicio, horario_fim: os.horario_fim
+                    }};
+                    filaMemoria.push(baixa);
+                    osConcluidasSessao.add(os.os_id);
+                    totalSalvas++;
+                }}
+                finalizarProcesso();
+            }}
+        }}"""
+#endregion 3.12
+
+#region 3.13: Gerador Offline - Lógica JS de Sincronização e Fetch
+    js_sync = f"""
+        async function enviarLote(baixas) {{
+            if (baixas.length === 0) return;
+            document.getElementById('btnSync').disabled = true;
+            document.getElementById('btnSync').innerText = "Sincronizando... Aguarde!";
+
+            const tokenTeste = document.getElementById('debugToken').value;
+
+            for (let baixa of baixas) {{
+                let fd = new FormData();
+                fd.append("os_id", baixa.os_id); fd.append("ativo_id", baixa.ativo_id); fd.append("usuario", baixa.usuario);
+                fd.append("lat_browser", baixa.lat); fd.append("lon_browser", baixa.lon); fd.append("data_hora_local", baixa.data_hora);
+                fd.append("acompanhante", baixa.acompanhante); 
+                fd.append("horario_inicio", baixa.horario_inicio); 
+                fd.append("horario_fim", baixa.horario_fim);
+                fd.append("foto", baixa.foto, "evidencia.jpg");
+                
+                if (tokenTeste) {{ fd.append("debug_token", tokenTeste); }}
+
+                try {{
+                    let res = await fetch(API_URL, {{ method: "POST", body: fd }});
+                    if (res.ok) {{
+                        if (db) {{
+                            const txDel = db.transaction("baixas", "readwrite");
+                            txDel.objectStore("baixas").delete(baixa.os_id);
+                        }} else {{
+                            filaMemoria = filaMemoria.filter(b => b.os_id !== baixa.os_id);
+                        }}
+                    }} else {{
+                        let erroServidor = await res.text();
+                        alert("❌ O Servidor recusou a OS " + baixa.os_id + ". Motivo: " + erroServidor);
+                    }}
+                }} catch (e) {{ 
+                    alert("⚠️ Erro de Rede ao sincronizar a OS " + baixa.os_id + "."); 
+                }}
+            }}
+            atualizarContador();
+            document.getElementById('btnSync').disabled = false;
+            document.getElementById('btnSync').innerText = "Enviar Dados Localizados";
+        }}
+
+        function sincronizarDados() {{
+            if (!navigator.onLine) return;
+            if (db) {{
+                try {{
+                    const tx = db.transaction("baixas", "readonly");
+                    const req = tx.objectStore("baixas").getAll();
+                    req.onsuccess = async () => {{ await enviarLote(req.result); }};
+                }} catch (e) {{ enviarLote(filaMemoria); }}
+            }} else {{ enviarLote(filaMemoria); }}
+        }}
+
+        function limparTudo() {{
+            if(confirm("Tem certeza que deseja apagar TODAS as baixas não sincronizadas? Esta ação não pode ser desfeita.")) {{
+                if (db) {{
+                    const tx = db.transaction("baixas", "readwrite");
+                    tx.objectStore("baixas").clear();
+                    tx.oncomplete = () => {{
+                        filaMemoria = [];
+                        alert("✅ Fila limpa com sucesso!");
+                        atualizarContador();
+                        renderizarOS();
+                    }};
+                }} else {{
+                    filaMemoria = [];
+                    alert("✅ Fila limpa com sucesso!");
+                    atualizarContador();
+                    renderizarOS();
+                }}
+            }}
+        }}
+
+        function atualizarContador() {{
+            if (db) {{
+                try {{
+                    const tx = db.transaction("baixas", "readonly");
+                    const req = tx.objectStore("baixas").count();
+                    req.onsuccess = () => {{ document.getElementById('contadorFila').innerText = req.result; }};
+                }} catch (e) {{ document.getElementById('contadorFila').innerText = filaMemoria.length; }}
+            }} else {{ document.getElementById('contadorFila').innerText = filaMemoria.length; }}
+        }}
+    </script>
+</body>
+</html>"""
+
+    # Concatenação final de todas as partes modulares criadas acima
+    html_final = html_head + html_body + js_core + js_lote + js_sync
+    return html_final.encode("utf-8")
+#endregion 3.13
 #endregion
 
 #region SESSÃO 4: Banco de Coordenadas Fixo
@@ -1265,10 +2395,21 @@ def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, bai
         "realizado_em": "Data/Hora Realizado", "concluido_por": "Concluído por", "geolocalizacao_baixa": "Geolocalização de Baixa"
     })
 
-    df_base = df_base.merge(df_baixas[["Ordem servico"] + colunas_overlay], on="Ordem servico", how="left", suffixes=("", "_baixado"))
+    # CORREÇÃO: Adiciona a foto_evidencia na lista de coisas que serão mescladas
+    cols_merge = ["Ordem servico"] + colunas_overlay
+    if "foto_evidencia" in df_baixas.columns:
+        cols_merge.append("foto_evidencia")
+
+    df_base = df_base.merge(df_baixas[cols_merge], on="Ordem servico", how="left", suffixes=("", "_baixado"))
+    
     for col in colunas_overlay:
         df_base[col] = np.where(df_base[f"{col}_baixado"].notna() & (df_base[f"{col}_baixado"] != ""), df_base[f"{col}_baixado"], df_base[col])
         df_base.drop(columns=[f"{col}_baixado"], inplace=True)
+        
+    # Salva a foto na base final limpa
+    if "foto_evidencia_baixado" in df_base.columns:
+        df_base["foto_evidencia"] = df_base["foto_evidencia_baixado"]
+        df_base.drop(columns=["foto_evidencia_baixado"], inplace=True)
 
     return df_base
 #endregion 5.4
@@ -1489,50 +2630,54 @@ lista_turnos = ["Turno Dia (07h-19h)", "Administrativo (08h-17h30)", "Turno Noit
 status_opcoes = ["Todos", "Todas Concluídas", "Concluídas no Prazo", "Concluídas com Atraso", "Pendentes", "Atrasado"]
 
 def _sanear_lista_filtro(chave: str, opcoes: list[str], padrao: list[str]):
+    # Pega o que o usuário selecionou no st.multiselect
     atuais = st.session_state.get(chave, list(padrao))
+    
+    # Validação: mantém apenas itens que realmente existem nas opções disponíveis
     atuais = [item for item in atuais if item in opcoes]
-    if not atuais: atuais = list(padrao)
+    
+    # A MUDANÇA: Se a lista ficar vazia, não vamos forçar o retorno ao padrão.
+    # Vamos deixar retornar vazia, o que para o seu sistema significa "sem filtros aplicados".
     st.session_state[chave] = atuais
     return atuais
 
+#region 7.3: Função de Renderização dos Filtros na Sidebar
 @st.fragment
 def fragmento_filtros_sidebar_seguro():
+    # --- OCULTA TUDO PARA O TÉCNICO (Inclusive o título e o botão) ---
+    if st.session_state.get("perfil") == "Técnico":
+        return # Interrompe a função aqui, não desenha nada na sidebar!
+
     st.markdown("### 📊 Filtros")
-    if st.session_state["perfil"] != "Técnico":
+    
+    with st.form("form_filtros"):
+        # Datas
         start_padrao = st.session_state.get("filtro_start_date", min_date)
         end_padrao = st.session_state.get("filtro_end_date", max_date)
-        if start_padrao < min_date or start_padrao > max_date: start_padrao = min_date
-        if end_padrao < min_date or end_padrao > max_date: end_padrao = max_date
-        if start_padrao > end_padrao: start_padrao, end_padrao = min_date, max_date
-
-        data_selecionada = st.date_input("Período de Programação", value=(start_padrao, end_padrao), min_value=min_date, max_value=max_date, format="DD/MM/YYYY", key="filtro_periodo_programacao")
-        if isinstance(data_selecionada, tuple):
-            if len(data_selecionada) == 2: start_date_local, end_date_local = data_selecionada
-            else: start_date_local = end_date_local = data_selecionada[0]
-        else: start_date_local = end_date_local = data_selecionada
-
-        st.session_state["filtro_start_date"] = start_date_local
-        st.session_state["filtro_end_date"] = end_date_local
-
+        data_selecionada = st.date_input("Período de Programação", value=(start_padrao, end_padrao), format="DD/MM/YYYY")
+        
+        # Pátios, Classificação, Turno
         patios_default = _sanear_lista_filtro("filtro_patios", lista_patios, lista_patios)
         st.multiselect("Pátio", lista_patios, default=patios_default, key="filtro_patios")
+        
         classif_default = _sanear_lista_filtro("filtro_classificacoes", lista_classificacoes, lista_classificacoes)
         st.multiselect("Classificação", lista_classificacoes, default=classif_default, key="filtro_classificacoes")
+        
         turnos_default = _sanear_lista_filtro("filtro_turnos", lista_turnos, lista_turnos)
         st.multiselect("Turno", lista_turnos, default=turnos_default, key="filtro_turnos")
 
-        intervalo_opcoes = ["Todas", "Com Intervalo", "Sem Intervalo"]
-        intervalo_default = st.session_state.get("filtro_intervalo_sel", "Todas")
-        if intervalo_default not in intervalo_opcoes: intervalo_default = "Todas"
-        st.session_state["filtro_intervalo_sel"] = intervalo_default
-        st.selectbox("Tipo de Intervalo", intervalo_opcoes, index=intervalo_opcoes.index(intervalo_default), key="filtro_intervalo_sel")
+        # Intervalo e Status
+        st.selectbox("Tipo de Intervalo", ["Todas", "Com Intervalo", "Sem Intervalo"], key="filtro_intervalo_sel")
+        st.selectbox("Status da OS", status_opcoes, key="filtro_status_sel")
+    
+        # O botão fica DENTRO do form e SÓ para quem não é técnico
+        submit_filtros = st.form_submit_button("✅ Aplicar Filtros", use_container_width=True, type="primary")
 
-        status_default = st.session_state.get("filtro_status_sel", "Todos")
-        if status_default not in status_opcoes: status_default = "Todos"; st.session_state["filtro_status_sel"] = status_default
-        st.selectbox("Status da OS", status_opcoes, index=status_opcoes.index(status_default), key="filtro_status_sel")
-    else:
-        st.info("💡 Filtros automáticos aplicados de acordo com o seu escopo operacional de campo.")
-        st.session_state.update({"filtro_start_date": min_date, "filtro_end_date": max_date, "filtro_patios": list(lista_patios), "filtro_classificacoes": list(lista_classificacoes), "filtro_turnos": list(lista_turnos), "filtro_status_sel": "Todos"})
+    if submit_filtros:
+        if isinstance(data_selecionada, tuple) and len(data_selecionada) == 2:
+            st.session_state["filtro_start_date"], st.session_state["filtro_end_date"] = data_selecionada
+        st.rerun()
+#endregion 7.3
 
 with st.sidebar: fragmento_filtros_sidebar_seguro()
 
@@ -2011,16 +3156,30 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 
 #region 10.2.4: Lista Detalhada de OS (com Evidências)
                 st.subheader("📋 Lista Detalhada de OS")
+                
+                # --- NOVIDADE: BARRA DE PESQUISA ---
+                col_busca, _ = st.columns([4, 6])
+                with col_busca:
+                    busca_os = st.text_input("🔍 Pesquisar por N° da OS, Pátio ou Ativo:")
+
                 df_lista = df_visao_base.copy().rename(columns={"Ordem servico": "OS"})
                 try:
                     df_evidencias = carregar_evidencias_df()
-                    col_atividade_lista = "Atividade ativo" if "Atividade ativo" in df_lista.columns else None
-                    if not df_evidencias.empty and "Ativo" in df_lista.columns and col_atividade_lista:
-                        df_lista = df_lista.merge(df_evidencias[["ativo", "atividade", "foto_url"]], left_on=["Ativo", col_atividade_lista], right_on=["ativo", "atividade"], how="left")
-                        df_lista["Evidência"] = df_lista["foto_url"].apply(lambda url: str(url) if pd.notna(url) and str(url).startswith("http") else None)
-                        df_lista.drop(columns=["ativo", "atividade", "foto_url"], inplace=True, errors="ignore")
-                    else: df_lista["Evidência"] = ""
-                except Exception: df_lista["Evidência"] = ""
+                    if not df_evidencias.empty and "OS" in df_lista.columns:
+                        df_lista["OS_match"] = df_lista["OS"].astype(str).str.strip()
+                        df_evidencias["os_ref_match"] = df_evidencias["os_referencia"].astype(str).str.strip()
+                        df_lista = df_lista.merge(df_evidencias[["os_ref_match", "foto_url"]], left_on="OS_match", right_on="os_ref_match", how="left")
+                    else: 
+                        df_lista["foto_url"] = None
+
+                    def obter_link(row):
+                        if "foto_url" in row and pd.notna(row["foto_url"]) and str(row["foto_url"]).startswith("http"):
+                            return str(row["foto_url"])
+                        return None
+                    df_lista["Evidência"] = df_lista.apply(obter_link, axis=1)
+                    df_lista.drop(columns=["OS_match", "os_ref_match", "foto_url", "ativo", "atividade"], inplace=True, errors="ignore")
+                except Exception: 
+                    df_lista["Evidência"] = None
 
                 if "Data inicial programada" in df_lista.columns: df_lista["Data inicial programada"] = pd.to_datetime(df_lista["Data inicial programada"], errors="coerce").dt.strftime("%d/%m/%Y")
                 if "Data/Hora Realizado" in df_lista.columns: df_lista["Data/Hora Realizado"] = pd.to_datetime(df_lista["Data/Hora Realizado"], dayfirst=True, errors="coerce").dt.strftime("%d/%m/%Y %H:%M").fillna("")
@@ -2029,9 +3188,21 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                 for c in colunas_ordem:
                     if c not in df_lista.columns: df_lista[c] = ""
 
+                # --- APLICA O FILTRO DA PESQUISA ---
+                if busca_os:
+                    b_up = busca_os.upper()
+                    mask = (df_lista["OS"].astype(str).str.upper().str.contains(b_up)) | (df_lista["Patio"].astype(str).str.upper().str.contains(b_up)) | (df_lista["Ativo"].astype(str).str.upper().str.contains(b_up))
+                    df_lista = df_lista[mask]
+
                 if not df_lista.empty:
-                    st.dataframe(df_lista[colunas_ordem].style.set_properties(**{'text-align': 'center'}).set_table_styles([{'selector': 'th', 'props': [('text-align', 'center')]}]), use_container_width=True, height=400, hide_index=True, column_config={"Evidência": st.column_config.LinkColumn("📷 Evidência", display_text="📷 Ver Foto")})
-                #endregion 10.2.4
+                    st.dataframe(
+                        df_lista[colunas_ordem].style.set_properties(**{'text-align': 'center'}).set_table_styles([{'selector': 'th', 'props': [('text-align', 'center')]}]), 
+                        use_container_width=True, height=400, hide_index=True, 
+                        column_config={"Evidência": st.column_config.LinkColumn("📷 Evidência", display_text="🔗 Abrir Foto")}
+                    )
+                else:
+                    st.info("Nenhuma OS encontrada para a pesquisa.")
+#endregion 10.2.4
 #endregion 10.2
 
 #region 10.3: ABA 2 — Roteirização e Mapa de Campo
@@ -2102,43 +3273,62 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                 if st.button("🔓 Sem Intervalo", use_container_width=True, type="primary" if st.session_state["filtro_intervalo_campo"] == "Sem Intervalo" else "secondary"): st.session_state["filtro_intervalo_campo"] = "Sem Intervalo"; st.rerun()
             st.markdown("---")
 
+            # --- CORREÇÃO DA APLICAÇÃO DE FILTROS ---
             _filtro_int_campo = st.session_state.get("filtro_intervalo_campo", "Todas")
-            if _filtro_int_campo != "Todas" and "Tipo_Intervalo" in df_visao.columns:
-                df_visao = df_visao[df_visao["Tipo_Intervalo"] == _filtro_int_campo].copy()
-                if "df_filtrado" in locals(): df_filtrado = df_filtrado[df_filtrado["Tipo_Intervalo"] == _filtro_int_campo].copy()
+            
+            # Se o df_filtrado existe (vindo da sidebar), usamos ele como base da Roteirização.
+            # Se não, usamos o df_visao (base geral).
+            base_rota = df_filtrado.copy() if "df_filtrado" in locals() else df_visao.copy()
 
+            # Aplica o filtro dos botões de Intervalo
+            if _filtro_int_campo != "Todas" and "Tipo_Intervalo" in base_rota.columns:
+                base_rota = base_rota[base_rota["Tipo_Intervalo"] == _filtro_int_campo].copy()
+
+            # Aqui passamos a base TOTALMENTE filtrada para o df_calendario
+            df_calendario = base_rota.copy()
+            
+            # (Opcional, de segurança: O df_filtrado no escopo global também é atualizado)
+            if "df_filtrado" in locals():
+                df_filtrado = base_rota.copy()
+
+            # --- PROTEÇÃO DO TOGGLE ---
+            # O Toggle não pode sumir. Ele é desenhado sempre!
             mostrar_calendario = st.toggle("📅 Mostrar Agenda Mensal de Demanda", value=False)
+            
             if mostrar_calendario:
-                with st.spinner("Carregando agenda..."):
-                    calendar_events = montar_eventos_calendario_patios(df_base_cal=df_calendario, ano=int(st.session_state["cal_ref_ano"]), mes=int(st.session_state["cal_ref_mes"]), max_patios_visiveis=2)
-                    calendar_options = { "initialView": "dayGridMonth", "initialDate": f"{int(st.session_state['cal_ref_ano']):04d}-{int(st.session_state['cal_ref_mes']):02d}-01", "locale": "pt-br", "height": "auto", "contentHeight": "auto", "headerToolbar": { "left": "", "center": "title", "right": "" }, "dayMaxEvents": 2, "eventOrder": "displayOrder,title", "fixedWeekCount": False, "showNonCurrentDates": True, "expandRows": True, "handleWindowResize": True }
-                    calendar_css_base = """ .fc { font-size: 14px; background: #FFFFFF; border-radius: 12px; padding: 6px; box-shadow: 0 1px 8px rgba(15, 23, 42, 0.08); } .fc .fc-toolbar-title { font-size: 1.4rem !important; font-weight: 800; text-transform: capitalize; color: #1E293B; } .fc .fc-daygrid-day-frame:hover { background-color: #F8FAFC !important; } .fc .fc-daygrid-event { border-radius: 6px; padding: 3px 5px; font-weight: 800; cursor: pointer; } """
-                    calendar_css_dinamico = f"{calendar_css_base} .fc-daygrid-day[data-date='{data_ref_card.strftime('%Y-%m-%d')}'] {{ background-color: #EFF6FF !important; box-shadow: inset 0 0 0 3px #3B82F6 !important; }}"
+                if not df_calendario.empty:
+                    with st.spinner("Carregando agenda..."):
+                        calendar_events = montar_eventos_calendario_patios(df_base_cal=df_calendario, ano=int(st.session_state["cal_ref_ano"]), mes=int(st.session_state["cal_ref_mes"]), max_patios_visiveis=2)
+                        calendar_options = { "initialView": "dayGridMonth", "initialDate": f"{int(st.session_state['cal_ref_ano']):04d}-{int(st.session_state['cal_ref_mes']):02d}-01", "locale": "pt-br", "height": "auto", "contentHeight": "auto", "headerToolbar": { "left": "", "center": "title", "right": "" }, "dayMaxEvents": 2, "eventOrder": "displayOrder,title", "fixedWeekCount": False, "showNonCurrentDates": True, "expandRows": True, "handleWindowResize": True }
+                        calendar_css_base = """ .fc { font-size: 14px; background: #FFFFFF; border-radius: 12px; padding: 6px; box-shadow: 0 1px 8px rgba(15, 23, 42, 0.08); } .fc .fc-toolbar-title { font-size: 1.4rem !important; font-weight: 800; text-transform: capitalize; color: #1E293B; } .fc .fc-daygrid-day-frame:hover { background-color: #F8FAFC !important; } .fc .fc-daygrid-event { border-radius: 6px; padding: 3px 5px; font-weight: 800; cursor: pointer; } """
+                        calendar_css_dinamico = f"{calendar_css_base} .fc-daygrid-day[data-date='{data_ref_card.strftime('%Y-%m-%d')}'] {{ background-color: #EFF6FF !important; box-shadow: inset 0 0 0 3px #3B82F6 !important; }}"
 
-                    col_calendario, col_cards, col_turno = st.columns([5.8, 2.0, 2.2], gap="large")
-                    with col_calendario: calendar(events=calendar_events, options=calendar_options, custom_css=calendar_css_dinamico, callbacks=["dateClick", "eventClick"], key=f"cal_dinamico_{cal_key}_{st.session_state.get('cal_ref_mes')}")
+                        col_calendario, col_cards, col_turno = st.columns([5.8, 2.0, 2.2], gap="large")
+                        with col_calendario: calendar(events=calendar_events, options=calendar_options, custom_css=calendar_css_dinamico, callbacks=["dateClick", "eventClick"], key=f"cal_dinamico_{cal_key}_{st.session_state.get('cal_ref_mes')}")
 
-                    resumo_card = resumir_demanda_calendario(df_base_cal=df_calendario, ano=data_ref_card.year, mes=data_ref_card.month, dia_ref=data_ref_card.day)
-                    resumo_turno = resumir_conclusoes_por_turno_data(df_base_cal=df_calendario, data_ref=data_ref_card)
+                        resumo_card = resumir_demanda_calendario(df_base_cal=df_calendario, ano=data_ref_card.year, mes=data_ref_card.month, dia_ref=data_ref_card.day)
+                        resumo_turno = resumir_conclusoes_por_turno_data(df_base_cal=df_calendario, data_ref=data_ref_card)
 
-                    with col_cards:
-                        st.markdown(f"<div class='kpi-wrapper kpi-card-blue'><div class='kpi-title-blue'>Pátios do Dia</div><div class='kpi-val-blue'>{resumo_card['qtd_patios']} 📌</div><div class='kpi-sub-blue'>Ref: {data_ref_card.strftime('%d/%m/%Y')}</div></div>", unsafe_allow_html=True)
-                        dia_idx = data_ref_card.day - 1
-                        serie_mes = resumo_card["serie_total_os_mes"]
-                        hoje_total = serie_mes[dia_idx] if dia_idx < len(serie_mes) else 0
-                        ontem_total = serie_mes[dia_idx - 1] if dia_idx > 0 else hoje_total
-                        delta_pct = ((hoje_total - ontem_total) / ontem_total) * 100 if ontem_total > 0 else 0.0
-                        seta, sinal = ("↑", "+") if delta_pct > 0 else ("↓", "") if delta_pct < 0 else ("→", "")
-                        st_echarts(options={"graphic": [{"type": "rect", "shape": {"width": 320, "height": 140, "r": 18}, "style": {"fill": "#F0FDF4"}}, {"type": "rect", "shape": {"width": 5, "height": 140, "r": [18, 0, 0, 18]}, "style": {"fill": "#10B981"}}, {"type": "text", "left": "6%", "top": "16%", "style": {"text": "TOTAL DE OS DO DIA", "fill": "#064E3B", "font": "700 14px 'Source Sans Pro', sans-serif"}}, {"type": "text", "left": "6%", "top": "40%", "style": {"text": f"{hoje_total} 🎯", "fill": "#065F46", "font": "400 32px 'Source Sans Pro', sans-serif"}}, {"type": "text", "left": "6%", "top": "72%", "style": {"text": f"{seta} {sinal}{delta_pct:.1f}% vs ontem", "fill": "#10B981", "font": "400 12px 'Source Sans Pro', sans-serif"}}]}, height="140px", key="card_total_os_dia")
-                        st.markdown(f"<div style='margin-bottom: 16px;'></div><div class='kpi-wrapper kpi-card-red'><div class='kpi-title-red'>Pátio Prioritário</div><div class='kpi-val-red'>{resumo_card['patio_prioritario']}</div><div class='kpi-sub-red'>Critério: backlog + prioridade</div></div>", unsafe_allow_html=True)
+                        with col_cards:
+                            st.markdown(f"<div class='kpi-wrapper kpi-card-blue'><div class='kpi-title-blue'>Pátios do Dia</div><div class='kpi-val-blue'>{resumo_card['qtd_patios']} 📌</div><div class='kpi-sub-blue'>Ref: {data_ref_card.strftime('%d/%m/%Y')}</div></div>", unsafe_allow_html=True)
+                            dia_idx = data_ref_card.day - 1
+                            serie_mes = resumo_card["serie_total_os_mes"]
+                            hoje_total = serie_mes[dia_idx] if dia_idx < len(serie_mes) else 0
+                            ontem_total = serie_mes[dia_idx - 1] if dia_idx > 0 else hoje_total
+                            delta_pct = ((hoje_total - ontem_total) / ontem_total) * 100 if ontem_total > 0 else 0.0
+                            seta, sinal = ("↑", "+") if delta_pct > 0 else ("↓", "") if delta_pct < 0 else ("→", "")
+                            st_echarts(options={"graphic": [{"type": "rect", "shape": {"width": 320, "height": 140, "r": 18}, "style": {"fill": "#F0FDF4"}}, {"type": "rect", "shape": {"width": 5, "height": 140, "r": [18, 0, 0, 18]}, "style": {"fill": "#10B981"}}, {"type": "text", "left": "6%", "top": "16%", "style": {"text": "TOTAL DE OS DO DIA", "fill": "#064E3B", "font": "700 14px 'Source Sans Pro', sans-serif"}}, {"type": "text", "left": "6%", "top": "40%", "style": {"text": f"{hoje_total} 🎯", "fill": "#065F46", "font": "400 32px 'Source Sans Pro', sans-serif"}}, {"type": "text", "left": "6%", "top": "72%", "style": {"text": f"{seta} {sinal}{delta_pct:.1f}% vs ontem", "fill": "#10B981", "font": "400 12px 'Source Sans Pro', sans-serif"}}]}, height="140px", key="card_total_os_dia")
+                            st.markdown(f"<div style='margin-bottom: 16px;'></div><div class='kpi-wrapper kpi-card-red'><div class='kpi-title-red'>Pátio Prioritário</div><div class='kpi-val-red'>{resumo_card['patio_prioritario']}</div><div class='kpi-sub-red'>Critério: backlog + prioridade</div></div>", unsafe_allow_html=True)
 
-                    with col_turno:
-                        _cor_turno_aba2 = { "Turno Dia (07h-19h)": "#F59E0B", "Administrativo (08h-17h30)": "#3B82F6", "Turno Noite (19h-07h)": "#4F46E5" }
-                        dados_formatados_turno = [{"value": val, "itemStyle": { "color": _cor_turno_aba2.get(lbl, "#3B82F6"), "borderRadius": [0, 6, 6, 0] }} for lbl, val in zip(resumo_turno["labels"], resumo_turno["valores"])]
+                        with col_turno:
+                            _cor_turno_aba2 = { "Turno Dia (07h-19h)": "#F59E0B", "Administrativo (08h-17h30)": "#3B82F6", "Turno Noite (19h-07h)": "#4F46E5" }
+                            dados_formatados_turno = [{"value": val, "itemStyle": { "color": _cor_turno_aba2.get(lbl, "#3B82F6"), "borderRadius": [0, 6, 6, 0] }} for lbl, val in zip(resumo_turno["labels"], resumo_turno["valores"])]
+                else:
+                    st.info("ℹ️ Nenhuma OS encontrada para os filtros selecionados (Data, Pátio ou Tipo de Intervalo). Modifique os filtros para exibir a agenda.")
             st.markdown("---")
             #endregion 10.3.1
 
- #region 10.3.2: Navegação Geográfica Operacional (GPS + Raio)
+#region 10.3.2: Navegação Geográfica Operacional (GPS + Raio)
             st.markdown("### 🗺️ Navegação Geográfica Operacional")
             col_mapa, col_acao = st.columns([6, 4], gap="large")
 
@@ -2181,12 +3371,13 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             st.error("Tempo do GPS esgotado. Tente novamente ou use a Minha Base.")
 
                 st.markdown("---")
-                raio_busca_km = st.slider("📏 Raio de Atuação Visual (km):", 0, 50, 10, 5, key="slider_raio_atuacao")
+                raio_busca_km = st.slider("📏 Raio de Atuação Visual (km):", 0, 50, 10, 1, key="slider_raio_atuacao")
                 origem_label = "📍 GPS" if st.session_state.get("origem_tipo") == "GPS" else "🏠 Base"
                 st.caption(f"{origem_label}: **{st.session_state['local_nome']}**")
 
                 lat_origem, lon_origem = float(st.session_state["lat_partida"]), float(st.session_state["lon_partida"])
 
+                # CÁLCULO DO RAIO (Acontece antes agora)
                 if not df_pendentes_f.empty:
                     df_calc = df_pendentes_f.copy()
                     df_calc["lat_patio"] = df_calc["Patio"].map(lambda p: COORDENADAS_FIXAS.get(str(p).strip().upper(), [np.nan, np.nan])[0])
@@ -2200,20 +3391,39 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         df_recomendado = com_coord[com_coord["Distancia_km"] <= raio_busca_km].sort_values(by=["Ordem_Prazo", "Criticidade_rank", "Distancia_km"])
 
                 st.info(f"**{len(df_recomendado)} OS pendentes** encontradas no raio de {raio_busca_km} km.")
+                
+                # --- BOTÃO OFFLINE AGORA USA O DF_RECOMENDADO (Raio já aplicado!) ---
                 if not df_recomendado.empty:
-            #endregion 10.3.2
+                    pacote_html_bytes = gerar_html_offline(df_recomendado, st.session_state.get("username", "tecnico"))
+                    st.download_button(
+                        label="📴 Baixar Pacote de OS para Área de Sombra",
+                        data=pacote_html_bytes, file_name=f"Rota_Offline_{datetime.now().strftime('%Y%m%d')}.html",
+                        mime="text/html", use_container_width=True, type="primary"
+                    )
+#endregion 10.3.2
 
  #region 10.3.3: Formulário de Baixa de OS + Evidências (fragment)
                     @st.fragment
                     def renderizar_bloco_apontamento():
                         st.markdown("---")
                         st.markdown("#### ✅ Apontamento e Conclusão de OS")
-                        os_selecionadas = st.multiselect("1. Selecione as OSs que deseja baixar:", df_recomendado["Ordem servico"].astype(str).unique().tolist())
+                        
+                        # --- TRAVA DE PRIORIDADE NO SELECT DO DESKTOP ---
+                        hoje_atual = datetime.now().date()
+                        mask_critica = (df_recomendado["Criticidade_rank"] == 1) & (df_recomendado["dt_prog_filtro"].dt.date <= hoje_atual)
+                        
+                        if mask_critica.any():
+                            st.warning("⚠️ **Foco Operacional Ativo:** Conclua as OS Críticas (Muito Alta) para liberar as demais.")
+                            opcoes_os = df_recomendado[mask_critica]["Ordem servico"].astype(str).unique().tolist()
+                        else:
+                            opcoes_os = df_recomendado["Ordem servico"].astype(str).unique().tolist()
+
+                        os_selecionadas = st.multiselect("1. Selecione as OSs que deseja baixar:", opcoes_os)
 
                         if os_selecionadas:
-                            os_distantes = [os_id for os_id in os_selecionadas if df_recomendado.loc[df_recomendado["Ordem servico"].astype(str) == str(os_id), "Distancia_km"].iloc[0] > 5.0]
+                            os_distantes = [os_id for os_id in os_selecionadas if df_recomendado.loc[df_recomendado["Ordem servico"].astype(str) == str(os_id), "Distancia_km"].iloc[0] > 2.0]
                             if os_distantes:
-                                st.error(f"🛑 **Bloqueio Geográfico:** O sistema exige estar em um raio máximo de **5 km** do local.")
+                                st.error(f"🛑 **Bloqueio Geográfico:** O sistema exige estar em um raio máximo de **2 km** do local.")
                                 st.warning(f"Você está muito longe das OSs: **{', '.join(os_distantes)}**.")
                                 st.info("💡 Aproxime-se do pátio e atualize sua posição em '📍 Minha Localização'.")
                                 return
@@ -2251,21 +3461,39 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                                     if origem != "GPS": st.warning("📍 A geolocalização é obrigatória. Atualize sua posição.")
                                     elif not todos_preenchidos: st.warning("⚠️ Preencha os horários de **início e fim** de todas as OSs.")
                                     else:
+                                        # --- PREPARAÇÃO DE DADOS (SEM BLOQUEIO DE TEMPO) ---
                                         geo_baixa = f"{st.session_state.get('local_nome', 'Local')} (Lat: {st.session_state.get('lat_partida')}, Lon: {st.session_state.get('lon_partida')})"
                                         equipe_str = ", ".join(equipe_selecionada) if equipe_selecionada else "Sozinho"
-                                        data_hoje_br, realizado_dt = datetime.now().strftime("%d/%m/%Y"), agora_dt()
+                                        realizado_dt = agora_dt()
                                         
                                         for os_id in set(os_selecionadas):
                                             mask = (st.session_state["df_os"]["Ordem servico"].astype(str) == str(os_id))
                                             dt_prog = st.session_state["df_os"].loc[mask, "Data inicial programada"].iloc[0] if len(st.session_state["df_os"].loc[mask]) > 0 else pd.NaT
                                             coord = st.session_state["df_os"].loc[mask, "Coordenacao"].iloc[0] if len(st.session_state["df_os"].loc[mask]) > 0 else "Campo"
                                             
+                                            h_i = apontamentos[os_id]["inicio"]
+                                            h_f = apontamentos[os_id]["fim"]
+                                            
+                                            # --- CORREÇÃO AUTOMÁTICA DE DATA PARA O SAP (CRUZAMENTO DE MADRUGADA) ---
+                                            if h_f < h_i:
+                                                data_inicio_str = (realizado_dt - timedelta(days=1)).strftime("%d/%m/%Y")
+                                            else:
+                                                data_inicio_str = realizado_dt.strftime("%d/%m/%Y")
+                                                
+                                            data_fim_str = realizado_dt.strftime("%d/%m/%Y")
+                                            
                                             upsert_baixa(
-                                                os_id=str(os_id), status=determinar_status_execucao(pd.to_datetime(dt_prog, errors="coerce"), realizado_dt),
-                                                realizado_em_str=formatar_dt_br(realizado_dt), coordenacao=coord, concluido_por=usr_logado,
-                                                geolocalizacao_baixa=geo_baixa, equipe=equipe_str, data_inicio=data_hoje_br,
-                                                hora_inicio=apontamentos[os_id]["inicio"].strftime("%H:%M:%S"), data_fim=data_hoje_br,
-                                                hora_fim=apontamentos[os_id]["fim"].strftime("%H:%M:%S")
+                                                os_id=str(os_id), 
+                                                status=determinar_status_execucao(pd.to_datetime(dt_prog, errors="coerce"), realizado_dt),
+                                                realizado_em_str=formatar_dt_br(realizado_dt), 
+                                                coordenacao=coord, 
+                                                concluido_por=usr_logado,
+                                                geolocalizacao_baixa=geo_baixa, 
+                                                equipe=equipe_str, 
+                                                data_inicio=data_inicio_str,      # Data tratada (ontem se cruzou a meia noite)
+                                                hora_inicio=h_i.strftime("%H:%M:%S"), 
+                                                data_fim=data_fim_str,            # Data tratada (hoje)
+                                                hora_fim=h_f.strftime("%H:%M:%S")
                                             )
 
                                         fotos_enviadas = 0
@@ -2323,7 +3551,9 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 
 #region 10.3.5: Cronograma de Execução de Campo (Tabela/PDF)
             if not df_recomendado.empty:
-                df_tabela_campo = df_recomendado.copy().rename(columns={"Ordem servico": "OS", "Classificacao": "Classificação"})
+                df_tabela_campo = df_recomendado.copy()
+                
+                df_tabela_campo = df_tabela_campo.rename(columns={"Ordem servico": "OS", "Classificacao": "Classificação"})
                 df_tabela_campo["Data da Programação"] = df_tabela_campo["dt_prog_filtro"].dt.strftime("%d/%m/%Y")
                 colunas_exibir = ["OS", "Data da Programação", "Patio", "Ativo", "Criticidade", "Classificação", "Descrição Longa"]
 
@@ -2349,21 +3579,38 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         st.download_button("🖨️ Gerar Impressão PDF", data=gerar_pdf_cronograma(df_tabela_campo, colunas_exibir), file_name=f"Crono_Campo_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf", mime="application/pdf", use_container_width=True)
                     except ImportError: st.warning("⚠️ 'reportlab' não instalada.")
                 
-                with col_tit_crono: st.markdown("#### 📋 Cronograma de Execução de Campo\n<small>OS Pendentes recomendadas no raio de atuação visual por prioridade</small>", unsafe_allow_html=True)
-                def aplicar_cor_prazo(row):
+                with col_tit_crono: 
+                    st.markdown("#### 📋 Cronograma de Execução de Campo\n<small>OS Pendentes recomendadas no raio de atuação visual por prioridade</small>", unsafe_allow_html=True)
+                
+                # --- ESTILIZAÇÃO INTELIGENTE (CADEADO VISUAL DA TABELA) ---
+                def aplicar_cor_foco(row):
+                    hoje_atual = datetime.now().date()
+                    # Verifica se no dataframe inteiro existe alguma OS Muito Alta
+                    tem_critica_no_raio = (df_recomendado["Criticidade_rank"] == 1) & (df_recomendado["dt_prog_filtro"].dt.date <= hoje_atual)
+                    
+                    if tem_critica_no_raio.any():
+                        if row["Criticidade"] == "Muito Alta":
+                            return ["background-color: #FEF2F2; color: #991B1B; font-weight: bold;"] * len(row)
+                        else:
+                            return ["background-color: #F8FAFC; color: #94A3B8;"] * len(row) # Fica cinza (bloqueada)
+                    
+                    # Se não tiver crítica, aplica a regra normal de atraso
                     dt = row["dt_prog_filtro"]
                     if pd.isna(dt): return [""] * len(row)
-                    if dt.date() < datetime.now().date(): return ["background-color: #FEE2E2; color: #7F1D1D; font-weight: 500;"] * len(row)
-                    elif dt.date() == datetime.now().date(): return ["background-color: #FEF3C7; color: #78350F; font-weight: 500;"] * len(row)
+                    if dt.date() < hoje_atual: return ["background-color: #FEE2E2; color: #7F1D1D; font-weight: 500;"] * len(row)
+                    elif dt.date() == hoje_atual: return ["background-color: #FEF3C7; color: #78350F; font-weight: 500;"] * len(row)
                     return [""] * len(row)
-                st.dataframe(df_tabela_campo.style.apply(aplicar_cor_prazo, axis=1), use_container_width=True, height=350, hide_index=True, column_order=colunas_exibir)
-            else: st.info("Nenhuma OS pendente localizada dentro do raio de atuação selecionado.")
+                
+                st.dataframe(df_tabela_campo.style.apply(aplicar_cor_foco, axis=1), use_container_width=True, height=350, hide_index=True, column_order=colunas_exibir)
+            else: 
+                st.info("Nenhuma OS pendente localizada dentro do raio de atuação selecionado.")
             #endregion 10.3.5
 #endregion 10.3
 #endregion SESSÃO 10
 
 #region SESSÃO 11: Tela Isolada de Governança e Auditoria
 
+#region 11.0: Cabeçalho e Navegação
 if st.session_state.get("tela_atual") == "governanca":
     col_gov_t1, col_gov_t2 = st.columns([8, 2])
     with col_gov_t1: st.title("🛡️ Motor de Governança e Auditoria")
@@ -2372,8 +3619,9 @@ if st.session_state.get("tela_atual") == "governanca":
         if st.button("⬅️ Voltar ao Painel", use_container_width=True): st.session_state.update({"tela_atual": "dashboard", "gov_auth_ok": False}); st.rerun()
     st.markdown("Análise estatística de eficiência, variabilidade de cronograma, aderência de login e rastreabilidade de campo.")
     st.markdown("---")
+#endregion 11.0
 
-    #region 11.1: Controle de acesso e segurança
+#region 11.1: Controle de acesso e segurança
     if not st.session_state.get("gov_auth_ok", False):
         st.error("🔒 **Acesso Restrito:** Confirme sua credencial para métricas de auditoria.")
         col_auth1, _ = st.columns([1, 2])
@@ -2389,9 +3637,9 @@ if st.session_state.get("tela_atual") == "governanca":
                     if row and row[0] == hash_senha(senha_confirm): st.session_state["gov_auth_ok"] = True; st.rerun()
                     else: st.error("❌ Senha incorreta. Acesso negado.")
         st.stop()
-    #endregion 11.1
+#endregion 11.1
 
-    #region 11.2: Carregamento de dados de auditoria
+#region 11.2: Carregamento de dados de auditoria
     with st.spinner("Compilando logs de auditoria e telemetria..."):
         if st.session_state.get("chk_sim", False): df_baixas_full, df_logs = st.session_state.get("df_baixas_sim", pd.DataFrame()), st.session_state.get("df_logs_sim", pd.DataFrame())
         else:
@@ -2416,9 +3664,9 @@ if st.session_state.get("tela_atual") == "governanca":
         df_gov["Data_Real"] = pd.to_datetime(df_gov["data_inicio"], format="%d/%m/%Y", errors="coerce").dt.date
         df_gov["Via_GPS"] = df_gov["geolocalizacao_baixa"].apply(lambda x: 0 if "Base" in str(x) or "Sede" in str(x) else 1)
         df_gov["Alta_Prioridade"] = df_gov["Criticidade_rank"].apply(lambda x: 1 if x in [1, 2] else 0)
-    #endregion 11.2
+#endregion 11.2
 
-    #region 11.3: Fragmento de Governança (@st.fragment)
+#region 11.3: Fragmento de Governança (@st.fragment)
     @st.fragment
     def fragmento_governanca():
         col_f1, col_f2, col_f3 = st.columns(3)
@@ -2446,8 +3694,9 @@ if st.session_state.get("tela_atual") == "governanca":
         c_k3.metric("🎯 Aderência à Prioridade", f"{taxa_prio:.1f}%")
         c_k4.metric("📍 Integridade de GPS", f"{taxa_gps:.1f}%")
         st.markdown("---")
+#endregion
 
-        #region 11.4: Volume Diário e Produtividade Acumulada
+#region 11.4: Volume Diário e Produtividade Acumulada
         col_l1_c1, col_l1_c2 = st.columns(2, gap="large")
         df_real_dia = df_gov_f.groupby("Data_Real").size().reset_index(name="Realizado")
         df_os_base["Data_Prog_Pure"] = pd.to_datetime(df_os_base["Data inicial programada"], errors="coerce").dt.date
@@ -2466,9 +3715,9 @@ if st.session_state.get("tela_atual") == "governanca":
             st.markdown("#### 📈 Produtividade Acumulada")
             df_merge_vol["Real_Acum"], df_merge_vol["Plan_Acum"] = df_merge_vol["Realizado"].cumsum(), df_merge_vol["Planejado_Backlog"].cumsum()
             st_echarts(options={ "tooltip": {"trigger": "axis"}, "legend": {"data": ["Realizado Acumulado", "Planejado Acumulado"], "bottom": "0%"}, "toolbox": {"show": True, "feature": {"magicType": {"type": ["line", "bar"], "title": {"line": "Linha", "bar": "Barra"}}, "restore": {"title": "Restaurar"}, "saveAsImage": {"title": "Salvar Imagem"}}}, "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}], "grid": {"left": "5%", "right": "5%", "bottom": "25%", "top": "15%", "containLabel": True}, "xAxis": {"type": "category", "data": eixo_x_l1}, "yAxis": {"type": "value"}, "series": [ {"name": "Realizado Acumulado", "type": "line", "smooth": True, "data": df_merge_vol["Real_Acum"].tolist(), "areaStyle": {"color": "rgba(59,130,246,0.15)"}, "lineStyle": {"color": "#3B82F6", "width": 3}, "itemStyle": {"color": "#3B82F6"}}, {"name": "Planejado Acumulado", "type": "line", "smooth": True, "data": df_merge_vol["Plan_Acum"].tolist(), "lineStyle": {"type": "dashed", "color": "#64748B", "width": 3}, "itemStyle": {"color": "#64748B"}} ] }, height="350px", theme="streamlit", key="gov_prod_acum")
-        #endregion 11.4
+ #endregion 11.4
 
-        #region 11.5: Produtividade Individual, Esforço e Heatmap
+#region 11.5: Produtividade Individual, Esforço e Heatmap
         st.markdown("<br>", unsafe_allow_html=True); st.markdown("---")
         col_l2_c1, col_l2_c2, col_l2_c3 = st.columns(3, gap="medium")
 
@@ -2492,9 +3741,9 @@ if st.session_state.get("tela_atual") == "governanca":
                     val = int(agg_heatmap[(agg_heatmap["Patio"] == p_n) & (agg_heatmap["Classificacao"] == c_n)]["Total"].iloc[0]) if not agg_heatmap[(agg_heatmap["Patio"] == p_n) & (agg_heatmap["Classificacao"] == c_n)].empty else 0
                     h_data.append([xi, yi, val]); max_v = max(max_v, val)
             st_echarts(options={ "tooltip": {"position": "top"}, "grid": {"height": "65%", "top": "5%", "bottom": "20%", "left": "20%"}, "xAxis": {"type": "category", "data": p_list, "axisLabel": {"interval": 0, "rotate": 45}}, "yAxis": {"type": "category", "data": c_list}, "visualMap": {"min": 0, "max": max_v if max_v > 0 else 5, "orient": "horizontal", "left": "center", "bottom": "0%", "inRange": {"color": ["#F8FAFC", "#93C5FD", "#1D4ED8"]}}, "series": [{"type": "heatmap", "data": h_data, "label": {"show": True}, "itemStyle": {"borderColor": "#FFFFFF", "borderWidth": 1.5}}] }, height="320px", key="gov_heatmap_freq")
-        #endregion 11.5
+#endregion 11.5
 
-        #region 11.6: Aderência, Top Técnicos e Variabilidade
+#region 11.6: Aderência, Top Técnicos e Variabilidade
         st.markdown("<br>", unsafe_allow_html=True); st.markdown("---")
         col_l3_c1, col_l3_c2, col_l3_c3 = st.columns(3, gap="medium")
 
@@ -2528,15 +3777,15 @@ if st.session_state.get("tela_atual") == "governanca":
             # FIX: Garantindo que valores nulos sejam limpos para evitar falha no e-charts
             df_var = df_gov_f.groupby("concluido_por")["Tempo_Minutos"].mean().fillna(0).reset_index().sort_values("Tempo_Minutos", ascending=True)
             st_echarts(options={ "tooltip": {"trigger": "axis"}, "grid": {"left": "5%", "right": "8%", "bottom": "10%", "top": "10%", "containLabel": True}, "xAxis": {"type": "value", "name": "Minutos"}, "yAxis": {"type": "category", "data": df_var["concluido_por"].tolist(), "axisLabel": {"fontSize": 10}}, "series": [{"type": "bar", "data": df_var["Tempo_Minutos"].round(1).tolist(), "itemStyle": {"color": "#8B5CF6"}, "label": {"show": True, "position": "right", "formatter": "{c} min", "fontSize": 10}}] }, height="400px", theme="streamlit", key="gov_variab")
-        #endregion 11.6
+#endregion 11.6
 
-        #region 11.7: Tabela de Auditoria GPS
+#region 11.7: Tabela de Auditoria GPS
         st.markdown("---")
         st.markdown("#### 📍 Tabela de Auditoria de Apontamentos (GPS)")
         df_auditoria = df_gov_f[["Ordem servico", "concluido_por", "data_inicio", "hora_fim", "geolocalizacao_baixa", "equipe", "Tempo_Minutos"]].copy().sort_values(by=["data_inicio", "hora_fim"], ascending=[False, False]).rename(columns={"Ordem servico": "OS", "concluido_por": "Apontador Principal", "data_inicio": "Data", "hora_fim": "Hora Apontada", "geolocalizacao_baixa": "Localização do Celular", "equipe": "Co-Executantes", "Tempo_Minutos": "Tempo Gasto (min)"})
         df_auditoria["Tempo Gasto (min)"] = df_auditoria["Tempo Gasto (min)"].fillna(0).round(0).astype(int)
         st.dataframe(df_auditoria.style.map(lambda v: 'background-color: #FEE2E2; color: #991B1B; font-weight: bold;' if pd.notna(v) and ('Base' in str(v) or 'Sede' in str(v)) else 'color: #065F46;', subset=["Localização do Celular"]), use_container_width=True, height=300, hide_index=True)
-        #endregion 11.7
+#endregion 11.7
         
     fragmento_governanca()
     st.stop()
