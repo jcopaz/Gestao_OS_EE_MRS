@@ -1,6 +1,7 @@
 import io
 import os
 import time
+import base64
 import numpy as np
 import pandas as pd
 import psycopg2
@@ -82,18 +83,19 @@ def extrair_gps_exif(image: Image.Image):
         print(f"Erro ao ler EXIF: {e}")
     return None, None
 
-def upsert_baixa(os_id, status, realizado_em_str, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim):
+def upsert_baixa(os_id, status, realizado_em_str, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim, foto_b64):
     conn = get_connection()
     try:
         cur = conn.cursor()
         cur.execute("""
-            INSERT INTO baixas (os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO baixas (os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim, foto_evidencia)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (os) DO UPDATE SET
                 status = EXCLUDED.status, realizado_em = EXCLUDED.realizado_em, concluido_por = EXCLUDED.concluido_por,
                 geolocalizacao_baixa = EXCLUDED.geolocalizacao_baixa, equipe = EXCLUDED.equipe, data_inicio = EXCLUDED.data_inicio,
-                hora_inicio = EXCLUDED.hora_inicio, data_fim = EXCLUDED.data_fim, hora_fim = EXCLUDED.hora_fim;
-        """, (str(os_id), str(status), str(realizado_em_str), str(coordenacao), str(concluido_por), str(geolocalizacao_baixa), str(equipe), str(data_inicio), str(hora_inicio), str(data_fim), str(hora_fim)))
+                hora_inicio = EXCLUDED.hora_inicio, data_fim = EXCLUDED.data_fim, hora_fim = EXCLUDED.hora_fim,
+                foto_evidencia = EXCLUDED.foto_evidencia;
+        """, (str(os_id), str(status), str(realizado_em_str), str(coordenacao), str(concluido_por), str(geolocalizacao_baixa), str(equipe), str(data_inicio), str(hora_inicio), str(data_fim), str(hora_fim), foto_b64))
         conn.commit()
         cur.close()
     finally: 
@@ -174,6 +176,10 @@ async def sincronizar_baixa_offline(
     
     equipe_formatada = acompanhante if acompanhante.strip() else "Sozinho"
 
+    await foto.seek(0) # Volta o cursor pro início (caso o EXIF tenha lido antes)
+    foto_bytes = await foto.read()
+    foto_base64 = f"data:image/jpeg;base64,{base64.b64encode(foto_bytes).decode('utf-8')}"
+
     # Salva no Banco de Dados
     upsert_baixa(
         os_id=os_id, 
@@ -186,15 +192,16 @@ async def sincronizar_baixa_offline(
         data_inicio=hora_apontamento.strftime("%d/%m/%Y"), 
         hora_inicio=horario_inicio, 
         data_fim=hora_apontamento.strftime("%d/%m/%Y"), 
-        hora_fim=horario_fim
+        hora_fim=horario_fim,
+        foto_b64=foto_base64  # <-- Mandamos a foto pro banco!
     )
 
-    dist_km_float = float(dist_km)  
+    dist_km_float = float(dist_km)
 
     return {
         "status": "sucesso", 
         "os_id": os_id, 
-        "dist_km": round(dist_km_float, 2), # <-- Usa a variável convertida aqui!
+        "dist_km": round(dist_km_float, 2), 
         "fonte_gps": fonte_gps, 
         "auditoria": "OK"
     }
