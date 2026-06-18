@@ -157,7 +157,7 @@ async def sincronizar_baixa_offline(
     lat_ativo, lon_ativo = coordenada_ativo[0], coordenada_ativo[1]
     
     # Se ainda for 0.0 (Sem permissão e foto sem EXIF), a distância será alta e o auditor saberá.
-    dist_km = haversine_vectorized(lat_final, lon_final, pd.Series([lat_ativo]), pd.Series([lon_ativo])).iloc[0]
+    dist_km = haversine_vectorized(lat_final, lon_final, pd.Series([lat_ativo]), pd.Series([lon_ativo]))[0]
     
     # Validação Antifraude (Tempo)
     hora_envio = datetime.now(timezone(timedelta(hours=-3)))
