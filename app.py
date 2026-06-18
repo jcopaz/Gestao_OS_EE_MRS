@@ -1053,7 +1053,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     if df_pendentes.empty:
         return b""
         
-    # Garante que a Descrição Longa seja exportada
     colunas_export = ["Ordem servico", "Ativo", "Atividade ativo", "Patio"]
     if "Descrição Longa" in df_pendentes.columns:
         colunas_export.append("Descrição Longa")
@@ -1076,6 +1075,9 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         .status-bar {{ text-align: center; padding: 10px; border-radius: 6px; margin-bottom: 20px; font-weight: bold; }}
         .online {{ background-color: #D1FAE5; color: #065F46; border: 1px solid #10B981; }}
         .offline {{ background-color: #FEE2E2; color: #991B1B; border: 1px solid #FF4B4B; }}
+        .input-group {{ background-color: #F1F5F9; padding: 10px; border-radius: 8px; margin-bottom: 10px; }}
+        .input-group label {{ font-size: 13px; font-weight: bold; color: #475569; display: block; margin-bottom: 4px; }}
+        .input-group input {{ width: 100%; padding: 8px; border: 1px solid #CBD5E1; border-radius: 4px; box-sizing: border-box; margin-bottom: 8px; }}
     </style>
 </head>
 <body>
@@ -1090,15 +1092,18 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     <div id="listaOS"></div>
 
     <script>
-        const API_URL = "https://sua-api-aqui.com/sincronizar_baixa_offline"; // Atualize para a URL real da sua API em produção
+        // COLOQUE AQUI A SUA URL REAL DO RENDER!
+        const API_URL = "https://api-sgo-mrs.onrender.com"; 
         const OS_DADOS = {os_json};
         const USUARIO = "{usuario}";
         let db;
 
-        const request = indexedDB.open("SGO_Offline_DB", 1);
+        const request = indexedDB.open("SGO_Offline_DB", 2); // Atualizei a versão do banco interno para aceitar os novos campos
         request.onupgradeneeded = (e) => {{
             db = e.target.result;
-            db.createObjectStore("baixas", {{ keyPath: "os_id" }});
+            if (!db.objectStoreNames.contains("baixas")) {{
+                db.createObjectStore("baixas", {{ keyPath: "os_id" }});
+            }}
         }};
         request.onsuccess = (e) => {{ db = e.target.result; renderizarOS(); atualizarContador(); }};
 
@@ -1118,7 +1123,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             const container = document.getElementById("listaOS");
             container.innerHTML = "";
             OS_DADOS.forEach(os => {{
-                // Proteção caso a descrição venha vazia
                 const descLonga = os['Descrição Longa'] ? os['Descrição Longa'] : 'N/A';
                 
                 container.innerHTML += `
@@ -1129,6 +1133,18 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                             <b>Descrição:</b> ${{descLonga}}<br>
                             <b>Ação:</b> ${{os['Atividade ativo']}}
                         </p>
+                        
+                        <div class="input-group">
+                            <label>Acompanhante (Matrícula/Nome):</label>
+                            <input type="text" id="acomp_${{os['Ordem servico']}}" placeholder="Deixe em branco se estiver sozinho">
+                            
+                            <label>Horário de Início (Obrigatório):</label>
+                            <input type="time" id="hora_ini_${{os['Ordem servico']}}">
+                            
+                            <label>Horário de Fim (Obrigatório):</label>
+                            <input type="time" id="hora_fim_${{os['Ordem servico']}}">
+                        </div>
+
                         <input type="file" id="foto_${{os['Ordem servico']}}" accept="image/*" capture="environment" style="width: 100%; margin-bottom: 10px;">
                         <button onclick="registrarBaixa('${{os['Ordem servico']}}', '${{os.Ativo}}')">✅ Dar Baixa Offline</button>
                     </div>`;
@@ -1137,14 +1153,22 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 
         async function registrarBaixa(os_id, ativo_id) {{
             const fotoInput = document.getElementById(`foto_${{os_id}}`);
+            const acomp = document.getElementById(`acomp_${{os_id}}`).value;
+            const horaIni = document.getElementById(`hora_ini_${{os_id}}`).value;
+            const horaFim = document.getElementById(`hora_fim_${{os_id}}`).value;
+
+            if (!horaIni || !horaFim) {{ alert("É obrigatório preencher o Horário de Início e o Horário de Fim!"); return; }}
             if (fotoInput.files.length === 0) {{ alert("É obrigatório tirar a foto da evidência!"); return; }}
             
             const fotoBlob = fotoInput.files[0];
             const dataHora = new Date().toISOString();
 
-            // Função separada para salvar no banco interno independente de ter GPS do navegador ou não
             const salvarNoBanco = (lat, lon) => {{
-                const baixa = {{ os_id: os_id, ativo_id: ativo_id, lat: lat, lon: lon, data_hora: dataHora, foto: fotoBlob, usuario: USUARIO }};
+                const baixa = {{ 
+                    os_id: os_id, ativo_id: ativo_id, lat: lat, lon: lon, 
+                    data_hora: dataHora, foto: fotoBlob, usuario: USUARIO,
+                    acompanhante: acomp, horario_inicio: horaIni, horario_fim: horaFim
+                }};
                 const tx = db.transaction("baixas", "readwrite");
                 tx.objectStore("baixas").put(baixa);
                 tx.oncomplete = () => {{
@@ -1155,14 +1179,11 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 }};
             }};
 
-            // Tenta pegar o GPS. Se o navegador bloquear (ex: arquivo local no Android), cai no erro, mas SALVA assim mesmo!
             navigator.geolocation.getCurrentPosition(
-                (pos) => {{
-                    salvarNoBanco(pos.coords.latitude, pos.coords.longitude);
-                }}, 
+                (pos) => {{ salvarNoBanco(pos.coords.latitude, pos.coords.longitude); }}, 
                 (err) => {{ 
                     alert("Aviso: O navegador bloqueou o GPS. O sistema usará a localização extraída direto da foto que você acabou de tirar. Certifique-se de que a localização da Câmera do celular está ativada!"); 
-                    salvarNoBanco(0.0, 0.0); // Envia coordenadas zeradas, a API Python vai usar o EXIF da foto
+                    salvarNoBanco(0.0, 0.0); 
                 }}, 
                 {{ enableHighAccuracy: true, timeout: 10000 }}
             );
@@ -1183,6 +1204,9 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                     let fd = new FormData();
                     fd.append("os_id", baixa.os_id); fd.append("ativo_id", baixa.ativo_id); fd.append("usuario", baixa.usuario);
                     fd.append("lat_browser", baixa.lat); fd.append("lon_browser", baixa.lon); fd.append("data_hora_local", baixa.data_hora);
+                    fd.append("acompanhante", baixa.acompanhante); 
+                    fd.append("horario_inicio", baixa.horario_inicio); 
+                    fd.append("horario_fim", baixa.horario_fim);
                     fd.append("foto", baixa.foto, "evidencia.jpg");
 
                     try {{
