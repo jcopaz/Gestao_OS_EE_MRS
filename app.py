@@ -1,4 +1,6 @@
 #region SESSÃO 1: Imports, Configurações e Funções de Base
+
+#region 1.1: Imports
 import io
 import time
 import math
@@ -6,31 +8,35 @@ import re
 import os
 import shutil
 import hashlib
-from datetime import datetime
-from pathlib import Path
-from streamlit_calendar import calendar
-
+import json
+import psycopg2
+import requests
 import streamlit as st
 import pandas as pd
 import numpy as np
 import folium
+from PIL import Image, ImageOps
 from streamlit_folium import st_folium
 from geopy.geocoders import Nominatim
 from streamlit_js_eval import get_geolocation
 from streamlit_echarts import st_echarts, JsCode
-
-import psycopg2
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from streamlit_calendar import calendar
+from psycopg2.extras import execute_values
 from psycopg2 import pool
+#endregion 1.1
 
-# --- CONFIGURAÇÕES GLOBAIS ---
-st.set_page_config(page_title="Painel de OS Eletroeletrônica", layout="wide")
+#region 1.2: Configurações Globais e Tela Inicial de Login
+st.set_page_config(page_title="Painel de OS Eletroeletrônica", layout="wide", initial_sidebar_state="collapsed")
 
 if not st.session_state.get("logged_in", False):
     col_vazia1, col_centro, col_vazia2 = st.columns([1, 6, 1])
     with col_centro:
         st.markdown("<h1 style='text-align: center;'>⚡ Sistema de Gestão de Ordens de Serviço</h1>", unsafe_allow_html=True)
+#endregion 1.2
 
-# --- GERENCIAMENTO DE CONEXÃO NEON (POSTGRES) ---
+#region 1.3: Conexão com Banco de Dados e Constantes de Status
 @st.cache_resource
 def init_connection_pool():
     return psycopg2.pool.SimpleConnectionPool(
@@ -51,129 +57,186 @@ def hash_senha(senha):
 _status_prazo  = {"REALIZADO"}
 _status_atraso = {"REALIZADO FORA DA DATA DE PROGRAMAÇÃO", "REALIZADO FORA DO PRAZO"}
 _status_aberto = {"NÃO REALIZADO", "NAO REALIZADO", "PENDENTE", "ATRASADO", ""}
+#endregion 1.3
 
+#region 1.4: Inicialização do Banco de Dados (init_db)
 def init_db():
+    conn = None
     try:
         conn = get_connection()
         cur = conn.cursor()
-        
+
         cur.execute("""
             CREATE TABLE IF NOT EXISTS baixas (
-                os VARCHAR(255) PRIMARY KEY, 
-                status VARCHAR(255) NOT NULL, 
-                realizado_em VARCHAR(255) NOT NULL, 
-                coordenacao VARCHAR(255) NOT NULL, 
-                concluido_por VARCHAR(255)
+                os VARCHAR(255) PRIMARY KEY, status VARCHAR(255) NOT NULL, 
+                realizado_em VARCHAR(255) NOT NULL, coordenacao VARCHAR(255) NOT NULL, concluido_por VARCHAR(255)
             );
         """)
-        
         cur.execute("""
             CREATE TABLE IF NOT EXISTS usuarios (
-                username VARCHAR(255) PRIMARY KEY, 
-                senha_hash VARCHAR(255) NOT NULL, 
-                perfil VARCHAR(50) NOT NULL, 
-                escopo VARCHAR(50) NOT NULL,
-                palavra_recuperacao VARCHAR(255) DEFAULT 'PENDENTE', 
-                dica_recuperacao VARCHAR(255) DEFAULT 'PENDENTE', 
-                reset_obrigatorio INTEGER DEFAULT 1, 
-                coordenacao_padrao VARCHAR(100) DEFAULT 'ICG'
+                username VARCHAR(255) PRIMARY KEY, nome VARCHAR(255), senha_hash VARCHAR(255) NOT NULL, 
+                perfil VARCHAR(50) NOT NULL, escopo VARCHAR(50) NOT NULL,
+                palavra_recuperacao VARCHAR(255) DEFAULT 'PENDENTE', dica_recuperacao VARCHAR(255) DEFAULT 'PENDENTE', 
+                reset_obrigatorio INTEGER DEFAULT 1, coordenacao_padrao VARCHAR(100) DEFAULT 'ICG'
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS logs_acesso (
+                id SERIAL PRIMARY KEY, username VARCHAR(255) NOT NULL, data_hora_login TIMESTAMP NOT NULL,
+                data_hora_logout TIMESTAMP, geolocalizacao_login VARCHAR(255), sessao_ativa BOOLEAN DEFAULT TRUE
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS os_programadas (
+                id SERIAL PRIMARY KEY, os VARCHAR(255) UNIQUE NOT NULL, mes_referencia VARCHAR(50),
+                dados_completos JSONB, data_upload TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS evidencias (
+                id SERIAL PRIMARY KEY, ativo VARCHAR(255) NOT NULL, atividade VARCHAR(500) NOT NULL,
+                foto_url TEXT, os_referencia VARCHAR(255), concluido_por VARCHAR(255),
+                geolocalizacao VARCHAR(255), data_upload TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(ativo, atividade)
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS mapeamento_patios (
+                ativo_chave VARCHAR(500) PRIMARY KEY, patio VARCHAR(10) NOT NULL,
+                tipo VARCHAR(20) DEFAULT 'Ativo', data_upload TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
         
-        # Criar um usuário admin padrão caso o banco esteja vazio
+        # --- ATUALIZAÇÕES AUTOMÁTICAS DE ESTRUTURA ---
+        try: cur.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS governanca VARCHAR(255) DEFAULT 'Painel Gerencial,Mapa de Campo';")
+        except Exception: conn.rollback()
+        
+        try: cur.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS nome VARCHAR(255);")
+        except Exception: conn.rollback()
+        
+        try: cur.execute("ALTER TABLE os_programadas ADD COLUMN IF NOT EXISTS coordenacao VARCHAR(100);")
+        except Exception: conn.rollback()
+
+        try:
+            cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS geolocalizacao_baixa VARCHAR(255);")
+            cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS equipe TEXT;")
+            cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS data_inicio VARCHAR(50);")
+            cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS hora_inicio VARCHAR(50);")
+            cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS data_fim VARCHAR(50);")
+            cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS hora_fim VARCHAR(50);")
+        except Exception: conn.rollback()
+        
+        # Criar o admin mestre se não existir
         cur.execute("SELECT COUNT(*) FROM usuarios")
         if cur.fetchone()[0] == 0:
             cur.execute("""
-                INSERT INTO usuarios (username, senha_hash, perfil, escopo, reset_obrigatorio) 
-                VALUES (%s, %s, %s, %s, 1)
-            """, ('admin', hash_senha('mrs123'), 'Gerência', 'Todas'))
+                INSERT INTO usuarios (username, nome, senha_hash, perfil, escopo, reset_obrigatorio, governanca) 
+                VALUES (%s, %s, %s, %s, %s, 1, %s)
+            """, ('admin', 'Administrador do Sistema', hash_senha('mrs123'), 'Gerência', 'Todas', 'Painel Gerencial,Mapa de Campo,Upload de Dados,Gestão de Usuários'))
             
         conn.commit()
         cur.close()
-        release_connection(conn)
-        
     except Exception as e:
-        # Se houver micro-queda de SSL no Neon, o Python apenas ignora e segue a vida,
-        # pois sabemos que as tabelas já estão criadas no banco.
-        pass
-
+        import logging
+        logging.warning(f"[init_db] Erro na inicialização do banco: {e}")
+    finally:
+        if conn is not None: release_connection(conn)
 init_db()
+#endregion 1.4
+
+#region 1.5: Inicialização Centralizada do Session State
+_defaults_session = {
+    "gps_pending": False, "gps_trials": 0, "origem_tipo": "BASE", "gov_auth_ok": False,
+}
+for _key, _val in _defaults_session.items():
+    if _key not in st.session_state:
+        st.session_state[_key] = _val
 #endregion
 
-#region SESSÃO 1.5: Barreira de Login Corrigida
+#endregion SESSÃO 1
+
+#region SESSÃO 2: Barreira de Login com Governança e GPS Obrigatório
+
+#region 2.1: Barreira de Login com Governança e GPS Obrigatório
 if "logged_in" not in st.session_state:
-    st.session_state.update({"logged_in": False, "username": "", "perfil": "", "escopo": "", "needs_reset": False, "recuperando": False, "trocar_senha": False})
+    st.session_state.update({"logged_in": False, "username": "", "perfil": "", "escopo": "", "governanca": "", "needs_reset": False, "validando_gps": False})
 
 if not st.session_state["logged_in"]:
     st.markdown("<h3 style='text-align: center; color: #475569;'>Acesso Restrito</h3>", unsafe_allow_html=True)
     col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
     
     with col_l2:
+#endregion
+
+#region 2.2: Etapa 3 — Reset de Senha
         if st.session_state.get("needs_reset"):
-            st.warning("⚠️ Bem-vindo! Configure sua senha e sua palavra de recuperação.")
+            st.warning("⚠️ Configure sua senha e sua palavra de recuperação.")
             with st.form("form_reset"):
                 nova_senha = st.text_input("Nova Senha", type="password")
                 conf_senha = st.text_input("Confirmar Nova Senha", type="password")
-                palavra_nova = st.text_input("Definir sua Palavra-Chave de Recuperação")
-                
+                palavra_nova = st.text_input("Palavra-Chave de Recuperação")
                 if st.form_submit_button("Finalizar Cadastro"):
-                    if nova_senha != conf_senha:
-                        st.error("As senhas não conferem.")
-                    elif not palavra_nova:
-                        st.error("Você precisa definir uma palavra-chave!")
+                    if nova_senha != conf_senha: st.error("As senhas não conferem.")
+                    elif not palavra_nova: st.error("Defina uma palavra-chave!")
                     else:
                         conn = get_connection()
                         cur = conn.cursor()
-                        cur.execute("""
-                            UPDATE usuarios 
-                            SET senha_hash = %s, palavra_recuperacao = %s, reset_obrigatorio = 0 
-                            WHERE username = %s
-                        """, (hash_senha(nova_senha), palavra_nova.strip(), st.session_state["reset_user"]))
+                        cur.execute("UPDATE usuarios SET senha_hash = %s, palavra_recuperacao = %s, reset_obrigatorio = 0 WHERE username = %s", (hash_senha(nova_senha), palavra_nova.strip(), st.session_state["reset_user"]))
                         conn.commit()
                         cur.close()
                         release_connection(conn)
-                        
-                        st.success("Configuração concluída! Entre com sua nova senha.")
-                        st.session_state["needs_reset"] = False
-                        st.rerun()
-            if st.button("⬅️ Voltar"):
-                st.session_state["needs_reset"] = False; st.rerun()
+                        st.success("Concluído! Entre com sua nova senha."); st.session_state["needs_reset"] = False; st.rerun()
+            if st.button("⬅️ Voltar"): st.session_state["needs_reset"] = False; st.rerun()
+#endregion 2.1
 
-        elif st.session_state.get("recuperando"):
-            st.info("Digite seu login e a palavra-chave.")
-            with st.form("form_recuperar"):
-                user_rec = st.text_input("Login")
-                palavra_rec = st.text_input("Palavra-Chave")
-                submit_rec = st.form_submit_button("Validar")
+#region 2.3: Etapa 2 — GPS Obrigatório
+        elif st.session_state.get("validando_gps"):
+            st.info("📍 **Para acessar o conteúdo é necessário a ativação do GPS.** Por favor, clique em 'Permitir' no aviso do seu navegador.")
+            loc_login = get_geolocation()
             
-            if submit_rec:
-                conn = get_connection()
-                cur = conn.cursor()
-                cur.execute("SELECT palavra_recuperacao FROM usuarios WHERE username = %s", (user_rec.strip(),))
-                row = cur.fetchone()
-                cur.close()
-                release_connection(conn)
+            if loc_login and isinstance(loc_login, dict) and "coords" in loc_login:
+                coords = loc_login.get("coords", {})
+                lat_log = coords.get("latitude")
+                lon_log = coords.get("longitude")
                 
-                if row and row[0] == palavra_rec.strip():
-                    st.session_state["needs_reset"] = True
-                    st.session_state["reset_user"] = user_rec.strip()
-                    st.session_state["recuperando"] = False
+                if lat_log is not None and lon_log is not None:
+                    geo_str = f"Lat: {lat_log}, Lon: {lon_log}"
+                    conn = get_connection()
+                    cur = conn.cursor()
+                    cur.execute("""
+                        INSERT INTO logs_acesso (username, data_hora_login, geolocalizacao_login)
+                        VALUES (%s, CURRENT_TIMESTAMP, %s)
+                    """, (st.session_state["temp_user"], geo_str))
+                    conn.commit()
+                    cur.close()
+                    release_connection(conn)
+                    
+                    st.session_state.update({
+                        "logged_in": True, "username": st.session_state["temp_user"],
+                        "perfil": st.session_state["temp_perfil"], "escopo": st.session_state["temp_escopo"],
+                        "governanca": st.session_state["temp_gov"]
+                    })
+                    st.session_state["validando_gps"] = False
                     st.rerun()
-                else: st.error("Dados incorretos.")
-                
-            if st.button("⬅️ Voltar ao Login"): 
-                st.session_state["recuperando"] = False; st.rerun()
+                    
+            elif loc_login and isinstance(loc_login, dict) and "error" in loc_login:
+                st.error("🛑 **Acesso Bloqueado:** O sistema exige a leitura do seu GPS. Verifique se o GPS está ligado e o navegador tem permissão.")
+                if st.button("⬅️ Voltar para o Login"):
+                    st.session_state["validando_gps"] = False
+                    st.rerun()
+#endregion 2.2
 
+#region 2.4: Etapa 1 — Login Padrão
         else:
             with st.form("form_login"):
-                user_input = st.text_input("Usuário")
+                user_input = st.text_input("Matrícula / Usuário")
                 pass_input = st.text_input("Senha", type="password")
                 submit = st.form_submit_button("Entrar", use_container_width=True)
             
             if submit:
                 conn = get_connection()
                 cur = conn.cursor()
-                cur.execute("SELECT senha_hash, perfil, escopo, reset_obrigatorio FROM usuarios WHERE username = %s", (user_input.strip(),))
+                cur.execute("SELECT senha_hash, perfil, escopo, reset_obrigatorio, governanca FROM usuarios WHERE username = %s", (user_input.strip(),))
                 row = cur.fetchone()
                 cur.close()
                 release_connection(conn)
@@ -184,39 +247,46 @@ if not st.session_state["logged_in"]:
                         st.session_state["reset_user"] = user_input.strip()
                         st.rerun()
                     else:
-                        st.session_state.update({"logged_in": True, "username": user_input.strip(), "perfil": row[1], "escopo": row[2]})
+                        st.session_state["temp_user"] = user_input.strip()
+                        st.session_state["temp_perfil"] = row[1]
+                        st.session_state["temp_escopo"] = row[2]
+                        st.session_state["temp_gov"] = row[4] or "Mapa de Campo"
+                        
+                        if row[1] == "Técnico": st.session_state["validando_gps"] = True
+                        else:
+                            st.session_state.update({
+                                "logged_in": True, "username": st.session_state["temp_user"],
+                                "perfil": st.session_state["temp_perfil"], "escopo": st.session_state["temp_escopo"],
+                                "governanca": st.session_state["temp_gov"]
+                            })
                         st.rerun()
                 else: st.error("❌ Usuário ou senha incorretos.")
-            
-            if st.button("Esqueci minha senha"): st.session_state["recuperando"] = True; st.rerun()
     st.stop()
-#endregion
+#endregion 2.3
 
-#region SESSÃO 2: Funções (Lógica, Utilidades, GPS, Distância, Persistência, Export)
-# ==========================================
-# SESSÃO 2: Funções (Lógica, Utilidades, GPS, Distância, Persistência, Export)
-# ==========================================
+#endregion SESSÃO 2
 
-#region SESSÃO 2.1 ===== Lógica =====
+#region SESSÃO 3: Funções (Lógica, Utilidades, GPS, Persistência)
+
+#region 3.1: Lógica
+
+#region 3.1.1: Normalização e Leitura de Colunas
 def normalize_cols(df: pd.DataFrame) -> pd.DataFrame:
-    # Agressivo contra sujeiras do SAP: remove \n, \r, espaços extras e deixa maiúsculo
     df.columns = df.columns.astype(str).str.replace('\n', ' ').str.replace('\r', '').str.strip().str.upper()
     return df
 
 def pick_first_existing(df: pd.DataFrame, candidates: list[str]) -> str | None:
     for c in candidates:
-        if c in df.columns:
-            return c
+        if c in df.columns: return c
     return None
+#endregion 3.1.1
 
+#region 3.1.2: Classificação de Atividades e Criticidade
 def classificar_atividade(atividade: str) -> str:
     s = str(atividade).upper()
-    if "_MAN_CONF_" in s:
-        return "Confiabilidade e Segurança"
-    if "_SEG_" in s:
-        return "Segurança"
-    if "_CONF_" in s:
-        return "Confiabilidade"
+    if "_MAN_CONF_" in s: return "Confiabilidade e Segurança"
+    if "_SEG_" in s: return "Segurança"
+    if "_CONF_" in s: return "Confiabilidade"
     return "Confiabilidade"
 
 def extrair_criticidade(prioridade: str):
@@ -228,313 +298,336 @@ def extrair_criticidade(prioridade: str):
         return codigo, mapa.get(codigo, "Baixa")
 
     pu = p.upper()
-    if "MUITO" in pu and "ALTA" in pu:
-        return 1, "Muito Alta"
-    if "ALTA" in pu:
-        return 2, "Alta"
-    if "MÉDIA" in pu or "MEDIA" in pu:
-        return 3, "Média"
-    if "BAIXA" in pu:
-        return 4, "Baixa"
+    if "MUITO" in pu and "ALTA" in pu: return 1, "Muito Alta"
+    if "ALTA" in pu: return 2, "Alta"
+    if "MÉDIA" in pu or "MEDIA" in pu: return 3, "Média"
+    if "BAIXA" in pu: return 4, "Baixa"
     return 4, "Baixa"
 
 def calcular_nivel_prioridade(classificacao: str, criticidade_rank: int) -> int:
-    # Ordem solicitada:
-    # 1) Confiabilidade e Segurança
-    # 2) Segurança
-    # 3) Confiabilidade
-    base_map = {
-        "Confiabilidade e Segurança": 1,
-        "Segurança": 2,
-        "Confiabilidade": 3
-    }
+    base_map = {"Confiabilidade e Segurança": 1, "Segurança": 2, "Confiabilidade": 3}
     base = base_map.get(classificacao, 3)
     return base * 10 + int(criticidade_rank)
+#endregion 3.1.2
 
+#region 3.1.3: Funções de Data/Hora e Status de Execução
 def parse_data_programada(valor):
-    if pd.isna(valor):
-        return pd.NaT
-    try:
-        return pd.to_datetime(valor, dayfirst=True, errors="coerce")
-    except Exception:
-        return pd.NaT
+    if pd.isna(valor): return pd.NaT
+    try: return pd.to_datetime(valor, dayfirst=True, errors="coerce")
+    except Exception: return pd.NaT
 
 def agora_dt():
-    from datetime import timezone, timedelta
-    # Força o horário oficial de Brasília (UTC-3)
-    fuso_br = timezone(timedelta(hours=-3))
-    return datetime.now(fuso_br)
+    return datetime.now(timezone(timedelta(hours=-3)))
 
 def formatar_dt_br(dt: datetime) -> str:
     return dt.strftime("%d/%m/%Y %H:%M")
 
 def determinar_status_execucao(data_programada: pd.Timestamp, realizado_em: datetime) -> str:
-    # Realizado = antes ou na data programada
-    # Realizado Fora = após a data programada
-    # Se data programada estiver vazia, assume Realizado
-    if pd.isna(data_programada):
-        return "Realizado"
-
+    if pd.isna(data_programada): return "Realizado"
     data_prog_dia = pd.to_datetime(data_programada).date()
     data_real_dia = realizado_em.date()
-
-    if data_real_dia <= data_prog_dia:
-        return "Realizado"
+    if data_real_dia <= data_prog_dia: return "Realizado"
     return "Realizado Fora da Data de Programação"
+#endregion 3.1.3
 
+#region 3.1.4: Cálculo de Distância Geográfica (Haversine)
 def haversine_vectorized(lat1, lon1, lat2_series, lon2_series):
     R = 6371.0
     lat1 = np.radians(float(lat1))
     lon1 = np.radians(float(lon1))
-
     lat2 = np.radians(lat2_series.astype(float).to_numpy())
     lon2 = np.radians(lon2_series.astype(float).to_numpy())
-
     dlat = lat2 - lat1
     dlon = lon2 - lon1
-
     a = np.sin(dlat / 2.0) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2.0) ** 2
     c = 2.0 * np.arctan2(np.sqrt(a), np.sqrt(1.0 - a))
     return R * c
+#endregion 3.1.4
 
-@st.cache_data(show_spinner=False)
-def geocode_endereco(texto: str):
-    geolocator = Nominatim(user_agent="gestao_os_eletro_mrs", timeout=10)
-    return geolocator.geocode(texto + ", Brasil")
-
-
+#region 3.1.5: Geocodificação e Tratamento KML
 @st.cache_data(show_spinner=False)
 def reverse_geocode_coordenada(lat: float, lon: float) -> str:
     try:
         geolocator = Nominatim(user_agent="gestao_os_eletro_mrs", timeout=10)
-        location = geolocator.reverse(
-            (float(lat), float(lon)),
-            exactly_one=True,
-            language="pt-BR",
-            addressdetails=True
-        )
-
-        if not location:
-            return "GPS Local"
-
-        raw = getattr(location, "raw", {}) or {}
-        addr = raw.get("address", {}) or {}
-
-        # Componentes principais
-        rua = (
-            addr.get("road")
-            or addr.get("pedestrian")
-            or addr.get("residential")
-            or addr.get("footway")
-            or addr.get("path")
-            or ""
-        ).strip()
-
-        numero = (
-            addr.get("house_number")
-            or ""
-        ).strip()
-
-        bairro = (
-            addr.get("suburb")
-            or addr.get("neighbourhood")
-            or addr.get("quarter")
-            or ""
-        ).strip()
-
-        cidade = (
-            addr.get("city")
-            or addr.get("town")
-            or addr.get("municipality")
-            or addr.get("village")
-            or ""
-        ).strip()
-
-        cep = (
-            addr.get("postcode")
-            or ""
-        ).strip()
-
+        location = geolocator.reverse((float(lat), float(lon)), exactly_one=True, language="pt-BR", addressdetails=True)
+        if not location: return "GPS Local"
+        addr = getattr(location, "raw", {}).get("address", {})
+        rua = (addr.get("road") or addr.get("pedestrian") or addr.get("residential") or addr.get("footway") or "").strip()
+        numero = (addr.get("house_number") or "").strip()
+        bairro = (addr.get("suburb") or addr.get("neighbourhood") or "").strip()
+        cidade = (addr.get("city") or addr.get("town") or "").strip()
         partes = []
-
-        if rua and numero:
-            partes.append(f"{rua}, {numero}")
-        elif rua:
-            partes.append(rua)
-
-        if bairro:
-            partes.append(bairro)
-
-        if cidade:
-            partes.append(cidade)
-
-        if cep:
-            partes.append(cep)
-
+        if rua and numero: partes.append(f"{rua}, {numero}")
+        elif rua: partes.append(rua)
+        if bairro: partes.append(bairro)
+        if cidade: partes.append(cidade)
         endereco_curto = ", ".join([p for p in partes if p])
-
         return endereco_curto if endereco_curto else "GPS Local"
+    except Exception: return "GPS Local"
 
-    except Exception:
-        return "GPS Local"
+@st.cache_data(show_spinner=False)
+def carregar_malha_cacheada(caminho="malha_mrs.kml"):
+    """Lê o KML da malha uma única vez, simplifica os vértices e guarda em RAM."""
+    if not os.path.exists(caminho): return None
+    import geopandas as gpd
+    try:
+        gdf = gpd.read_file(caminho, driver="KML")
+        # Tolerância de 0.005 reduz drasticamente o peso visual no folium
+        gdf.geometry = gdf.geometry.simplify(tolerance=0.005, preserve_topology=True)
+        return gdf
+    except Exception as e:
+        st.warning(f"Erro ao cachear a malha KML: {e}")
+        return None
+#endregion 3.1.5
 
+#region 3.1.6: Leitura de GPS do Navegador
 def tentar_gps_uma_vez():
     loc = get_geolocation()
-    if not loc:
-        return False, None, None, "Aguardando resposta do navegador…", None
+    if not loc: return False, None, None, "Aguardando resposta do navegador…", None
     if isinstance(loc, dict) and "error" in loc:
-        code = loc["error"].get("code")
-        msg = loc["error"].get("message", "Erro desconhecido de geolocalização.")
-        return False, None, None, f"GPS falhou (code {code}): {msg}", None
+        return False, None, None, f"GPS falhou: {loc['error'].get('message')}", None
     if isinstance(loc, dict) and "coords" in loc:
         coords = loc.get("coords", {})
-        lat = coords.get("latitude")
-        lon = coords.get("longitude")
-        acc = coords.get("accuracy")
+        lat, lon = coords.get("latitude"), coords.get("longitude")
         if lat is not None and lon is not None:
-            return True, float(lat), float(lon), "Localização obtida via GPS.", acc
-    return False, None, None, "Não foi possível interpretar a resposta do GPS.", None
+            return True, float(lat), float(lon), "Localização obtida.", coords.get("accuracy")
+    return False, None, None, "Não foi possível interpretar o GPS.", None
 #endregion
 
-#region SESSÃO 2.2 ===== Persistência (SQLite) =====
+#endregion 3.1.6
 
-def upsert_baixa(os_id: str, status: str, realizado_em_str: str, coordenacao: str, concluido_por: str):
+#region 3.2: Persistência (SQLite/Neon)
+def upsert_baixa(os_id: str, status: str, realizado_em_str: str, coordenacao: str, concluido_por: str,
+                 geolocalizacao_baixa: str = "", equipe: str = "", data_inicio: str = "", hora_inicio: str = "",
+                 data_fim: str = "", hora_fim: str = ""):
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO baixas (os, status, realizado_em, coordenacao, concluido_por)
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (os) DO UPDATE SET
-            status = EXCLUDED.status,
-            realizado_em = EXCLUDED.realizado_em,
-            concluido_por = EXCLUDED.concluido_por;
-    """, (str(os_id), str(status), str(realizado_em_str), str(coordenacao), str(concluido_por)))
-    conn.commit()
-    cur.close()
-    release_connection(conn)
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO baixas (os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (os) DO UPDATE SET
+                status = EXCLUDED.status, realizado_em = EXCLUDED.realizado_em, concluido_por = EXCLUDED.concluido_por,
+                geolocalizacao_baixa = EXCLUDED.geolocalizacao_baixa, equipe = EXCLUDED.equipe, data_inicio = EXCLUDED.data_inicio,
+                hora_inicio = EXCLUDED.hora_inicio, data_fim = EXCLUDED.data_fim, hora_fim = EXCLUDED.hora_fim;
+        """, (str(os_id), str(status), str(realizado_em_str), str(coordenacao), str(concluido_por), str(geolocalizacao_baixa), str(equipe), str(data_inicio), str(hora_inicio), str(data_fim), str(hora_fim)))
+        conn.commit()
+        cur.close()
+    finally: release_connection(conn)
 
 def carregar_baixas_df() -> pd.DataFrame:
     conn = get_connection()
-    df = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por FROM baixas", conn)
-    release_connection(conn)
-    if df.empty:
-        return df
-    df["os"] = df["os"].astype(str)
+    try: df = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa FROM baixas", conn)
+    finally: release_connection(conn)
+    if not df.empty: df["os"] = df["os"].astype(str)
+    return df
+#endregion
+
+#region 3.3: Supabase Storage (Evidências Fotográficas com Compressão)
+def upload_foto_supabase(arquivo_bytes: bytes, nome_arquivo: str) -> str:
+    """Faz compressão com PIL antes de enviar ao Supabase e corrige a orientação (EXIF)."""
+    url_base = st.secrets["SUPABASE_URL"]
+    chave = st.secrets["SUPABASE_KEY"]
+    upload_url = f"{url_base}/storage/v1/object/evidencias/{nome_arquivo}"
+    
+    # Compressão Inteligente da Imagem e Correção de Orientação
+    try:
+        img = Image.open(io.BytesIO(arquivo_bytes))
+        
+        # CORREÇÃO: Lê o EXIF da câmera e gira a imagem para a posição original (retrato)
+        img = ImageOps.exif_transpose(img)
+        
+        if img.mode != 'RGB': img = img.convert('RGB')
+        img.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
+        out = io.BytesIO()
+        img.save(out, format='JPEG', quality=75, optimize=True)
+        bytes_comprimidos = out.getvalue()
+    except Exception:
+        bytes_comprimidos = arquivo_bytes  # Fallback em caso de erro
+
+    headers = {
+        "Authorization": f"Bearer {chave}", "apikey": chave,
+        "Content-Type": "image/jpeg", "x-upsert": "true"
+    }
+    resp = requests.post(upload_url, headers=headers, data=bytes_comprimidos)
+    if resp.status_code in (200, 201): return f"{url_base}/storage/v1/object/public/evidencias/{nome_arquivo}"
+    else: raise Exception(f"Erro Supabase ({resp.status_code}): {resp.text}")
+
+def upsert_evidencia(ativo: str, atividade: str, foto_url: str, os_referencia: str, concluido_por: str, geolocalizacao: str):
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO evidencias (ativo, atividade, foto_url, os_referencia, concluido_por, geolocalizacao, data_upload)
+            VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (ativo, atividade) DO UPDATE SET
+                foto_url = EXCLUDED.foto_url, os_referencia = EXCLUDED.os_referencia,
+                concluido_por = EXCLUDED.concluido_por, geolocalizacao = EXCLUDED.geolocalizacao, data_upload = CURRENT_TIMESTAMP;
+        """, (str(ativo), str(atividade), str(foto_url), str(os_referencia), str(concluido_por), str(geolocalizacao)))
+        conn.commit()
+        cur.close()
+    finally: release_connection(conn)
+
+def carregar_evidencias_df() -> pd.DataFrame:
+    conn = get_connection()
+    try: df = pd.read_sql_query("SELECT ativo, atividade, foto_url, os_referencia, data_upload FROM evidencias", conn)
+    finally: release_connection(conn)
     return df
 
+@st.cache_data(show_spinner=False, ttl=600)
+def carregar_mapeamento_patios() -> dict:
+    conn = get_connection()
+    try: df = pd.read_sql_query("SELECT ativo_chave, patio FROM mapeamento_patios", conn)
+    finally: release_connection(conn)
+    if df.empty: return {}
+    df["ativo_chave"] = df["ativo_chave"].astype(str).str.strip().str.upper()
+    df["patio"] = df["patio"].astype(str).str.strip().str.upper()
+    return dict(zip(df["ativo_chave"], df["patio"]))
 #endregion
 
-#region SESSÃO 2.3 ===== Export/Salvar Excel (MASTER) =====
-def gerar_excel_bytes(df_export: pd.DataFrame) -> bytes:
-    output = io.BytesIO()
-    df_to_save = df_export.copy()
+#region 3.4: Export/Salvar Excel (SAP)
+def gerar_excel_sap_bytes(df_filtrado_atual: pd.DataFrame) -> bytes:
+    df_concluidas = df_filtrado_atual[df_filtrado_atual["Status_norm"].isin(_status_prazo | _status_atraso)].copy()
+    if df_concluidas.empty: return b""
 
-    # Data programada como dd/mm/aaaa
-    if "Data inicial programada" in df_to_save.columns:
-        df_to_save["Data inicial programada"] = pd.to_datetime(
-            df_to_save["Data inicial programada"], errors="coerce"
-        ).dt.strftime("%d/%m/%Y")
+    lista_os = df_concluidas["Ordem servico"].astype(str).tolist()
+    conn = get_connection()
+    try:
+        if len(lista_os) == 1:
+            query = "SELECT os, data_inicio, hora_inicio, data_fim, hora_fim, concluido_por, equipe, coordenacao FROM baixas WHERE os = %s"
+            df_detalhes = pd.read_sql_query(query, conn, params=(lista_os[0],))
+        else:
+            placeholders = ",".join(["%s"] * len(lista_os))
+            query = f"SELECT os, data_inicio, hora_inicio, data_fim, hora_fim, concluido_por, equipe, coordenacao FROM baixas WHERE os IN ({placeholders})"
+            df_detalhes = pd.read_sql_query(query, conn, params=tuple(lista_os))
+    finally: release_connection(conn)
 
-    # Data/Hora Realizado já é texto dd/mm/aaaa hh:mm
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df_to_save.to_excel(writer, index=False, sheet_name="OS")
+    df_sap = df_concluidas.merge(df_detalhes, left_on="Ordem servico", right_on="os", how="inner")
 
-    output.seek(0)
-    return output.read()
+    def montar_lista_equipe(row):
+        principal = str(row["concluido_por"]).strip()
+        eqp = str(row["equipe"]).strip()
+        if eqp and eqp.upper() not in ("SOZINHO", "NAN", ""):
+            co_exec = [u.strip() for u in eqp.split(",") if u.strip()]
+            todos = [principal] + co_exec
+        else: todos = [principal]
+        return list(dict.fromkeys(todos))
 
-def _acquire_lock(lock_path: str, timeout_sec: int = 15):
-    start = time.time()
-    while True:
+    df_sap["_lista_equipe"] = df_sap.apply(montar_lista_equipe, axis=1)
+    df_sap_explodido = df_sap.explode("_lista_equipe").rename(columns={"_lista_equipe": "matricula_final"}).reset_index(drop=True)
+    df_sap_explodido = df_sap_explodido.drop(columns=["_lista_equipe"], errors="ignore")
+
+    def calc_trab_real(h_ini, h_fim):
         try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, str(os.getpid()).encode("utf-8"))
-            os.close(fd)
-            return True
-        except FileExistsError:
-            if time.time() - start > timeout_sec:
-                return False
-            time.sleep(0.5)
+            t_ini = pd.to_datetime(h_ini, format='%H:%M:%S')
+            t_fim = pd.to_datetime(h_fim, format='%H:%M:%S')
+            diff = (t_fim - t_ini).total_seconds() / 60.0
+            if diff < 0: diff += 24 * 60 
+            h, m = int(diff // 60), int(diff % 60)
+            return f"{h:02d},{m:02d}"
+        except Exception: return ""
 
-def _release_lock(lock_path: str):
-    try:
-        os.remove(lock_path)
-    except Exception:
-        pass
+    def get_centro_trab(coord):
+        c = str(coord).upper()
+        return 'E.SP.IPG' if 'IPG' in c or 'PIACAGUERA' in c or 'PIAÇAGUERA' in c else 'E.SP.IPA'
 
-def salvar_excel_com_backup_bytes(excel_bytes: bytes, destino: Path, max_tentativas: int = 5):
-    destino = Path(destino)
-    destino.parent.mkdir(parents=True, exist_ok=True)
+    def get_centro(coord):
+        c = str(coord).upper()
+        return 'CIPG' if 'IPG' in c or 'PIACAGUERA' in c or 'PIAÇAGUERA' in c else 'CIPA'
 
-    lock_path = str(destino) + ".lock"
-    if not _acquire_lock(lock_path, timeout_sec=20):
-        raise RuntimeError("Não foi possível obter lock do arquivo. Talvez outro usuário esteja salvando agora.")
+    n = len(df_sap_explodido)
+    sap_out = pd.DataFrame({
+        'A': [""] * n, 'Ordem': df_sap_explodido['Ordem servico'].values, 'Operação': ["10"] * n,
+        'D': [""] * n, 'E': [""] * n, 'F': [""] * n,
+        'Trab. real': df_sap_explodido.apply(lambda r: calc_trab_real(r['hora_inicio'], r['hora_fim']), axis=1).values,
+        'UN Medida 1': ["MIN"] * n, 'I': [""] * n, 'J': [""] * n, 'K': [""] * n,
+        'Centro de Trabalho': df_sap_explodido['coordenacao'].apply(get_centro_trab).values,
+        'Centro': df_sap_explodido['coordenacao'].apply(get_centro).values,
+        'N': [""] * n, 'O': [""] * n, 'P': [""] * n,
+        'Matrícula': df_sap_explodido['matricula_final'].values,
+        'R': [""] * n, 'S': [""] * n, 'UN Medida 2': ["MIN"] * n,
+        'U': [""] * n, 'V': [""] * n, 'W': [""] * n, 'X': [""] * n,
+        'Data Inicio Real': df_sap_explodido['data_inicio'].astype(str).str.replace('/', '.').values,
+        'Hora Inicio Real': df_sap_explodido['hora_inicio'].values,
+        'Data Fim Real': df_sap_explodido['data_fim'].astype(str).str.replace('/', '.').values,
+        'Hora Fim Real': df_sap_explodido['hora_fim'].values,
+    })
 
-    try:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_path = destino.with_name(f"{destino.stem}_backup_{ts}{destino.suffix}")
-        tmp_path = destino.with_suffix(destino.suffix + f".tmp_{ts}")
+    col_names = []
+    for i, c in enumerate(sap_out.columns):
+        if c in ['A', 'D', 'E', 'F', 'I', 'J', 'K', 'N', 'O', 'P', 'R', 'S', 'U', 'V', 'W', 'X']: col_names.append(" " * (i + 1))
+        elif c == 'UN Medida 1' or c == 'UN Medida 2': col_names.append("UN Medida" + " " * i)
+        else: col_names.append(c)
+    sap_out.columns = col_names
 
-        # Backup do arquivo atual (se existir)
-        if destino.exists():
-            shutil.copy2(destino, backup_path)
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer: sap_out.to_excel(writer, index=False, sheet_name="Importacao_SAP")
+    return output.getvalue()
+#endregion 3.4
 
-        # Escrita segura em arquivo temporário + replace atômico
-        tentativa = 0
-        while True:
-            try:
-                with open(tmp_path, "wb") as f:
-                    f.write(excel_bytes)
-                    f.flush()
-                    os.fsync(f.fileno())
-
-                os.replace(tmp_path, destino)  # substitui de forma atômica
-                return str(backup_path)
-            except PermissionError:
-                tentativa += 1
-                if tentativa >= max_tentativas:
-                    raise
-                time.sleep(1.0)
-            finally:
-                try:
-                    if tmp_path.exists():
-                        tmp_path.unlink()
-                except Exception:
-                    pass
-    finally:
-        _release_lock(lock_path)
-#endregion
-
-#region SESSÃO 2.4 ===== Auxiliares: datas/turnos para gráficos gerenciais =====
+#region 3.5: Auxiliares — Datas/Turnos para Gráficos Gerenciais
 def parse_datahora_realizado(valor):
-    # Espera texto "dd/mm/aaaa hh:mm" ou vazio
-    if pd.isna(valor):
-        return pd.NaT
+    if pd.isna(valor): return pd.NaT
     s = str(valor).strip()
-    if not s:
-        return pd.NaT
+    if not s: return pd.NaT
     return pd.to_datetime(s, dayfirst=True, errors="coerce")
 
 def classificar_turno(dt):
-    # Turnos definidos pelo Julio:
-    # 00:00–06:59 | 07:00–15:59 | 16:00–23:59
-    if pd.isna(dt):
-        return None
+    if pd.isna(dt): return None
     h = int(dt.hour)
-    if 0 <= h < 7:
-        return "00h-07h"
-    if 7 <= h < 16:
-        return "07h-16h"
-    return "16h-00h"
+    m = int(dt.minute)
+    wd = dt.weekday() # 0=Seg, 1=Ter, ..., 5=Sab, 6=Dom
+    
+    # 1. Turno Noite: Todos os dias das 19h as 06h59
+    if h >= 19 or h < 7:
+        return "Turno Noite (19h-07h)"
+        
+    # 2. Dias de Semana (Segunda a Sexta)
+    if wd < 5:
+        # Administrativo: 08:00 as 17:30
+        if (h > 8 and h < 17) or (h == 8) or (h == 17 and m <= 30):
+            return "Administrativo (08h-17h30)"
+        else:
+            # Janelas do Revezamento Dia durante a semana (07h as 07h59 e 17h31 as 18h59)
+            return "Turno Dia (07h-19h)"
+    else:
+        # 3. Finais de Semana: Revezamento Dia integral (07h as 18h59)
+        return "Turno Dia (07h-19h)"
 #endregion
 
-#region SESSÃO 2.5 ===== Auxiliares da Sidebar: preparação e filtros =====
+#region 3.6: Auxiliares da Sidebar — Preparação e Filtros (Blindagem)
 def preparar_df_visao(df_base: pd.DataFrame, filtro_visao: str) -> pd.DataFrame:
     df_visao = df_base.copy()
+    _colunas_obrigatorias = ["Status da Operação", "Data/Hora Realizado", "Data inicial programada"]
+    if df_visao.empty or not all(col in df_visao.columns for col in _colunas_obrigatorias):
+        return pd.DataFrame()
 
+    # Normalização Defensiva da Coluna de Coordenação
+    col_coord = None
+    for candidata in ["Coordenacao", "coordenacao", "COORDENACAO"]:
+        if candidata in df_visao.columns:
+            col_coord = candidata; break
+
+    if col_coord is None: df_visao["Coordenacao"] = "N/D"
+    elif col_coord != "Coordenacao": df_visao = df_visao.rename(columns={col_coord: "Coordenacao"})
+
+    _mapa_norm_coord = {
+        "PARANAPIACABA": "Paranapiacaba", "PIAÇAGUERA": "Piaçaguera", "PIACAGUERA": "Piaçaguera",
+        "IPG": "Piaçaguera", "IPA": "Paranapiacaba", "E.SP.IPG": "Piaçaguera", "E.SP.IPA": "Paranapiacaba",
+    }
+
+    # FIX: Limpeza de quebras de linha e espaços duplos escondidos
+    def _normalizar_coord(val):
+        if pd.isna(val) or str(val).strip() == "": return "N/D"
+        v = re.sub(r'\s+', ' ', str(val)).strip().upper()
+        return _mapa_norm_coord.get(v, str(val).strip())
+
+    df_visao["Coordenacao"] = df_visao["Coordenacao"].apply(_normalizar_coord)
+
+    # Filtro Exato após a limpeza pesada
     if filtro_visao != "Todas":
-        df_visao = df_visao[
-            df_visao["Coordenacao"].str.contains(filtro_visao, case=False, na=False)
-        ].copy()
+        filtro_norm = _normalizar_coord(filtro_visao)
+        df_visao = df_visao[df_visao["Coordenacao"] == filtro_norm].copy()
 
     df_visao["Status_norm"] = df_visao["Status da Operação"].astype(str).str.strip().str.upper()
     df_visao["dt_realizado"] = df_visao["Data/Hora Realizado"].apply(parse_datahora_realizado)
@@ -543,474 +636,457 @@ def preparar_df_visao(df_base: pd.DataFrame, filtro_visao: str) -> pd.DataFrame:
     df_visao["dt_prog_filtro"] = pd.to_datetime(df_visao["Data inicial programada"], errors="coerce")
     df_visao["Turno_Filtro"] = df_visao["Turno"].fillna("Pendente (Sem Turno)")
 
+    if "TIPO_INTERVALO_CAN" in df_visao.columns and "Tipo_Intervalo" not in df_visao.columns:
+        df_visao["Tipo_Intervalo"] = df_visao["TIPO_INTERVALO_CAN"]
+
     return df_visao
 
 def aplicar_filtros_sidebar(
-    df_visao: pd.DataFrame,
-    patios_selecionados: list,
-    classif_selecionadas: list,
-    turnos_selecionados: list,
-    start_date,
-    end_date,
-    status_sel: str
+    df_visao: pd.DataFrame, patios_selecionados: list, classif_selecionadas: list,
+    turnos_selecionados: list, start_date, end_date, status_sel: str = "Todos", intervalo_sel: str = "Todas"
 ) -> pd.DataFrame:
-    df_filtrado = df_visao[
-        (df_visao["Patio"].isin(patios_selecionados)) &
-        (df_visao["Classificacao"].isin(classif_selecionadas)) &
-        (df_visao["Turno_Filtro"].isin(turnos_selecionados)) &
-        (df_visao["dt_prog_filtro"].dt.date >= start_date) &
-        (df_visao["dt_prog_filtro"].dt.date <= end_date)
-    ].copy()
+    df = df_visao.copy()
+    if "dt_prog_filtro" in df.columns:
+        mask_data = ((df["dt_prog_filtro"].dt.date >= start_date) & (df["dt_prog_filtro"].dt.date <= end_date)) | df["dt_prog_filtro"].isna()
+        df = df[mask_data]
+    if patios_selecionados: df = df[df["Patio"].isin(patios_selecionados)]
+    if classif_selecionadas: df = df[df["Classificacao"].isin(classif_selecionadas)]
+    if turnos_selecionados and "Turno_Filtro" in df.columns: df = df[df["Turno_Filtro"].isin(turnos_selecionados)]
+    if status_sel != "Todos" and "Status_norm" in df.columns:
+        if status_sel == "Todas Concluídas": df = df[df["Status_norm"].isin(_status_prazo | _status_atraso)]
+        elif status_sel == "Concluídas no Prazo": df = df[df["Status_norm"].isin(_status_prazo)]
+        elif status_sel == "Concluídas com Atraso": df = df[df["Status_norm"].isin(_status_atraso)]
+        elif status_sel == "Pendentes": df = df[df["Status_norm"].isin(_status_aberto)]
+        elif status_sel == "Atrasado": df = df[df["Status_norm"] == "ATRASADO"]
+    if intervalo_sel != "Todas" and "Tipo_Intervalo" in df.columns: df = df[df["Tipo_Intervalo"] == intervalo_sel]
+    return df
+#endregion 3.6
 
-    if status_sel == "Todas Concluídas":
-        df_filtrado = df_filtrado[
-            df_filtrado["Status_norm"].isin(_status_prazo | _status_atraso)
-        ]
-    elif status_sel == "Concluídas no Prazo":
-        df_filtrado = df_filtrado[
-            df_filtrado["Status_norm"].isin(_status_prazo)
-        ]
-    elif status_sel == "Concluídas com Atraso":
-        df_filtrado = df_filtrado[
-            df_filtrado["Status_norm"].isin(_status_atraso)
-        ]
-    elif status_sel == "Pendentes":
-        df_filtrado = df_filtrado[
-            df_filtrado["Status_norm"].isin(_status_aberto)
-        ]
-
-    return df_filtrado
-#endregion
-
-#region SESSÃO 2.6 ===== Calendário mensal de demanda por pátio =====
+#region 3.7: Calendário Mensal de Demanda por Pátio
 import calendar as pycal
 from datetime import date
 
 @st.cache_data(show_spinner=False)
 def _preparar_df_calendario(df_base_cal: pd.DataFrame) -> pd.DataFrame:
-    if df_base_cal.empty:
-        return pd.DataFrame()
-
+    if df_base_cal.empty: return pd.DataFrame()
     df = df_base_cal.copy()
-
-    if "dt_prog_filtro" not in df.columns:
-        df["dt_prog_filtro"] = pd.to_datetime(df["Data inicial programada"], errors="coerce")
-
-    if "Status_norm" not in df.columns:
-        df["Status_norm"] = df["Status da Operação"].astype(str).str.strip().str.upper()
-
-    if "Nivel_Prioridade" not in df.columns:
-        df["Nivel_Prioridade"] = 999
-
+    if "dt_prog_filtro" not in df.columns: df["dt_prog_filtro"] = pd.to_datetime(df["Data inicial programada"], errors="coerce")
+    if "Status_norm" not in df.columns: df["Status_norm"] = df["Status da Operação"].astype(str).str.strip().str.upper()
+    if "Nivel_Prioridade" not in df.columns: df["Nivel_Prioridade"] = 999
     df = df.dropna(subset=["dt_prog_filtro", "Patio"]).copy()
-    if df.empty:
-        return df
-
+    if df.empty: return df
     df["Patio"] = df["Patio"].astype(str).str.strip().str.upper()
     df["dia_prog"] = pd.to_datetime(df["dt_prog_filtro"], errors="coerce").dt.date
     df["Nivel_Prioridade"] = pd.to_numeric(df["Nivel_Prioridade"], errors="coerce").fillna(999).astype(int)
-
     return df
 
-
 @st.cache_data(show_spinner=False)
-def montar_eventos_calendario_patios(
-    df_base_cal: pd.DataFrame,
-    ano: int,
-    mes: int,
-    max_patios_visiveis: int = 2,
-) -> list[dict]:
-    """
-    Regras:
-    - Vermelho: pátio com backlog vencido aberto em relação ao dia
-    - Verde: pátio com demanda do dia ainda pendente
-    - Azul: pátio com demanda do dia 100% executada
-    - Carry-over: vencidas abertas continuam aparecendo nos dias seguintes
-    - Sem repetir pátio no mesmo dia
-    - Ordenação por menor Nivel_Prioridade
-    - Exibe no máximo N siglas por dia + evento sintético '+N'
-    """
+def montar_eventos_calendario_patios(df_base_cal: pd.DataFrame, ano: int, mes: int, max_patios_visiveis: int = 2) -> list[dict]:
     df = _preparar_df_calendario(df_base_cal)
-    if df.empty:
-        return []
-
-    primeiro_dia = date(int(ano), int(mes), 1)
-    ultimo_dia = date(int(ano), int(mes), pycal.monthrange(int(ano), int(mes))[1])
-
-    dias_mes = pd.date_range(primeiro_dia, ultimo_dia, freq="D")
-    eventos = []
+    if df.empty: return []
+    primeiro_dia, ultimo_dia = date(int(ano), int(mes), 1), date(int(ano), int(mes), pycal.monthrange(int(ano), int(mes))[1])
+    dias_mes, eventos = pd.date_range(primeiro_dia, ultimo_dia, freq="D"), []
 
     for dia_ts in dias_mes:
         dia = dia_ts.date()
-
-        # 1) Backlog vencido aberto até o dia (carry-over)
-        df_vencidas_abertas = df[
-            (df["dia_prog"] < dia) &
-            (df["Status_norm"].isin(_status_aberto))
-        ].copy()
-
-        # 2) Demanda programada no próprio dia
+        df_vencidas_abertas = df[(df["dia_prog"] < dia) & (df["Status_norm"].isin(_status_aberto))].copy()
         df_hoje = df[df["dia_prog"] == dia].copy()
-
         patios_dia = []
 
-        # Primeiro: vencidas abertas -> vermelho
         if not df_vencidas_abertas.empty:
-            agg_venc = (
-                df_vencidas_abertas.groupby("Patio", as_index=False)
-                .agg(
-                    ordem=("Nivel_Prioridade", "min"),
-                    qtd_os=("Patio", "size")
-                )
-                .sort_values(["ordem", "Patio"])
-            )
-
-            for _, row in agg_venc.iterrows():
-                patios_dia.append({
-                    "patio": str(row["Patio"]),
-                    "cor": "#FF4B4B",  # vermelho
-                    "ordem": int(row["ordem"]),
-                    "rank_status": 0
-                })
-
+            agg_venc = df_vencidas_abertas.groupby("Patio", as_index=False).agg(ordem=("Nivel_Prioridade", "min"), qtd_os=("Patio", "size")).sort_values(["ordem", "Patio"])
+            for _, row in agg_venc.iterrows(): patios_dia.append({"patio": str(row["Patio"]), "cor": "#FF4B4B", "ordem": int(row["ordem"]), "rank_status": 0})
+        
         patios_ja_incluidos = {item["patio"] for item in patios_dia}
-
-        # Depois: demanda do dia
         if not df_hoje.empty:
             for patio, grp in df_hoje.groupby("Patio"):
-                if patio in patios_ja_incluidos:
-                    continue
-
-                ordem_patio = int(grp["Nivel_Prioridade"].min())
+                if patio in patios_ja_incluidos: continue
                 todos_realizados = (~grp["Status_norm"].isin(_status_aberto)).all()
+                patios_dia.append({"patio": str(patio), "cor": "#3B82F6" if todos_realizados else "#10B981", "ordem": int(grp["Nivel_Prioridade"].min()), "rank_status": 2 if todos_realizados else 1})
 
-                patios_dia.append({
-                    "patio": str(patio),
-                    "cor": "#3B82F6" if todos_realizados else "#10B981",  # azul / verde
-                    "ordem": ordem_patio,
-                    "rank_status": 2 if todos_realizados else 1
-                })
-
-        if not patios_dia:
-            continue
-
+        if not patios_dia: continue
         patios_dia = sorted(patios_dia, key=lambda x: (x["rank_status"], x["ordem"], x["patio"]))
+        patios_visiveis, qtd_extra = patios_dia[:max_patios_visiveis], max(0, len(patios_dia) - max_patios_visiveis)
 
-        patios_visiveis = patios_dia[:max_patios_visiveis]
-        qtd_extra = max(0, len(patios_dia) - len(patios_visiveis))
-
-        for idx, item in enumerate(patios_visiveis):
-            eventos.append({
-                "title": item["patio"],
-                "start": dia.isoformat(),
-                "allDay": True,
-                "backgroundColor": item["cor"],
-                "borderColor": item["cor"],
-                "textColor": "#FFFFFF",
-                "displayOrder": idx + 1,
-            })
-
-        if qtd_extra > 0:
-            eventos.append({
-                "title": f"+{qtd_extra}",
-                "start": dia.isoformat(),
-                "allDay": True,
-                "backgroundColor": "#94A3B8",
-                "borderColor": "#94A3B8",
-                "textColor": "#FFFFFF",
-                "displayOrder": 99,
-            })
+        for idx, item in enumerate(patios_visiveis): eventos.append({"title": item["patio"], "start": dia.isoformat(), "allDay": True, "backgroundColor": item["cor"], "borderColor": item["cor"], "textColor": "#FFFFFF", "displayOrder": idx + 1})
+        if qtd_extra > 0: eventos.append({"title": f"+{qtd_extra}", "start": dia.isoformat(), "allDay": True, "backgroundColor": "#94A3B8", "borderColor": "#94A3B8", "textColor": "#FFFFFF", "displayOrder": 99})
 
     return eventos
 
-
 @st.cache_data(show_spinner=False)
-def resumir_demanda_calendario(
-    df_base_cal: pd.DataFrame,
-    ano: int,
-    mes: int,
-    dia_ref: int | None = None
-) -> dict:
+def resumir_demanda_calendario(df_base_cal: pd.DataFrame, ano: int, mes: int, dia_ref: int | None = None) -> dict:
     df = _preparar_df_calendario(df_base_cal)
-
-    primeiro_dia = date(int(ano), int(mes), 1)
-    ultimo_dia = date(int(ano), int(mes), pycal.monthrange(int(ano), int(mes))[1])
-
-    if dia_ref is None:
-        dia_ref = 1
-
+    primeiro_dia, ultimo_dia = date(int(ano), int(mes), 1), date(int(ano), int(mes), pycal.monthrange(int(ano), int(mes))[1])
+    if dia_ref is None: dia_ref = 1
     dia_ref = max(1, min(int(dia_ref), ultimo_dia.day))
     dia_atual_ref = date(int(ano), int(mes), int(dia_ref))
 
-    if df.empty:
-        return {
-            "dia_ref": dia_atual_ref,
-            "qtd_patios": 0,
-            "total_os": 0,
-            "patio_prioritario": "-",
-            "serie_total_os_mes": [0] * ultimo_dia.day,
-            "labels_mes": [f"{d:02d}" for d in range(1, ultimo_dia.day + 1)]
-        }
+    if df.empty: return {"dia_ref": dia_atual_ref, "qtd_patios": 0, "total_os": 0, "patio_prioritario": "-", "serie_total_os_mes": [0] * ultimo_dia.day, "labels_mes": [f"{d:02d}" for d in range(1, ultimo_dia.day + 1)]}
 
-    serie_total_os_mes = []
-    labels_mes = []
-
+    serie_total_os_mes, labels_mes = [], []
     for d in pd.date_range(primeiro_dia, ultimo_dia, freq="D"):
         dia = d.date()
+        total_os_dia = len(df[(df["dia_prog"] < dia) & (df["Status_norm"].isin(_status_aberto))]) + len(df[df["dia_prog"] == dia])
+        serie_total_os_mes.append(int(total_os_dia)); labels_mes.append(d.strftime("%d"))
 
-        backlog_vencido = df[
-            (df["dia_prog"] < dia) &
-            (df["Status_norm"].isin(_status_aberto))
-        ].copy()
-
-        demanda_dia = df[df["dia_prog"] == dia].copy()
-
-        total_os_dia = len(backlog_vencido) + len(demanda_dia)
-        serie_total_os_mes.append(int(total_os_dia))
-        labels_mes.append(d.strftime("%d"))
-
-    backlog_ref = df[
-        (df["dia_prog"] < dia_atual_ref) &
-        (df["Status_norm"].isin(_status_aberto))
-    ].copy()
-
+    backlog_ref = df[(df["dia_prog"] < dia_atual_ref) & (df["Status_norm"].isin(_status_aberto))].copy()
     demanda_ref = df[df["dia_prog"] == dia_atual_ref].copy()
-
     patio_resumo = {}
 
     if not backlog_ref.empty:
-        for patio, grp in backlog_ref.groupby("Patio"):
-            patio_resumo[patio] = {
-                "ordem": int(grp["Nivel_Prioridade"].min()),
-                "qtd_os": int(len(grp)),
-                "rank_status": 0
-            }
-
+        for patio, grp in backlog_ref.groupby("Patio"): patio_resumo[patio] = {"ordem": int(grp["Nivel_Prioridade"].min()), "qtd_os": int(len(grp)), "rank_status": 0}
     if not demanda_ref.empty:
         for patio, grp in demanda_ref.groupby("Patio"):
             todos_realizados = (~grp["Status_norm"].isin(_status_aberto)).all()
-            rank_status = 2 if todos_realizados else 1
+            if patio in patio_resumo: patio_resumo[patio]["qtd_os"] += int(len(grp)); patio_resumo[patio]["ordem"] = min(patio_resumo[patio]["ordem"], int(grp["Nivel_Prioridade"].min()))
+            else: patio_resumo[patio] = {"ordem": int(grp["Nivel_Prioridade"].min()), "qtd_os": int(len(grp)), "rank_status": 2 if todos_realizados else 1}
 
-            if patio in patio_resumo:
-                patio_resumo[patio]["qtd_os"] += int(len(grp))
-                patio_resumo[patio]["ordem"] = min(
-                    patio_resumo[patio]["ordem"],
-                    int(grp["Nivel_Prioridade"].min())
-                )
-            else:
-                patio_resumo[patio] = {
-                    "ordem": int(grp["Nivel_Prioridade"].min()),
-                    "qtd_os": int(len(grp)),
-                    "rank_status": rank_status
-                }
+    qtd_patios, total_os = len(patio_resumo), sum(v["qtd_os"] for v in patio_resumo.values())
+    patio_prioritario_txt = f"{sorted(patio_resumo.items(), key=lambda kv: (kv[1]['rank_status'], kv[1]['ordem'], kv[0]))[0][0]} ➔ {sorted(patio_resumo.items(), key=lambda kv: (kv[1]['rank_status'], kv[1]['ordem'], kv[0]))[0][1]['qtd_os']} OS" if patio_resumo else "-"
 
-    qtd_patios = len(patio_resumo)
-    total_os = sum(v["qtd_os"] for v in patio_resumo.values())
-
-    if patio_resumo:
-        patio_prioritario = sorted(
-            patio_resumo.items(),
-            key=lambda kv: (kv[1]["rank_status"], kv[1]["ordem"], kv[0])
-        )[0]
-        patio_prioritario_txt = f"{patio_prioritario[0]} ➔ {patio_prioritario[1]['qtd_os']} OS"
-    else:
-        patio_prioritario_txt = "-"
-
-    return {
-        "dia_ref": dia_atual_ref,
-        "qtd_patios": int(qtd_patios),
-        "total_os": int(total_os),
-        "patio_prioritario": patio_prioritario_txt,
-        "serie_total_os_mes": serie_total_os_mes,
-        "labels_mes": labels_mes
-    }
+    return {"dia_ref": dia_atual_ref, "qtd_patios": int(qtd_patios), "total_os": int(total_os), "patio_prioritario": patio_prioritario_txt, "serie_total_os_mes": serie_total_os_mes, "labels_mes": labels_mes}
 
 @st.cache_data(show_spinner=False)
-def resumir_conclusoes_por_turno_data(
-    df_base_cal: pd.DataFrame,
-    data_ref
-) -> dict:
-    if df_base_cal.empty:
-        return {
-            "labels": ["00h-07h", "07h-16h", "16h-00h"],
-            "valores": [0, 0, 0],
-            "titulo": "Quantidade de OS Concluídas",
-            "subtitulo": "Sem dados"
-        }
-
+#region 3.7.4: Resumo de Conclusões por Turno
+def resumir_conclusoes_por_turno_data(df_base_cal: pd.DataFrame, data_ref) -> dict:
+    ordem_turnos = ["Turno Dia (07h-19h)", "Administrativo (08h-17h30)", "Turno Noite (19h-07h)"]
+    if df_base_cal.empty: return {"labels": ordem_turnos, "valores": [0, 0, 0], "titulo": "Quantidade de OS Concluídas", "subtitulo": "Sem dados"}
+    
     df = df_base_cal.copy()
+    if "dt_prog_filtro" not in df.columns: df["dt_prog_filtro"] = pd.to_datetime(df["Data inicial programada"], errors="coerce")
+    if "dt_realizado" not in df.columns: df["dt_realizado"] = df["Data/Hora Realizado"].apply(parse_datahora_realizado)
+    if "Turno" not in df.columns: df["Turno"] = df["dt_realizado"].apply(classificar_turno)
+    if "Status_norm" not in df.columns: df["Status_norm"] = df["Status da Operação"].astype(str).str.strip().str.upper()
 
-    if "dt_prog_filtro" not in df.columns:
-        df["dt_prog_filtro"] = pd.to_datetime(df["Data inicial programada"], errors="coerce")
-
-    if "dt_realizado" not in df.columns:
-        df["dt_realizado"] = df["Data/Hora Realizado"].apply(parse_datahora_realizado)
-
-    if "Turno" not in df.columns:
-        df["Turno"] = df["dt_realizado"].apply(classificar_turno)
-
-    if "Status_norm" not in df.columns:
-        df["Status_norm"] = df["Status da Operação"].astype(str).str.strip().str.upper()
-
-    data_ref = pd.to_datetime(data_ref).date()
-    hoje_ref = datetime.now().date()
-
+    data_ref, hoje_ref = pd.to_datetime(data_ref).date(), datetime.now().date()
     df_realizadas = df[df["Status_norm"].isin(_status_prazo | _status_atraso)].copy()
 
-    if df_realizadas.empty:
-        return {
-            "labels": ["00h-07h", "07h-16h", "16h-00h"],
-            "valores": [0, 0, 0],
-            "titulo": "Quantidade de OS Concluídas",
-            "subtitulo": "Sem dados"
-        }
-
+    if df_realizadas.empty: return {"labels": ordem_turnos, "valores": [0, 0, 0], "titulo": "Quantidade de OS Concluídas", "subtitulo": "Sem dados"}
     if data_ref <= hoje_ref:
-        df_ref = df_realizadas[
-            pd.to_datetime(df_realizadas["dt_realizado"], errors="coerce").dt.date == data_ref
-        ].copy()
+        df_ref = df_realizadas[pd.to_datetime(df_realizadas["dt_realizado"], errors="coerce").dt.date == data_ref].copy()
         subtitulo = f"Concluídas em {data_ref.strftime('%d/%m/%Y')}"
     else:
-        df_ref = df_realizadas[
-            (pd.to_datetime(df_realizadas["dt_prog_filtro"], errors="coerce").dt.date == data_ref) &
-            (pd.to_datetime(df_realizadas["dt_realizado"], errors="coerce").dt.date < data_ref)
-        ].copy()
+        df_ref = df_realizadas[(pd.to_datetime(df_realizadas["dt_prog_filtro"], errors="coerce").dt.date == data_ref) & (pd.to_datetime(df_realizadas["dt_realizado"], errors="coerce").dt.date < data_ref)].copy()
         subtitulo = f"Antecipadas para {data_ref.strftime('%d/%m/%Y')}"
 
-    ordem_turnos = ["00h-07h", "07h-16h", "16h-00h"]
     serie = df_ref.groupby("Turno").size() if not df_ref.empty else pd.Series(dtype=int)
-    valores = [int(serie.get(t, 0)) for t in ordem_turnos]
+    return {"labels": ordem_turnos, "valores": [int(serie.get(t, 0)) for t in ordem_turnos], "titulo": "Quantidade de OS Concluídas", "subtitulo": subtitulo}
+#endregion 3.7
 
-    return {
-        "labels": ordem_turnos,
-        "valores": valores,
-        "titulo": "Quantidade de OS Concluídas",
-        "subtitulo": subtitulo
-    }
+#region 3.8: Administração de Dados (render_tela_admin)
+def render_tela_admin():
+    col_adm_t1, col_adm_t2 = st.columns([8, 2])
+    with col_adm_t1: st.title("⚙️ Administração de Dados")
+    with col_adm_t2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("⬅️ Voltar ao Painel", use_container_width=True): st.session_state["tela_atual"] = "dashboard"; st.rerun()
 
+    if "msg_upload_os" in st.session_state: st.success(st.session_state["msg_upload_os"]); del st.session_state["msg_upload_os"]
+    if "msg_upload_mapa" in st.session_state: st.success(st.session_state["msg_upload_mapa"]); del st.session_state["msg_upload_mapa"]
+
+#region 3.8.1: Upload e Processamento de OS Programadas
+    st.markdown("Faça o upload da base de **OS Programadas** para atualizar o sistema central.")
+    col_up1, col_up2 = st.columns(2)
+    with col_up1: mes_ref = st.text_input("Mês de Referência (ex: Junho/2026)", placeholder="Mês/Ano")
+    with col_up2: coord_upload_fallback = st.selectbox("Coordenação (fallback)", ["Paranapiacaba", "Piaçaguera"])
+
+    arquivo_upload = st.file_uploader("Selecione a planilha Excel ou CSV", type=["csv", "xlsx"])
+    if arquivo_upload is not None and mes_ref:
+        if st.button("🚀 Processar e Salvar no Banco", use_container_width=True, type="primary"):
+            escopo_user = st.session_state.get("escopo", "Todas")
+            with st.spinner("Lendo e processando dados..."):
+                try:
+                    df = pd.read_csv(arquivo_upload, sep=';', encoding='utf-8-sig') if arquivo_upload.name.endswith('.csv') else pd.read_excel(arquivo_upload)
+                    if "Ordem servico" not in df.columns: st.error("❌ Coluna 'Ordem servico' não encontrada."); return
+                    df = df.fillna("")
+                    
+                    col_depto = next((c for c in df.columns if str(c).strip().upper().replace(" ", "") in ("CODIGODEPARTAMENTO", "CÓDIGODEPARTAMENTO", "CODIGO_DEPARTAMENTO")), None)
+                    if not col_depto: col_depto = next((c for c in df.columns if str(c).strip().upper() == "CONCATENAR"), None)
+
+                    if col_depto is not None:
+                        df["_coord_auto"] = df[col_depto].apply(lambda v: "Paranapiacaba" if str(v).strip().upper().startswith("E.SP.IPA") else ("Piaçaguera" if str(v).strip().upper().startswith("E.SP.IPG") else None))
+                        df = df[df["_coord_auto"].notna()].copy()
+                    else: df["_coord_auto"] = coord_upload_fallback
+
+                    if escopo_user != "Todas": df = df[df["_coord_auto"] == escopo_user].copy()
+
+                    barra, registros_por_coord = st.progress(0, text="Preparando dados..."), {}
+                    for idx, (_, row) in enumerate(df.iterrows()):
+                        os_num, coord_linha = str(row["Ordem servico"]).strip(), row["_coord_auto"]
+                        if os_num and coord_linha:
+                            registros_por_coord.setdefault(coord_linha, []).append((os_num, mes_ref, coord_linha, json.dumps(row.drop(labels=["_coord_auto"], errors="ignore").to_dict(), default=lambda x: x.strftime('%d/%m/%Y') if isinstance(x, (pd.Timestamp, datetime)) else str(x))))
+                        if (idx + 1) % 200 == 0: barra.progress(min((idx + 1) / len(df), 0.5), text=f"Preparando... {idx + 1}/{len(df)} linhas")
+
+                    barra.progress(0.5, text="Gravando no banco de dados...")
+                    conn = get_connection()
+                    try:
+                        cur = conn.cursor()
+                        todos_registros = [r for regs in registros_por_coord.values() for r in regs]
+                        for i in range(0, len(todos_registros), 500):
+                            execute_values(cur, "INSERT INTO os_programadas (os, mes_referencia, coordenacao, dados_completos) VALUES %s ON CONFLICT (os) DO UPDATE SET mes_referencia = EXCLUDED.mes_referencia, coordenacao = EXCLUDED.coordenacao, dados_completos = EXCLUDED.dados_completos", todos_registros[i:i + 500], page_size=500)
+                            barra.progress(min(0.5 + (i + 500) / len(todos_registros) * 0.5, 1.0), text=f"Gravando... {min(i + 500, len(todos_registros))}/{len(todos_registros)} registros")
+                        conn.commit(); cur.close()
+                    finally: release_connection(conn)
+
+                    st.session_state["msg_upload_os"] = f"✅ Sucesso! {len(todos_registros)} OS processadas."
+                    st.cache_data.clear(); st.rerun()
+                except Exception as e: st.error(f"❌ Erro ao processar o arquivo: {e}")
+    #endregion 3.8.1
+    
+#region 3.8.2: Histórico de Uploads
+    with st.expander("📋 Histórico de Uploads", expanded=False):
+        perfil_user = st.session_state.get("perfil", "")
+        escopo_user = st.session_state.get("escopo", "")
+        
+        # Define o filtro de visão baseado no perfil
+        ver_tudo = perfil_user in ("Gerência",) or escopo_user == "Todas"
+        
+        conn = get_connection()
+        try:
+            if ver_tudo:
+                query_hist = """
+                        SELECT coordenacao AS "Coordenação",
+                            MAX(data_upload) AS "Último Upload",
+                            COUNT(*) AS "Linhas Carregadas"
+                        FROM os_programadas
+                        GROUP BY coordenacao
+                        ORDER BY MAX(data_upload) DESC
+                    """
+                df_hist = pd.read_sql_query(query_hist, conn)
+            else:
+                # Filtra pela coordenação do usuário
+                filtro_coord = escopo_user if escopo_user else "Paranapiacaba"
+                query_hist = """
+                        SELECT coordenacao AS "Coordenação",
+                            MAX(data_upload) AS "Último Upload",
+                            COUNT(*) AS "Linhas Carregadas"
+                        FROM os_programadas
+                        WHERE coordenacao = %s
+                        GROUP BY coordenacao
+                        ORDER BY MAX(data_upload) DESC
+                    """
+                df_hist = pd.read_sql_query(query_hist, conn, params=(filtro_coord,))
+        finally:
+            release_connection(conn)
+        
+        if not df_hist.empty:
+            # Formata a data e fuso horário direto no Pandas (Evita erro de sintaxe do PostgreSQL)
+            df_hist["Último Upload"] = pd.to_datetime(df_hist["Último Upload"])
+            if df_hist["Último Upload"].dt.tz is None:
+                df_hist["Último Upload"] = df_hist["Último Upload"].dt.tz_localize("UTC")
+            df_hist["Último Upload"] = df_hist["Último Upload"].dt.tz_convert("America/Sao_Paulo").dt.strftime("%d/%m/%Y %H:%M")
+            
+            df_hist["Linhas Carregadas"] = df_hist["Linhas Carregadas"].astype(int)
+            
+            if ver_tudo:
+                st.caption("📊 **Visão Consolidada** (todas as coordenações)")
+            else:
+                st.caption(f"📊 Visão restrita à coordenação **{escopo_user}**")
+            
+            st.dataframe(
+                df_hist.style.set_properties(**{'text-align': 'center'}).set_table_styles(
+                    [{'selector': 'th', 'props': [('text-align', 'center')]}]
+                ),
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # Totalizador
+            total_geral = int(df_hist["Linhas Carregadas"].sum())
+            st.info(f"📦 **Total de OS na base:** {total_geral:,} registros".replace(",", "."))
+        else:
+            st.info("Nenhum upload realizado até o momento.")
+    #endregion 3.8.2
+
+    #region 3.8.3: Upload de Mapeamento de Pátios
+    with st.expander("🗺️ Mapeamento de Ativos → Pátios", expanded=False):
+        arquivo_mapa = st.file_uploader("Selecione a planilha de mapeamento", type=["xlsx"], key="upload_mapeamento_patios")
+        if arquivo_mapa and st.button("🚀 Processar Mapeamento", use_container_width=True, type="primary"):
+            with st.spinner("Processando..."):
+                try:
+                    xls = pd.ExcelFile(arquivo_mapa, engine="openpyxl")
+                    registros = []
+                    if "Ativos_SP" in xls.sheet_names:
+                        df_at = pd.read_excel(xls, sheet_name="Ativos_SP")
+                        for _, row in df_at.iterrows():
+                            patio = str(row.iloc[10]).strip()
+                            if patio and patio != "nan":
+                                if str(row.iloc[0]).strip() != "nan": registros.append((str(row.iloc[0]).strip(), patio, "Ativo"))
+                                if str(row.iloc[1]).strip() != "nan" and str(row.iloc[1]).strip() != str(row.iloc[0]).strip(): registros.append((str(row.iloc[1]).strip(), patio, "Ativo_Denom"))
+                    for nome_aba in ["Equipamento_SP", "Equipamentos_SP"]:
+                        if nome_aba in xls.sheet_names:
+                            df_eq = pd.read_excel(xls, sheet_name=nome_aba)
+                            for _, row in df_eq.iterrows():
+                                patio = str(row.iloc[6]).strip()
+                                if patio and patio != "nan":
+                                    if str(row.iloc[0]).strip() != "nan": registros.append((str(row.iloc[0]).strip(), patio, "Equipamento"))
+                                    if str(row.iloc[1]).strip() != "nan" and str(row.iloc[1]).strip() != str(row.iloc[0]).strip(): registros.append((str(row.iloc[1]).strip(), patio, "Equipamento_Denom"))
+                            break
+
+                    chaves_vistas, registros_unicos = set(), []
+                    for reg in registros:
+                        if reg[0].upper() not in chaves_vistas: chaves_vistas.add(reg[0].upper()); registros_unicos.append(reg)
+
+                    if registros_unicos:
+                        conn = get_connection()
+                        try:
+                            cur = conn.cursor()
+                            for i in range(0, len(registros_unicos), 500): execute_values(cur, "INSERT INTO mapeamento_patios (ativo_chave, patio, tipo) VALUES %s ON CONFLICT (ativo_chave) DO UPDATE SET patio = EXCLUDED.patio, tipo = EXCLUDED.tipo", registros_unicos[i:i + 500], page_size=500)
+                            conn.commit(); cur.close()
+                        finally: release_connection(conn)
+                        st.session_state["msg_upload_mapa"] = f"✅ Mapeamento atualizado com {len(registros_unicos)} registros!"
+                        st.cache_data.clear(); st.rerun()
+                except Exception as e: st.error(f"❌ Erro: {e}")
+    #endregion 3.8.3
+
+    #region 3.8.4: Exportação SAP
+    if "Exportar SAP" in st.session_state.get("governanca", ""):
+        st.markdown("---"); st.subheader("⬇️ Exportação SAP")
+        if st.button("📦 Preparar Arquivo SAP (Massa)", use_container_width=False, type="primary"):
+            with st.spinner("Preparando exportação..."):
+                conn = get_connection()
+                try: cur = conn.cursor(); cur.execute("SELECT COUNT(*), MAX(os) FROM baixas"); row = cur.fetchone(); baixas_hash_export = f"{row[0]}_{row[1]}"; cur.close()
+                finally: release_connection(conn)
+
+                df_bruto = carregar_base_sem_overlay(False, 0, 0, st.session_state.get("escopo", "Todas"), ETL_VERSION)
+                df_completo = aplicar_overlay_baixas(df_bruto, st.session_state.get("escopo", "Todas"), baixas_hash_export)
+
+                if not df_completo.empty and df_completo["Status da Operação"].astype(str).str.strip().str.upper().isin(_status_prazo | _status_atraso).any():
+                    df_completo["Status_norm"] = df_completo["Status da Operação"].astype(str).str.strip().str.upper()
+                    st.session_state["sap_massa_bytes"] = gerar_excel_sap_bytes(df_completo)
+                    st.session_state["sap_massa_nome"] = f"Baixa_Massa_SAP_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+                    st.success("✅ Arquivo preparado com sucesso.")
+                else: st.info("⚠️ Nenhuma OS concluída.")
+
+        if st.session_state.get("sap_massa_bytes"):
+            st.download_button("⬇️ Baixar Arquivo SAP", data=st.session_state["sap_massa_bytes"], file_name=st.session_state["sap_massa_nome"], mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    #endregion 3.8.4
+
+    #region 3.8.5: Importação de Baixas em Massa (IW47)
+    st.markdown("---"); st.subheader("📥 Importação de Baixas em Massa (IW47)")
+    coord_baixa = st.selectbox("Coordenação", ["Paranapiacaba", "Piaçaguera"])
+    arquivo_iw47 = st.file_uploader("Selecione a planilha IW47", type=["xlsx", "csv"])
+
+    if arquivo_iw47 and st.button("🚀 Processar Baixas em Massa", type="primary"):
+        with st.spinner("Processando..."):
+            try:
+                df_iw = pd.read_csv(arquivo_iw47, sep=None, engine="python", encoding="utf-8-sig") if arquivo_iw47.name.lower().endswith(".csv") else pd.read_excel(arquivo_iw47)
+                df_iw.columns = [str(c).strip() for c in df_iw.columns]
+
+                def dec_to_hms(val):
+                    try: 
+                        t = int(round(max(float(val), 0) * 86400)); return f"{(t // 3600) % 24:02d}:{(t % 3600) // 60:02d}:{t % 60:02d}"
+                    except: return "00:00:00"
+
+                df_iw["_hr_ini"] = df_iw.iloc[:, 6].apply(dec_to_hms); df_iw["_hr_fim"] = df_iw.iloc[:, 8].apply(dec_to_hms)
+                df_iw["_dt_ini"] = df_iw.iloc[:, 5].apply(lambda x: pd.to_datetime(x, errors="coerce").strftime("%d/%m/%Y") if pd.notna(pd.to_datetime(x, errors="coerce")) else "")
+                df_iw["_dt_fim"] = df_iw.iloc[:, 7].apply(lambda x: pd.to_datetime(x, errors="coerce").strftime("%d/%m/%Y") if pd.notna(pd.to_datetime(x, errors="coerce")) else "")
+                df_iw["_coord"] = df_iw.iloc[:, 14].apply(lambda x: "Piaçaguera" if "IPG" in str(x).upper() or "PIACAGUERA" in str(x).upper() else "Paranapiacaba")
+
+                registros_baixa = []
+                for os_id, grp in df_iw.groupby(df_iw.columns[3]):
+                    if str(os_id) == "nan": continue
+                    f = grp.iloc[0]; execs = grp[[df_iw.columns[0], df_iw.columns[1]]].drop_duplicates(subset=[df_iw.columns[0]])
+                    eqp_str = ", ".join([str(r[df_iw.columns[0]]).strip() for _, r in execs.iloc[1:].iterrows()]) if len(execs) > 1 else "Sozinho"
+                    registros_baixa.append({"os": str(os_id).strip(), "concluido_por": str(execs.iloc[0][df_iw.columns[0]]).strip(), "equipe": eqp_str, "realizado_em": f"{f['_dt_fim']} {f['_hr_fim'][:5]}" if f['_dt_fim'] else "", "coordenacao": f["_coord"], "data_inicio": f["_dt_ini"], "hora_inicio": f["_hr_ini"], "data_fim": f["_dt_fim"], "hora_fim": f["_hr_fim"]})
+
+                conn = get_connection()
+                try: 
+                    mapa_dt_prog = {str(r["os"]).strip(): pd.to_datetime(r["dt_prog"], dayfirst=True, errors="coerce") for _, r in pd.read_sql_query("SELECT os, dados_completos->>'Data inicial programada' AS dt_prog FROM os_programadas", conn).iterrows()}
+                    os_ja_baixadas = set(pd.read_sql_query("SELECT os FROM baixas", conn)["os"].astype(str).str.strip().tolist())
+                finally: release_connection(conn)
+
+                novos_regs = [r for r in registros_baixa if r["os"] not in os_ja_baixadas]
+                
+                if novos_regs:
+                    lote_valores = []
+                    for r in novos_regs:
+                        dt_prog, dt_exec = mapa_dt_prog.get(r["os"], pd.NaT), pd.to_datetime(r["data_fim"], format="%d/%m/%Y", errors="coerce")
+                        status = "Realizado Fora da Data de Programação" if pd.notna(dt_prog) and pd.notna(dt_exec) and dt_exec.date() > dt_prog.date() else "Realizado"
+                        lote_valores.append((r["os"], status, r["realizado_em"], r["coordenacao"], r["concluido_por"], "Baixa Manual", r["equipe"], r["data_inicio"], r["hora_inicio"], r["data_fim"], r["hora_fim"]))
+
+                    conn = get_connection()
+                    try:
+                        cur = conn.cursor()
+                        execute_values(cur, "INSERT INTO baixas (os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim) VALUES %s ON CONFLICT (os) DO UPDATE SET status = EXCLUDED.status, realizado_em = EXCLUDED.realizado_em, concluido_por = EXCLUDED.concluido_por, geolocalizacao_baixa = EXCLUDED.geolocalizacao_baixa, equipe = EXCLUDED.equipe, data_inicio = EXCLUDED.data_inicio, hora_inicio = EXCLUDED.hora_inicio, data_fim = EXCLUDED.data_fim, hora_fim = EXCLUDED.hora_fim", lote_valores, page_size=500)
+                        conn.commit(); cur.close(); st.success(f"✅ {len(lote_valores)} OS gravadas!"); st.cache_data.clear(); time.sleep(1); st.rerun()
+                    finally: release_connection(conn)
+                else: st.warning("⚠️ Nenhuma OS nova para gravar (já possuem baixa ou planilha vazia).")
+            except Exception as e: st.error(f"❌ Erro ao processar a planilha IW47: {e}")
+    #endregion 3.8.5
+#endregion 3.8
+
+#endregion SESSÃO 3
 #endregion
-#endregion
 
-#region SESSÃO 3: Banco de Coordenadas Fixo
+#region SESSÃO 4: Banco de Coordenadas Fixo
 
-#region SESSÃO 3.1 Coordenadas Fixas
+#region 4.1: Coordenadas Fixa
 COORDENADAS_FIXAS = {
-    "FPI": [-23.444413, -46.309269],
-    "IAB": [-23.521338, -46.688570],
-    "ICG": [-23.767863, -46.343114],
-    "ICP": [-23.658495, -46.490753],
-    "ICR": [-23.640310, -46.323992],
-    "IEF": [-23.477809, -46.360984],
-    "IES": [-23.545441, -46.603648],
-    "IIP": [-23.564977, -46.604896],
-    "ILA": [-23.520217, -46.698082],
-    "IMO": [-23.557803, -46.608382],
-    "IOF": [-23.658579, -46.338538],
-    "IPA": [-23.774399, -46.306769],
-    "IPG": [-23.847950, -46.370812],
-    "IPR": [-23.537749, -46.625522],
-    "IRG": [-23.736705, -46.382241],
-    "IRP": [-23.713578, -46.414862],
-    "IRS": [-23.828162, -46.363101],
-    "ISA": [-23.647553, -46.531007],
-    "ISC": [-23.613874, -46.558834],
-    "ISL": [-23.752383, -46.389262],
-    "ISU": [-23.551210, -46.288671],
-    "IUT": [-23.624864, -46.544716],
-    "OAR": [-23.500419, -46.339111],
-    "OBF": [-23.525591, -46.666726],
-    "OBR": [-23.545397, -46.616293],
-    "OCE": [-23.484980, -46.481471],
-    "OCV": [-23.525061, -46.333701],
-    "OEG": [-23.498082, -46.519759],
-    "OET": [-23.510887, -46.552273],
-    "OGP": [-23.691962, -46.448784],
-    "OIC": [-23.479040, -46.367395],
-    "OIT": [-23.493970, -46.401392],
-    "OLU": [-23.535423, -46.634503],
-    "OMA": [-23.667910, -46.462083],
-    "OMP": [-23.490530, -46.443668],
-    "OPS": [-23.637494, -46.537198],
-    "OSU": [-23.534010, -46.308025],
-    "OTA": [-23.591863, -46.590075],
-    "OTT": [-23.539844, -46.575501],
-    "IAA": [-23.862936, -46.398189],
-    "IJN": [-23.195297, -46.870829],
-    "ZPD": [-22.363436, -48.711002],
-
-    # ✅ CORRIGIDO: PADRÃO UPPER PARA EVITAR MATCH ERROR
-    "Sede IPA": [-23.767355, -46.344117],
-    "Sede IPG": [-23.850772, -46.371760]
+    "FPI": [-23.444413, -46.309269], "IAA": [-23.862936, -46.398189], "IAB": [-23.521338, -46.688570],
+    "IBA": [-23.907681, -46.325638], "ICB": [-23.886147, -46.416167], "ICG": [-23.767863, -46.343114],
+    "ICP": [-23.658495, -46.490753], "ICQ": [-23.926493, -46.402720], "ICR": [-23.640310, -46.323992],
+    "ICZ": [-23.954824, -46.293306], "IEF": [-23.477809, -46.360984], "IES": [-23.545441, -46.603648],
+    "IIP": [-23.564977, -46.604896], "IJN": [-23.195297, -46.870829], "IJU": [-23.889626, -46.338534], 
+    "ILA": [-23.520217, -46.698082], "IMO": [-23.557803, -46.608382], "IOF": [-23.658579, -46.338538],
+    "IPA": [-23.774399, -46.306769], "IPG": [-23.847950, -46.370812], "IPR": [-23.537749, -46.625522],
+    "IQA": [-23.925948, -46.380123], "IQB": [-23.875674, -46.348587], "IRA": [-23.500572, -46.339448], 
+    "IRG": [-23.736705, -46.382241], "IRP": [-23.713578, -46.414862], "IRS": [-23.828162, -46.363101],
+    "ISA": [-23.647553, -46.531007], "ISC": [-23.613874, -46.558834], "ISL": [-23.752383, -46.389262],
+    "ISN": [-23.928399, -46.363015], "ISU": [-23.551210, -46.288671], "IUF": [-23.860615, -46.359726],  
+    "IUT": [-23.624864, -46.544716], "IVP": [-23.848139, -46.390430], "OAR": [-23.500419, -46.339111],
+    "OBF": [-23.525591, -46.666726], "OBR": [-23.545397, -46.616293], "OCE": [-23.484980, -46.481471],
+    "OCV": [-23.525061, -46.333701], "OEG": [-23.498082, -46.519759], "OET": [-23.510887, -46.552273],
+    "OGP": [-23.691962, -46.448784], "OIC": [-23.479040, -46.367395], "OIT": [-23.493970, -46.401392],
+    "OLU": [-23.535423, -46.634503], "OMA": [-23.667910, -46.462083], "OMP": [-23.490530, -46.443668],
+    "OPS": [-23.637494, -46.537198], "OSU": [-23.534010, -46.308025], "OTA": [-23.591863, -46.590075],
+    "OTT": [-23.539844, -46.575501], "ZPD": [-22.363436, -48.711002], "ZPG": [-23.874149, -46.411283],
+    "Sede IPA": [-23.767355, -46.344117], "Sede IPG": [-23.850772, -46.371760]
 }
-#endregion
 
-#region SESSÃO 3.2 Continuação do código da função de obtenção da base padrão do usuário
 def obter_base_padrao_usuario():
     username = str(st.session_state.get("username", "")).strip()
     escopo = str(st.session_state.get("escopo", "")).strip()
 
-    # Mapeamento ajustado para conversar com os nós reais da malha
     mapa_normalizacao = {
-        "Paranapiacaba": ("IPA", "Sede IPA"),
-        "Piaçaguera": ("IPG", "Sede IPG"),
-        "Todas": ("IPA", "Sede Padrão (IPA)"),
-        "ICG": ("ICG", "Campo Grande (ICG)"),
-        "IPA": ("IPA", "Sede IPA"),
-        "IPG": ("IPG", "Base IPG"),
-        "SEDE IPA": ("IPA", "Sede IPA"),
-        "SEDE IPG": ("IPG", "Sede IPG"),
+        "Paranapiacaba": ("IPA", "Sede IPA"), "Piaçaguera": ("IPG", "Sede IPG"),
+        "Todas": ("IPA", "Sede Padrão (IPA)"), "ICG": ("ICG", "Campo Grande (ICG)"),
+        "IPA": ("IPA", "Sede IPA"), "IPG": ("IPG", "Base IPG"),
+        "SEDE IPA": ("IPA", "Sede IPA"), "SEDE IPG": ("IPG", "Sede IPG"),
     }
-
     valor_base = None
-
-    # Busca no banco de usuários
     if username:
+        conn = None
         try:
             conn = get_connection()
             cur = conn.cursor()
-            cur.execute(
-                "SELECT coordenacao_padrao FROM usuarios WHERE username = %s",
-                (username,)
-            )
+            cur.execute("SELECT coordenacao_padrao FROM usuarios WHERE username = %s", (username,))
             row = cur.fetchone()
             cur.close()
-            release_connection(conn)
+            if row and row[0]: valor_base = str(row[0]).strip()
+        except Exception: valor_base = None
+        finally:
+            if conn is not None: release_connection(conn)
 
-            if row and row[0]:
-                valor_base = str(row[0]).strip()
-        except Exception:
-            valor_base = None
-
-    # Fallback para o escopo
-    if not valor_base:
-        valor_base = escopo
-
+    if not valor_base: valor_base = escopo
     valor_base = str(valor_base).strip()
     valor_base_upper = valor_base.upper()
 
-    # Tradução final
-    if valor_base in mapa_normalizacao:
-        chave_coord, nome_exibicao = mapa_normalizacao[valor_base]
-    elif valor_base_upper in mapa_normalizacao:
-        chave_coord, nome_exibicao = mapa_normalizacao[valor_base_upper]
-    else:
-        chave_coord, nome_exibicao = ("IPA", "Base Padrão (IPA)")
+    if valor_base in mapa_normalizacao: chave_coord, nome_exibicao = mapa_normalizacao[valor_base]
+    elif valor_base_upper in mapa_normalizacao: chave_coord, nome_exibicao = mapa_normalizacao[valor_base_upper]
+    else: chave_coord, nome_exibicao = ("IPA", "Base Padrão (IPA)")
 
-    # Busca coordenada segura
     coord = COORDENADAS_FIXAS.get(chave_coord, COORDENADAS_FIXAS["IPA"])
-    lat, lon = coord
-    return float(lat), float(lon), nome_exibicao
-#endregion
+    return float(coord[0]), float(coord[1]), nome_exibicao
+#endregion SESSÃO 4
 #endregion
 
-#region SESSÃO 4: ETL (Carregamento e Tratamento)
-# ==========================================
-
+#region SESSÃO 5: ETL (Carregamento e Tratamento)
 ETL_VERSION = "v6_leitura_crua_status_avancado"
 
+#region 5.1: Tratamento Principal (tratar_df_os + _resolver_patio)
 def tratar_df_os(df: pd.DataFrame):
     df = normalize_cols(df)
-
     col_os = pick_first_existing(df, ["ORDEM SERVICO", "ORDEM SERVIÇO", "OS"])
     col_ativo = pick_first_existing(df, ["ATIVO", "EQUIPAMENTO"])
     col_atividade = pick_first_existing(df, ["ATIVIDADE ATIVO", "ATIVIDADE_ATIVO", "ATIVIDADE"])
@@ -1026,18 +1102,41 @@ def tratar_df_os(df: pd.DataFrame):
     if not col_atividade: missing.append("ATIVIDADE ATIVO")
     if not col_prioridade: missing.append("PRIORIDADE")
     if not col_data_prog: missing.append("DATA INICIAL PROGRAMADA")
-    if missing:
-        raise ValueError(f"Colunas obrigatórias ausentes no Excel: {', '.join(missing)}")
+    if missing: raise ValueError(f"Colunas obrigatórias ausentes no Excel: {', '.join(missing)}")
 
     df["ATIVO_CAN"] = df[col_ativo].astype(str).str.strip()
     df["ATIVIDADE_CAN"] = df[col_atividade].astype(str).str.strip()
     df["PRIORIDADE_CAN"] = df[col_prioridade].astype(str).str.strip()
     df["HXH_CAN"] = pd.to_numeric(df[col_hxh], errors="coerce").fillna(0) if col_hxh else 0.0
     
-    df["PATIO_CAN"] = df["ATIVO_CAN"].str[:3].str.upper()
+    _mapa_patios = carregar_mapeamento_patios()
+    _patios_validos = set(k for k in COORDENADAS_FIXAS.keys() if not k.startswith("Sede"))
 
+    def _resolver_patio(ativo_str: str) -> str:
+        ativo_upper = str(ativo_str).strip().upper()
+        if _mapa_patios and ativo_upper in _mapa_patios: return _mapa_patios[ativo_upper]
+        prefixo = ativo_upper[:3]
+        if prefixo in _patios_validos: return prefixo
+        if _mapa_patios:
+            for chave_mapa, patio_mapa in _mapa_patios.items():
+                if chave_mapa in ativo_upper or ativo_upper in chave_mapa: return patio_mapa
+        for patio_candidato in sorted(_patios_validos, key=len, reverse=True):
+            if patio_candidato in ativo_upper: return patio_candidato
+        return "N/D"
+
+    df["PATIO_CAN"] = df["ATIVO_CAN"].apply(_resolver_patio)
     df["DATA_PROG_CAN"] = df[col_data_prog].apply(parse_data_programada)
     df["DESC_LONGA_CAN"] = df[col_desc].astype(str).str.strip() if col_desc else ""
+    
+    col_sem_int = pick_first_existing(df, ["SEM INTERVALO", "S_I", "SEM_INTERVALO"])
+    col_com_int = pick_first_existing(df, ["COM INTERVALO", "C_I", "COM_INTERVALO"])
+    def _classificar_intervalo(row):
+        si = str(row[col_sem_int]).strip().upper() if col_sem_int and pd.notna(row.get(col_sem_int)) else ""
+        ci = str(row[col_com_int]).strip().upper() if col_com_int and pd.notna(row.get(col_com_int)) else ""
+        if si in ("S_I", "SI", "S"): return "Sem Intervalo"
+        if ci in ("C_I", "CI", "C"): return "Com Intervalo"
+        return "N/D"
+    df["TIPO_INTERVALO_CAN"] = df.apply(_classificar_intervalo, axis=1) if (col_sem_int or col_com_int) else "N/D"
 
     df["Classificacao"] = df["ATIVIDADE_CAN"].apply(classificar_atividade)
     crit = df["PRIORIDADE_CAN"].apply(extrair_criticidade)
@@ -1048,684 +1147,598 @@ def tratar_df_os(df: pd.DataFrame):
     hoje_data = datetime.now().date()
     def definir_status_cru(row):
         st_atual = str(row[col_status]).strip().upper() if pd.notna(row[col_status]) and col_status else ""
-        
         if "REALIZADO" in st_atual:
-            if "FORA" in st_atual or "ATRASO" in st_atual:
-                return "Realizado Fora da Data de Programação"
+            if "FORA" in st_atual or "ATRASO" in st_atual: return "Realizado Fora da Data de Programação"
             return "Realizado"
-        
         dp = row["DATA_PROG_CAN"]
-        if pd.isna(dp):
-            return "Pendente"
-        
-        if dp.date() >= hoje_data:
-            return "Pendente"
-        else:
-            return "Atrasado"
+        if pd.isna(dp): return "Pendente"
+        if dp.date() >= hoje_data: return "Pendente"
+        else: return "Atrasado"
 
     df["STATUS_CAN"] = df.apply(definir_status_cru, axis=1)
 
     df_out = pd.DataFrame({
         "Ordem servico": df[col_os].astype(str).str.strip(),
-        "Patio": df["PATIO_CAN"],
-        "Ativo": df["ATIVO_CAN"],
-        "Criticidade": df["Criticidade"],
-        "Classificacao": df["Classificacao"],
-        "Descrição Longa": df["DESC_LONGA_CAN"],
-        "Data inicial programada": df["DATA_PROG_CAN"],
-        "Status da Operação": df["STATUS_CAN"],
-        "Data/Hora Realizado": "",
-        "Concluído por": "",  
-        "Hxh Plano": df["HXH_CAN"],
-        "Criticidade_rank": df["Criticidade_rank"],
-        "Nivel_Prioridade": df["Nivel_Prioridade"],
+        "Patio": df["PATIO_CAN"], "Ativo": df["ATIVO_CAN"], "Atividade ativo": df["ATIVIDADE_CAN"],
+        "Criticidade": df["Criticidade"], "Classificacao": df["Classificacao"], "Descrição Longa": df["DESC_LONGA_CAN"],
+        "Data inicial programada": df["DATA_PROG_CAN"], "Status da Operação": df["STATUS_CAN"],
+        "Data/Hora Realizado": "", "Concluído por": "", "Hxh Plano": df["HXH_CAN"],
+        "Criticidade_rank": df["Criticidade_rank"], "Nivel_Prioridade": df["Nivel_Prioridade"],
+        "TIPO_INTERVALO_CAN": df["TIPO_INTERVALO_CAN"],
     })
-
     return df_out
 
 @st.cache_data
-def auto_detect_and_treat(path_ou_bytes):
-    if isinstance(path_ou_bytes, bytes):
-        df_raw = pd.read_excel(io.BytesIO(path_ou_bytes), engine="openpyxl", header=None)
-    else:
-        df_raw = pd.read_excel(path_ou_bytes, engine="openpyxl", header=None)
-        
-    df_raw = df_raw.dropna(how='all')
-    df_raw = df_raw.dropna(axis=1, how='all')
-    
-    if df_raw.empty:
-        raise ValueError("O arquivo Excel está completamente sem dados.")
-        
-    df_raw.columns = df_raw.iloc[0]
-    df_tratado = df_raw[1:].reset_index(drop=True)
-    return tratar_df_os(df_tratado)
-
-@st.cache_data
-def carregar_excel_por_bytes(excel_bytes: bytes, etl_version: str):
-    return auto_detect_and_treat(excel_bytes)
-
-@st.cache_data
-def carregar_excel_por_path(path_excel: str, etl_version: str):
-    return auto_detect_and_treat(path_excel)
-
-@st.cache_data(show_spinner=False)
-def carregar_base_sem_overlay(
-    usar_sim: bool,
-    qtd_sim: int,
-    seed_sim: int,
-    escopo_usuario: str,
-    etl_version: str
-) -> pd.DataFrame:
+def carregar_base_sem_overlay(usar_sim: bool, qtd_sim: int, seed_sim: int, escopo_usuario: str, etl_version: str) -> pd.DataFrame:
     if usar_sim:
-        return gerar_base_simulada(qtd=qtd_sim, seed=seed_sim)
+        pct_p = st.session_state.get("sim_pct_pendente", 45)
+        pct_ok = st.session_state.get("sim_pct_prazo", 40)
+        pct_a = st.session_state.get("sim_pct_atraso", 15)
+        return gerar_base_simulada(qtd=qtd_sim, seed=seed_sim, pct_p=pct_p, pct_ok=pct_ok, pct_a=pct_a)
 
-    pasta_bases = Path("bases_os")
-    pasta_bases.mkdir(exist_ok=True)
+    conn = get_connection()
+    try: df_raw_db = pd.read_sql_query("SELECT os, coordenacao, dados_completos FROM os_programadas", conn)
+    except Exception as e: df_raw_db = pd.DataFrame()
+    finally: release_connection(conn)
 
-    arquivos = [f for f in pasta_bases.glob("*.xlsx") if not f.name.startswith("~$")]
-    if not arquivos:
-        return pd.DataFrame()
+    if df_raw_db.empty: return pd.DataFrame()
 
-    dfs = []
-    for arq in arquivos:
-        df_temp = carregar_excel_por_path(str(arq), etl_version)
-        nome_coord = arq.stem.replace("OS_", "").replace("_", " ").strip()
-        df_temp["Coordenacao"] = nome_coord
-        dfs.append(df_temp)
+    _mapa_depto_fallback = {"E.SP.IPA": "Paranapiacaba", "E.SP.IPG": "Piaçaguera"}
 
-    df_base_bruto = pd.concat(dfs, ignore_index=True)
+    def _resolver_coord_null(row):
+        coord = row["coordenacao"]
+        if pd.notna(coord) and str(coord).strip() != "": return str(coord).strip()
+        dados = row["dados_completos"]
+        if isinstance(dados, str):
+            try: dados = json.loads(dados)
+            except Exception: return "N/D"
+        if isinstance(dados, dict):
+            for chave in ["Codigo departamento", "CODIGO DEPARTAMENTO", "Concatenar", "CONCATENAR"]:
+                val = str(dados.get(chave, "")).strip().upper()
+                if val:
+                    for prefixo, coord_nome in _mapa_depto_fallback.items():
+                        if val.startswith(prefixo): return coord_nome
+        return "N/D"
+
+    df_raw_db["coordenacao"] = df_raw_db.apply(_resolver_coord_null, axis=1)
+
+    _mapa_norm = {
+        "PARANAPIACABA": "Paranapiacaba", "PIAÇAGUERA": "Piaçaguera", "PIACAGUERA": "Piaçaguera",
+        "IPG": "Piaçaguera", "IPA": "Paranapiacaba", "E.SP.IPG": "Piaçaguera", "E.SP.IPA": "Paranapiacaba",
+    }
+    df_raw_db["coordenacao"] = df_raw_db["coordenacao"].apply(
+        lambda v: _mapa_norm.get(re.sub(r'\s+', ' ', str(v)).strip().upper(), str(v).strip()) if pd.notna(v) and str(v).strip() != "" else "N/D"
+    )
+
+    dfs_tratados = []
+    for coord, group in df_raw_db.groupby("coordenacao", dropna=False):
+        coord_str = str(coord).strip() if pd.notna(coord) else "N/D"
+        coord_str = _mapa_norm.get(coord_str.upper(), coord_str)
+        lista_linhas = []
+        for _, row in group.iterrows():
+            dados = row["dados_completos"]
+            if isinstance(dados, str):
+                try: dados = json.loads(dados)
+                except Exception: continue
+            lista_linhas.append(dados)
+
+        if lista_linhas:
+            df_bruto_coord = pd.DataFrame(lista_linhas)
+            try:
+                df_tratado_coord = tratar_df_os(df_bruto_coord)
+                df_tratado_coord["Coordenacao"] = coord_str
+                dfs_tratados.append(df_tratado_coord)
+            except Exception as e:
+                import logging
+                logging.error(f"[ETL] ERRO ao tratar coordenação '{coord_str}': {e}")
+
+    if not dfs_tratados: return pd.DataFrame()
+    df_base_final = pd.concat(dfs_tratados, ignore_index=True)
 
     if escopo_usuario != "Todas":
-        df_base_bruto = df_base_bruto[
-            df_base_bruto["Coordenacao"].str.contains(escopo_usuario, case=False, na=False)
-        ]
+        escopo_norm = _mapa_norm.get(escopo_usuario.strip().upper(), escopo_usuario.strip())
+        df_base_final = df_base_final[df_base_final["Coordenacao"].apply(lambda x: str(x).strip().upper() == escopo_norm.upper() if pd.notna(x) else False)]
 
-    return df_base_bruto
-
+    return df_base_final
 
 @st.cache_data(show_spinner=False)
-def aplicar_overlay_baixas(
-    df_base_bruto: pd.DataFrame,
-    escopo_usuario: str,
-    baixas_mtime: float
-) -> pd.DataFrame:
+def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, baixas_mtime: float) -> pd.DataFrame:
     df_base = df_base_bruto.copy()
+    if df_base.empty: return df_base
 
-    if df_base.empty:
-        return df_base
+    if "Status da Operação" in df_base.columns:
+        df_base["Status da Operação"] = df_base["Status da Operação"].replace(["", "nan", "NaN", "None"], "Pendente")
 
-    #init_db()
     df_baixas = carregar_baixas_df()
-
-    if df_baixas.empty:
-        return df_base
-
+    if df_baixas.empty: return df_base
     df_base["Ordem servico"] = df_base["Ordem servico"].astype(str)
 
     if escopo_usuario != "Todas":
-        df_baixas = df_baixas[
-            df_baixas["coordenacao"].str.contains(escopo_usuario, case=False, na=False)
-        ]
+        df_baixas = df_baixas[df_baixas["coordenacao"].str.contains(escopo_usuario, case=False, na=False, regex=False)]
 
-    for col in ["Status da Operação", "Data/Hora Realizado", "Concluído por"]:
-        if col not in df_base.columns:
-            df_base[col] = ""
+    colunas_overlay = ["Status da Operação", "Data/Hora Realizado", "Concluído por", "Geolocalização de Baixa"]
+    for col in colunas_overlay:
+        if col not in df_base.columns: df_base[col] = ""
 
     df_baixas = df_baixas.rename(columns={
-        "os": "Ordem servico",
-        "status": "Status da Operação",
-        "realizado_em": "Data/Hora Realizado",
-        "concluido_por": "Concluído por"
+        "os": "Ordem servico", "status": "Status da Operação", 
+        "realizado_em": "Data/Hora Realizado", "concluido_por": "Concluído por", "geolocalizacao_baixa": "Geolocalização de Baixa"
     })
 
-    df_base = df_base.merge(
-        df_baixas[["Ordem servico", "Status da Operação", "Data/Hora Realizado", "Concluído por"]],
-        on="Ordem servico",
-        how="left",
-        suffixes=("", "_baixado")
-    )
-
-    df_base["Status da Operação"] = np.where(
-        df_base["Status da Operação_baixado"].notna(),
-        df_base["Status da Operação_baixado"],
-        df_base["Status da Operação"]
-    )
-
-    df_base["Data/Hora Realizado"] = np.where(
-        df_base["Data/Hora Realizado_baixado"].notna(),
-        df_base["Data/Hora Realizado_baixado"],
-        df_base["Data/Hora Realizado"]
-    )
-
-    df_base["Concluído por"] = np.where(
-        df_base["Concluído por_baixado"].notna(),
-        df_base["Concluído por_baixado"],
-        df_base["Concluído por"]
-    )
-
-    df_base.drop(
-        columns=[
-            "Status da Operação_baixado",
-            "Data/Hora Realizado_baixado",
-            "Concluído por_baixado"
-        ],
-        inplace=True
-    )
+    df_base = df_base.merge(df_baixas[["Ordem servico"] + colunas_overlay], on="Ordem servico", how="left", suffixes=("", "_baixado"))
+    for col in colunas_overlay:
+        df_base[col] = np.where(df_base[f"{col}_baixado"].notna() & (df_base[f"{col}_baixado"] != ""), df_base[f"{col}_baixado"], df_base[col])
+        df_base.drop(columns=[f"{col}_baixado"], inplace=True)
 
     return df_base
-#endregion
+#endregion 5.4
+#endregion SESSÃO 5
 
-#region SESSÃO EXTRA: Simulação de dados (APENAS TESTE - remover depois)
-# ==========================================
-# SESSÃO EXTRA: Simulação de dados (APENAS TESTE - remover depois)
-# ==========================================
-
-#region SESSÃO EXTRA: Gerador de base simulada (para testar KPIs e gráficos)
-def gerar_base_simulada(qtd: int = 800, seed: int = 42) -> pd.DataFrame:
+#region SESSÃO 6: Simulação de Dados (Ambiente de Teste)
+def gerar_base_simulada(qtd: int = 800, seed: int = 42, pct_p: int = 45, pct_ok: int = 40, pct_a: int = 15) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
-
-    patios = [
-        "IAA", "IEF", "OLU", "IPA", "IRS", "IPG", "ICG",
-        "IRG", "IOF", "ISU", "ILA", "IJN", "ZPD", "IIP"
-]
-
+    patios = ["IAA", "IEF", "OLU", "IPA", "IRS", "IPG", "ICG", "IRG", "IOF", "ISU", "ILA", "IJN", "ZPD", "IIP"]
     prioridades = ["1-Muito Alta", "2-Alta", "3-Média", "4-Baixa"]
     prob_prio = [0.18, 0.32, 0.30, 0.20]
-
-    atividades = [
-        "EE_INS_SEG_C_I_MAQ CHAVE MOLA_1800",
-        "EE_MAN_CONF_C_I_CANALETA SUBESTACAO_0720",
-        "EE_INS_CONF_S_I_BATERIAS_0360"
-    ]
+    atividades = ["EE_INS_SEG_C_I_MAQ CHAVE MOLA_1800", "EE_MAN_CONF_C_I_CANALETA SUBESTACAO_0720", "EE_INS_CONF_S_I_BATERIAS_0360"]
     prob_ativ = [0.35, 0.30, 0.35]
 
-    status_list = ["Não Realizado", "Realizado", "Realizado Fora da Data de Programação"]
-    prob_status = [0.45, 0.40, 0.15]
+    total_pct = pct_p + pct_ok + pct_a
+    if total_pct == 0: prob_status = [0.45, 0.40, 0.15]
+    else: prob_status = [pct_p / total_pct, pct_ok / total_pct, pct_a / total_pct]
 
+    status_list = ["Não Realizado", "Realizado", "Realizado Fora da Data de Programação"]
     hoje = datetime.now()
     dias_atras = rng.integers(0, 30, size=qtd)
     data_prog = [hoje - pd.Timedelta(days=int(d)) for d in dias_atras]
     data_prog = pd.to_datetime(data_prog).normalize()
 
     df = pd.DataFrame({
-        "Ordem servico": [f"OS-{100000+i}" for i in range(qtd)],
-        "Patio": rng.choice(patios, size=qtd),
+        "Ordem servico": [f"OS-{100000+i}" for i in range(qtd)], "Patio": rng.choice(patios, size=qtd),
         "Ativo": [f"{rng.choice(patios)}-ATV-{i:04d}" for i in range(qtd)],
-        "Atividade ativo": rng.choice(atividades, size=qtd, p=prob_ativ),
-        "Prioridade": rng.choice(prioridades, size=qtd, p=prob_prio),
-        "Hxh Plano": np.round(rng.uniform(0.5, 8.0, size=qtd), 1),
-        "Data inicial programada": data_prog,
+        "Atividade ativo": rng.choice(atividades, size=qtd, p=prob_ativ), "Prioridade": rng.choice(prioridades, size=qtd, p=prob_prio),
+        "Hxh Plano": np.round(rng.uniform(0.5, 8.0, size=qtd), 1), "Data inicial programada": data_prog,
         "Coordenacao": rng.choice(["Paranapiacaba", "Piaçaguera"], size=qtd)
     })
 
     df["Classificacao"] = df["Atividade ativo"].apply(classificar_atividade)
-
     crit = df["Prioridade"].apply(extrair_criticidade)
     df["Criticidade_rank"] = [c[0] for c in crit]
     df["Criticidade"] = [c[1] for c in crit]
-
-    df["Nivel_Prioridade"] = df.apply(
-        lambda r: calcular_nivel_prioridade(r["Classificacao"], r["Criticidade_rank"]),
-        axis=1
-    )
-    df["Desc_Prioridade"] = df["Classificacao"] + " | " + df["Criticidade"]
-
+    df["Nivel_Prioridade"] = df.apply(lambda r: calcular_nivel_prioridade(r["Classificacao"], r["Criticidade_rank"]), axis=1)
     df["Status da Operação"] = rng.choice(status_list, size=qtd, p=prob_status)
     df["Data/Hora Realizado"] = ""
 
+    tecnicos_mock = ["Julio Paz (Sim)", "Carlos Silva (Sim)", "Ana Souza (Sim)", "Roberto Gomes (Sim)"]
+    baixas_sim, logs_sim = [], []
+
     for i in range(qtd):
         stt = df.at[i, "Status da Operação"]
-        if stt == "Não Realizado":
-            continue
-
+        if stt == "Não Realizado": continue
         prog = pd.to_datetime(df.at[i, "Data inicial programada"])
-        turno = rng.choice(["00h-07h", "07h-16h", "16h-00h"], p=[0.15, 0.60, 0.25])
+        
+        if stt == "Realizado": delta = int(rng.integers(0, 4)); real_date = (prog - pd.Timedelta(days=delta)).to_pydatetime()
+        else: delta = int(rng.integers(1, 11)); real_date = (prog + pd.Timedelta(days=delta)).to_pydatetime()
 
-        if turno == "00h-07h":
-            hh = int(rng.integers(0, 7))
-        elif turno == "07h-16h":
-            hh = int(rng.integers(7, 16))
+        # --- NOVA LÓGICA DE SIMULAÇÃO DOS TURNOS ---
+        turno_alvo = rng.choice(["Administrativo", "Turno Dia", "Turno Noite"], p=[0.45, 0.35, 0.20])
+        
+        if turno_alvo == "Administrativo":
+            # Força dia de semana para o Administrativo
+            while real_date.weekday() >= 5: real_date -= pd.Timedelta(days=1)
+            hh, mm = int(rng.integers(8, 16)), int(rng.integers(0, 59))
+        elif turno_alvo == "Turno Noite":
+            # Qualquer dia, mas horário noturno
+            hh, mm = int(rng.choice([19, 20, 21, 22, 23, 0, 1, 2, 3, 4, 5, 6])), int(rng.integers(0, 59))
         else:
-            hh = int(rng.integers(16, 24))
-        mm = int(rng.integers(0, 60))
-
-        if stt == "Realizado":
-            delta = int(rng.integers(0, 4))
-            real_date = (prog - pd.Timedelta(days=delta)).to_pydatetime()
-        else:
-            delta = int(rng.integers(1, 11))
-            real_date = (prog + pd.Timedelta(days=delta)).to_pydatetime()
+            # Turno Dia: Força fim de semana para garantir que o sistema leia como "Turno Dia" puro
+            while real_date.weekday() < 5: real_date += pd.Timedelta(days=1)
+            hh, mm = int(rng.integers(7, 18)), int(rng.integers(0, 59))
 
         real_dt = real_date.replace(hour=hh, minute=mm, second=0, microsecond=0)
         df.at[i, "Data/Hora Realizado"] = formatar_dt_br(real_dt)
+        duracao_mins = int(rng.integers(20, 240))
+        ini_dt = real_dt - pd.Timedelta(minutes=duracao_mins)
+        tec = rng.choice(tecnicos_mock)
+        
+        # Simula Fraude de GPS (para pegar na Governança)
+        gps_str = f"Lat: -23.{rng.integers(100,999)}, Lon: -46.{rng.integers(100,999)}"
+        if rng.random() < 0.1: gps_str = "Sede IPA (Lat: -23.767, Lon: -46.344)"
+
+        baixas_sim.append({
+            "os": df.at[i, "Ordem servico"], "status": stt, "realizado_em": formatar_dt_br(real_dt), "coordenacao": df.at[i, "Coordenacao"],
+            "concluido_por": tec, "geolocalizacao_baixa": gps_str, "equipe": "", "data_inicio": ini_dt.strftime("%d/%m/%Y"),
+            "hora_inicio": ini_dt.strftime("%H:%M:%S"), "data_fim": real_dt.strftime("%d/%m/%Y"), "hora_fim": real_dt.strftime("%H:%M:%S")
+        })
+
+    st.session_state["df_baixas_sim"] = pd.DataFrame(baixas_sim)
+    for tec in tecnicos_mock:
+        for dia in pd.date_range(end=datetime.now(), periods=15):
+            login_dt = dia.replace(hour=int(rng.integers(6,8)), minute=int(rng.integers(0,59)))
+            logs_sim.append({"username": tec, "data_hora_login": login_dt})
+    st.session_state["df_logs_sim"] = pd.DataFrame(logs_sim)
 
     return df
-#endregion
 
-#region SESSÃO EXTRA: Controle na Sidebar
-def simulacao_sidebar():
-    st.sidebar.header("🧪 Simulação (Teste)")
-    usar_sim = st.sidebar.checkbox("Usar dados simulados (teste KPIs)", value=False)
+_DEV_MODE = os.getenv("DEV_MODE", "0") == "1"
+if _DEV_MODE:
+    def simulacao_sidebar():
+        st.sidebar.header("🧪 Simulação (Teste)")
+        usar_sim = st.sidebar.checkbox("Usar dados simulados (teste KPIs)", value=False)
+        if not usar_sim: return False, None
+        qtd_sim = st.sidebar.slider("Quantidade de OS simuladas", 100, 4000, 1200, 100)
+        seed_sim = st.sidebar.number_input("Seed (repete os mesmos dados)", min_value=1, max_value=999999, value=42, step=1)
+        df_sim = gerar_base_simulada(qtd=int(qtd_sim), seed=int(seed_sim))
+        st.sidebar.info("✅ Simulação ativa. Excel real NÃO será carregado.")
+        return True, df_sim
+#endregion SESSÃO 6
 
-    if not usar_sim:
-        return False, None
+#region SESSÃO 7: Sidebar, Navegação, Carga e Filtro
 
-    qtd_sim = st.sidebar.slider("Quantidade de OS simuladas", 100, 4000, 1200, 100)
-    seed_sim = st.sidebar.number_input("Seed (repete os mesmos dados)", min_value=1, max_value=999999, value=42, step=1)
-
-    df_sim = gerar_base_simulada(qtd=int(qtd_sim), seed=int(seed_sim))
-    st.sidebar.info("✅ Simulação ativa. Excel real NÃO será carregado.")
-    return True, df_sim
-#endregion
-#endregion
-
-#region SESSÃO 5: Sidebar, Navegação, Carga e Filtro
-
-#region SESSÃO 5.1: Identidade visual, navegação e escopo
-# 5.1.1 CSS / identidade visual
+#region 7.1: Identidade visual, navegação e escopo
 st.markdown("""
     <style>
-    [data-testid="stSidebar"] {
-        background-color: #1A202C !important; 
-    }
-    
+    [data-testid="stSidebar"] { background-color: #1A202C !important; }
     [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3, 
     [data-testid="stSidebar"] h4, [data-testid="stSidebar"] h5, [data-testid="stSidebar"] h6,
     [data-testid="stSidebar"] label, [data-testid="stSidebar"] p, [data-testid="stSidebar"] span,
-    [data-testid="stSidebar"] small, [data-testid="stSidebar"] caption {
-        color: #F1F5F9 !important;
-    }
-
-    [data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child {
-        display: none !important;
-    }
-    
+    [data-testid="stSidebar"] small, [data-testid="stSidebar"] caption { color: #F1F5F9 !important; }
+    [data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child { display: none !important; }
     [data-testid="stSidebar"] div[role="radiogroup"] > label {
-        padding: 10px 16px !important;
-        background-color: transparent !important;
-        border-radius: 8px !important;
-        margin-bottom: 6px !important;
-        transition: all 0.2s ease-in-out !important;
-        cursor: pointer !important;
-        color: #CBD5E1 !important;
+        padding: 10px 16px !important; background-color: transparent !important;
+        border-radius: 8px !important; margin-bottom: 6px !important;
+        transition: all 0.2s ease-in-out !important; cursor: pointer !important; color: #CBD5E1 !important;
     }
-    
-    [data-testid="stSidebar"] div[role="radiogroup"] > label:hover {
-        background-color: rgba(255, 255, 255, 0.08) !important;
-        color: #FFFFFF !important;
+    [data-testid="stSidebar"] div[role="radiogroup"] > label:hover { background-color: rgba(255, 255, 255, 0.08) !important; color: #FFFFFF !important; }
+    [data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked) { background-color: rgba(255, 75, 75, 0.2) !important; border-left: 4px solid #FF4B4B !important; }
+    [data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked) p { font-weight: bold !important; color: #FFFFFF !important; }
+    [data-testid="stSidebar"] .stSelectbox label p, [data-testid="stSidebar"] .stMultiSelect label p, [data-testid="stSidebar"] .stDateInput label p {
+        font-size: 16px !important; font-weight: 700 !important; color: #F8FAFC !important; margin-bottom: 4px;
     }
-    
-    [data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked) {
-        background-color: rgba(255, 75, 75, 0.2) !important; 
-        border-left: 4px solid #FF4B4B !important;
+    .stMultiSelect [data-baseweb="tag"] { background-color: #FF4B4B !important; color: white !important; border-radius: 6px !important; }
+    [data-testid="stSidebar"] div[data-baseweb="select"] > div, [data-testid="stSidebar"] div[data-baseweb="input"] > div, [data-testid="stSidebar"] div[data-baseweb="base-input"] > input {
+        background-color: #333D4E !important; border-color: #475569 !important; border-radius: 6px !important; color: white !important;
     }
-    [data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked) p {
-        font-weight: bold !important;
-        color: #FFFFFF !important;
-    }
-    
-    [data-testid="stSidebar"] .stSelectbox label p, 
-    [data-testid="stSidebar"] .stMultiSelect label p,
-    [data-testid="stSidebar"] .stDateInput label p {
-        font-size: 16px !important;
-        font-weight: 700 !important;
-        color: #F8FAFC !important;
-        margin-bottom: 4px;
-    }
-
-    .stMultiSelect [data-baseweb="tag"] {
-        background-color: #FF4B4B !important;
-        color: white !important;
-        border-radius: 6px !important;
-    }
-    
-    [data-testid="stSidebar"] div[data-baseweb="select"] > div,
-    [data-testid="stSidebar"] div[data-baseweb="input"] > div,
-    [data-testid="stSidebar"] div[data-baseweb="base-input"] > input {
-        background-color: #333D4E !important;
-        border-color: #475569 !important;
-        border-radius: 6px !important;
-        color: white !important;
-    }
-    [data-testid="stSidebar"] div[data-baseweb="select"] span,
-    [data-testid="stSidebar"] div[data-baseweb="input"] input {
-        color: white !important;
-    }
-    
-    [data-testid="stSidebar"] [data-testid="stExpander"] details {
-        border: 1px solid #FF4B4B !important;
-        border-radius: 8px !important;
-        overflow: hidden;
-    }
-    [data-testid="stSidebar"] [data-testid="stExpander"] summary {
-        background-color: #FF4B4B !important;
-    }
-    [data-testid="stSidebar"] [data-testid="stExpander"] summary p {
-        color: #FFFFFF !important;
-        font-weight: 800 !important;
-        font-size: 16px !important;
-    }
-    [data-testid="stSidebar"] [data-testid="stExpander"] svg {
-        fill: #FFFFFF !important;
-    }
-    [data-testid="stSidebar"] [data-testid="stExpander"] [data-testid="stExpanderDetails"] {
-        background-color: #1A202C !important;
-        padding-top: 15px !important;
-    }
-    
-    [data-testid="stSidebar"] button {
-        background-color: #333D4E !important;
-        color: #FFFFFF !important;
-        border: 1px solid #475569 !important;
-        border-radius: 6px !important;
-        transition: all 0.2s ease-in-out;
-    }
-    [data-testid="stSidebar"] button:hover {
-        background-color: #475569 !important;
-        border-color: #cbd5e1 !important;
-        color: #FFFFFF !important;
-    }
-    
-    [data-testid="stMetricValue"] {
-        font-size: 28px !important;
-    }
-    
-    button[data-baseweb="tab"][aria-selected="true"] {
-        background-color: rgba(255, 75, 75, 0.15) !important;
-        border-radius: 6px 6px 0px 0px !important;
-    }
-    button[data-baseweb="tab"][aria-selected="true"] p {
-        font-weight: bold !important;
-    }
-    button[data-baseweb="tab"]:hover {
-        background-color: rgba(255, 75, 75, 0.05) !important;
-        border-radius: 6px 6px 0px 0px !important;
-    }
+    [data-testid="stSidebar"] div[data-baseweb="select"] span, [data-testid="stSidebar"] div[data-baseweb="input"] input { color: white !important; }
+    [data-testid="stSidebar"] [data-testid="stExpander"] details { border: 1px solid #FF4B4B !important; border-radius: 8px !important; overflow: hidden; }
+    [data-testid="stSidebar"] [data-testid="stExpander"] summary { background-color: #FF4B4B !important; }
+    [data-testid="stSidebar"] [data-testid="stExpander"] summary p { color: #FFFFFF !important; font-weight: 800 !important; font-size: 16px !important; }
+    [data-testid="stSidebar"] [data-testid="stExpander"] svg { fill: #FFFFFF !important; }
+    [data-testid="stSidebar"] [data-testid="stExpander"] [data-testid="stExpanderDetails"] { background-color: #1A202C !important; padding-top: 15px !important; }
+    [data-testid="stSidebar"] button { background-color: #333D4E !important; color: #FFFFFF !important; border: 1px solid #475569 !important; border-radius: 6px !important; transition: all 0.2s ease-in-out; }
+    [data-testid="stSidebar"] button:hover { background-color: #475569 !important; border-color: #cbd5e1 !important; color: #FFFFFF !important; }
+    [data-testid="stMetricValue"] { font-size: 28px !important; }
+    button[data-baseweb="tab"][aria-selected="true"] { background-color: rgba(255, 75, 75, 0.15) !important; border-radius: 6px 6px 0px 0px !important; }
+    button[data-baseweb="tab"][aria-selected="true"] p { font-weight: bold !important; }
+    button[data-baseweb="tab"]:hover { background-color: rgba(255, 75, 75, 0.05) !important; border-radius: 6px 6px 0px 0px !important; }
     </style>
 """, unsafe_allow_html=True)
 
-# 5.1.2 Logotipo
 st.sidebar.image("logo_mrs.png", use_container_width=True)
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
-# 5.1.3 Navegação e definição do escopo visual
 st.sidebar.markdown("### 🧭 Navegação")
-if st.session_state["perfil"] == "Gerência":
-    visao_selecionada = st.sidebar.radio("Selecione a Visão:", ["Gerência", "Paranapiacaba", "Piaçaguera"], label_visibility="collapsed")
+if "tela_atual" not in st.session_state: st.session_state["tela_atual"] = "dashboard"
+
+gov_usuario = st.session_state.get("governanca", "")
+tem_painel = "Painel Gerencial" in gov_usuario or "Mapa de Campo" in gov_usuario
+tem_dados = "Upload de Dados" in gov_usuario
+tem_governanca = "Gestão de Usuários" in gov_usuario or "Governança" in gov_usuario
+
+if tem_painel and tem_dados:
+    col_nav1, col_nav2 = st.sidebar.columns(2)
+    with col_nav1:
+        if st.button("📊 Painel", use_container_width=True): st.session_state["tela_atual"] = "dashboard"; st.rerun()
+    with col_nav2:
+        if st.button("⚙️ Dados", use_container_width=True): st.session_state["tela_atual"] = "admin"; st.rerun()
+elif tem_painel:
+    if st.sidebar.button("📊 Painel", use_container_width=True): st.session_state["tela_atual"] = "dashboard"; st.rerun()
+elif tem_dados:
+    if st.sidebar.button("⚙️ Dados", use_container_width=True): st.session_state["tela_atual"] = "admin"; st.rerun()
+
+if tem_governanca:
+    if st.sidebar.button("🛡️ Governança (Auditoria)", use_container_width=True): st.session_state["tela_atual"] = "governanca"; st.rerun()
+
+if st.session_state.get("tela_atual") == "admin":
+    render_tela_admin()
+    st.stop()
+
+if "Painel Gerencial" in gov_usuario:
+    visao_selecionada = st.sidebar.radio("Selecione a Visão:", ["Gerência", "Paranapiacaba", "Piaçaguera"], label_visibility="collapsed", key="radio_visao_gerencial")
     filtro_visao = "Todas" if visao_selecionada == "Gerência" else visao_selecionada
 else:
-    filtro_visao = st.session_state["escopo"]
+    filtro_visao = st.session_state.get("escopo", "Todas")
     st.sidebar.info(f"Visão Restrita: {filtro_visao}")
-#endregion
+#endregion 7.1
 
-#region SESSÃO 5.2: Carregamento da base operacional
+#region 7.2: Carregamento da Base Operacional
 usar_sim = st.session_state.get("chk_sim", False)
 qtd_sim = st.session_state.get("qtd_sim", 1200)
 seed_sim = st.session_state.get("seed_sim", 42)
 
-baixas_mtime = time.time()
+def _hash_baixas():
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*), MAX(os) FROM baixas")
+        row = cur.fetchone()
+        cur.close()
+        return f"{row[0]}_{row[1]}"
+    finally: release_connection(conn)
 
-df_base_bruto = carregar_base_sem_overlay(
-    usar_sim=usar_sim,
-    qtd_sim=int(qtd_sim),
-    seed_sim=int(seed_sim),
-    escopo_usuario=st.session_state["escopo"],
-    etl_version=ETL_VERSION
-)
-
-if df_base_bruto.empty and not usar_sim:
-    pasta_bases = Path("bases_os")
-    st.error(f"Nenhuma planilha encontrada na pasta '{pasta_bases.absolute()}'.")
-    st.stop()
-
-df_base = aplicar_overlay_baixas(
-    df_base_bruto=df_base_bruto,
-    escopo_usuario=st.session_state["escopo"],
-    baixas_mtime=baixas_mtime
-)
+baixas_mtime = _hash_baixas()
+df_base_bruto = carregar_base_sem_overlay(usar_sim=usar_sim, qtd_sim=int(qtd_sim), seed_sim=int(seed_sim), escopo_usuario=st.session_state["escopo"], etl_version=ETL_VERSION)
+df_base = aplicar_overlay_baixas(df_base_bruto=df_base_bruto, escopo_usuario=st.session_state["escopo"], baixas_mtime=baixas_mtime)
 
 st.session_state["df_os"] = df_base
 df_visao = preparar_df_visao(df_base, filtro_visao)
-#endregion
 
-#region SESSÃO 5.3: Filtros da sidebar
-st.sidebar.markdown("### 📊 Filtros")
+if df_visao.empty or "dt_prog_filtro" not in df_visao.columns:
+    st.info("📋 Nenhuma OS encontrada. Faça o upload das planilhas em **⚙️ Dados** para começar.")
+    st.stop()
+#endregion 7.2
 
+#region 7.3: Filtros da Sidebar
 valid_dates = df_visao["dt_prog_filtro"].dropna()
+if not valid_dates.empty: min_date, max_date = valid_dates.min().date(), valid_dates.max().date()
+else: min_date, max_date = datetime.now().date() - pd.Timedelta(days=30), datetime.now().date()
 
-if not valid_dates.empty:
-    min_date = valid_dates.min().date()
-    max_date = valid_dates.max().date()
-else:
-    min_date = datetime.now().date() - pd.Timedelta(days=30)
-    max_date = datetime.now().date()
+lista_patios = sorted(df_visao["Patio"].dropna().astype(str).unique().tolist())
+lista_classificacoes = ["Confiabilidade e Segurança", "Segurança", "Confiabilidade"]
+lista_turnos = ["Turno Dia (07h-19h)", "Administrativo (08h-17h30)", "Turno Noite (19h-07h)", "Pendente (Sem Turno)"]
+status_opcoes = ["Todos", "Todas Concluídas", "Concluídas no Prazo", "Concluídas com Atraso", "Pendentes", "Atrasado"]
 
-if st.session_state["perfil"] != "Técnico":
-    data_selecionada = st.sidebar.date_input(
-        "Período de Programação",
-        value=(min_date, max_date),
-        min_value=min_date,
-        max_value=max_date
-    )
+def _sanear_lista_filtro(chave: str, opcoes: list[str], padrao: list[str]):
+    atuais = st.session_state.get(chave, list(padrao))
+    atuais = [item for item in atuais if item in opcoes]
+    if not atuais: atuais = list(padrao)
+    st.session_state[chave] = atuais
+    return atuais
 
-    if isinstance(data_selecionada, tuple):
-        if len(data_selecionada) == 2:
-            start_date, end_date = data_selecionada
-        else:
-            start_date = data_selecionada[0]
-            end_date = data_selecionada[0]
+@st.fragment
+def fragmento_filtros_sidebar_seguro():
+    st.markdown("### 📊 Filtros")
+    if st.session_state["perfil"] != "Técnico":
+        start_padrao = st.session_state.get("filtro_start_date", min_date)
+        end_padrao = st.session_state.get("filtro_end_date", max_date)
+        if start_padrao < min_date or start_padrao > max_date: start_padrao = min_date
+        if end_padrao < min_date or end_padrao > max_date: end_padrao = max_date
+        if start_padrao > end_padrao: start_padrao, end_padrao = min_date, max_date
+
+        data_selecionada = st.date_input("Período de Programação", value=(start_padrao, end_padrao), min_value=min_date, max_value=max_date, format="DD/MM/YYYY", key="filtro_periodo_programacao")
+        if isinstance(data_selecionada, tuple):
+            if len(data_selecionada) == 2: start_date_local, end_date_local = data_selecionada
+            else: start_date_local = end_date_local = data_selecionada[0]
+        else: start_date_local = end_date_local = data_selecionada
+
+        st.session_state["filtro_start_date"] = start_date_local
+        st.session_state["filtro_end_date"] = end_date_local
+
+        patios_default = _sanear_lista_filtro("filtro_patios", lista_patios, lista_patios)
+        st.multiselect("Pátio", lista_patios, default=patios_default, key="filtro_patios")
+        classif_default = _sanear_lista_filtro("filtro_classificacoes", lista_classificacoes, lista_classificacoes)
+        st.multiselect("Classificação", lista_classificacoes, default=classif_default, key="filtro_classificacoes")
+        turnos_default = _sanear_lista_filtro("filtro_turnos", lista_turnos, lista_turnos)
+        st.multiselect("Turno", lista_turnos, default=turnos_default, key="filtro_turnos")
+
+        intervalo_opcoes = ["Todas", "Com Intervalo", "Sem Intervalo"]
+        intervalo_default = st.session_state.get("filtro_intervalo_sel", "Todas")
+        if intervalo_default not in intervalo_opcoes: intervalo_default = "Todas"
+        st.session_state["filtro_intervalo_sel"] = intervalo_default
+        st.selectbox("Tipo de Intervalo", intervalo_opcoes, index=intervalo_opcoes.index(intervalo_default), key="filtro_intervalo_sel")
+
+        status_default = st.session_state.get("filtro_status_sel", "Todos")
+        if status_default not in status_opcoes: status_default = "Todos"; st.session_state["filtro_status_sel"] = status_default
+        st.selectbox("Status da OS", status_opcoes, index=status_opcoes.index(status_default), key="filtro_status_sel")
     else:
-        start_date = data_selecionada
-        end_date = data_selecionada
+        st.info("💡 Filtros automáticos aplicados de acordo com o seu escopo operacional de campo.")
+        st.session_state.update({"filtro_start_date": min_date, "filtro_end_date": max_date, "filtro_patios": list(lista_patios), "filtro_classificacoes": list(lista_classificacoes), "filtro_turnos": list(lista_turnos), "filtro_status_sel": "Todos"})
 
-    lista_patios = sorted(df_visao["Patio"].dropna().astype(str).unique().tolist())
-    patios_selecionados = st.sidebar.multiselect("Pátio", lista_patios, default=lista_patios)
+with st.sidebar: fragmento_filtros_sidebar_seguro()
 
-    classif_selecionadas = st.sidebar.multiselect(
-        "Classificação",
-        ["Confiabilidade e Segurança", "Segurança", "Confiabilidade"],
-        default=["Confiabilidade e Segurança", "Segurança", "Confiabilidade"]
-    )
-
-    lista_turnos = ["00h-07h", "07h-16h", "16h-00h", "Pendente (Sem Turno)"]
-    turnos_selecionados = st.sidebar.multiselect("Turno", lista_turnos, default=lista_turnos)
-
-    status_sel = st.sidebar.selectbox(
-        "Status da OS",
-        ["Todos", "Todas Concluídas", "Concluídas no Prazo", "Concluídas com Atraso", "Pendentes"]
-    )
-else:
-    st.sidebar.info("💡 Filtros automáticos aplicados de acordo com o seu escopo operacional de campo.")
-    start_date = min_date
-    end_date = max_date
-    patios_selecionados = sorted(df_visao["Patio"].dropna().astype(str).unique().tolist())
-    classif_selecionadas = ["Confiabilidade e Segurança", "Segurança", "Confiabilidade"]
-    turnos_selecionados = ["00h-07h", "07h-16h", "16h-00h", "Pendente (Sem Turno)"]
-    status_sel = "Todos"
+start_date = st.session_state.get("filtro_start_date", min_date)
+end_date = st.session_state.get("filtro_end_date", max_date)
+patios_selecionados = st.session_state.get("filtro_patios", list(lista_patios))
+classif_selecionadas = st.session_state.get("filtro_classificacoes", list(lista_classificacoes))
+turnos_selecionados = st.session_state.get("filtro_turnos", list(lista_turnos))
+status_sel = st.session_state.get("filtro_status_sel", "Todos")
+intervalo_sel = st.session_state.get("filtro_intervalo_sel", "Todas")
 
 df_filtrado = aplicar_filtros_sidebar(
-    df_visao=df_visao,
-    patios_selecionados=patios_selecionados,
-    classif_selecionadas=classif_selecionadas,
-    turnos_selecionados=turnos_selecionados,
-    start_date=start_date,
-    end_date=end_date,
-    status_sel=status_sel
+    df_visao=df_visao, patios_selecionados=patios_selecionados,
+    classif_selecionadas=classif_selecionadas, turnos_selecionados=turnos_selecionados,
+    start_date=start_date, end_date=end_date, status_sel=status_sel, intervalo_sel=intervalo_sel
 )
-#endregion
-#endregion
+#endregion 7.3
+#endregion SESSÃO 7
 
-#region SESSÃO 6: Sistema, dados e gestão de usuários
-if st.session_state["perfil"] == "Gerência":
+#region SESSÃO 8: Sistema, Dados e Gestão de Usuários
+
+#region 8.1: Controles de Simulação e Recarga ETL
+if "Gestão de Usuários" in st.session_state.get("governanca", ""):
     with st.sidebar.expander("⚙️ Sistema, Dados e Gestão", expanded=False):
-        
         st.checkbox("🧪 Usar dados simulados (teste rápido)", key="chk_sim")
-
         if st.session_state.get("chk_sim"):
-            st.slider("Volume de OS simuladas", min_value=100, max_value=4000, value=1200, step=100, key="qtd_sim")
+            st.slider("Volume de OS simuladas", 100, 4000, 1200, 100, key="qtd_sim")
             st.number_input("Seed (repete mesmos dados)", value=42, key="seed_sim")
+            st.markdown("<small style='color: #CBD5E1;'>Distribuição da Simulação</small>", unsafe_allow_html=True)
+            col_s1, col_s2, col_s3 = st.columns(3)
+            with col_s1: st.number_input("% Pendente", min_value=0, max_value=100, value=45, key="sim_pct_pendente")
+            with col_s2: st.number_input("% No Prazo", min_value=0, max_value=100, value=40, key="sim_pct_prazo")
+            with col_s3: st.number_input("% Atrasado", min_value=0, max_value=100, value=15, key="sim_pct_atraso")
         else:
-            if st.button("🔄 Recarregar dados (ETL)", use_container_width=True, key="btn_recarregar_etl"):
-                st.cache_data.clear()
-                st.rerun()
+            if st.button("🔄 Recarregar dados (ETL)", use_container_width=True): st.cache_data.clear(); st.rerun()
+#endregion 8.1
 
-        st.markdown(
-            "<div style='background-color: #FF4B4B; color: #FFFFFF; font-weight: bold; text-align: center; padding: 8px; border-radius: 6px; margin-top: 15px; margin-bottom: 10px; font-size: 16px;'>"
-            "Gestão de Usuários"
-            "</div>",
-            unsafe_allow_html=True
-        )
+#region 8.2: Gestão de Usuários (@st.fragment)
+        @st.fragment
+        def fragmento_gestao_usuarios():
+            st.markdown("<div style='background-color: #FF4B4B; color: #FFFFFF; font-weight: bold; text-align: center; padding: 8px; border-radius: 6px; margin-top: 15px; margin-bottom: 10px;'>Gestão de Usuários</div>", unsafe_allow_html=True)
+            if "msg_sucesso_user" in st.session_state: st.success(st.session_state["msg_sucesso_user"]); del st.session_state["msg_sucesso_user"]
 
-        if "msg_sucesso_user" in st.session_state:
-            st.success(st.session_state["msg_sucesso_user"])
-            del st.session_state["msg_sucesso_user"]
+            def sedes_por_escopo(escopo: str):
+                if escopo == "Paranapiacaba": return ["Sede IPA"]
+                elif escopo == "Piaçaguera": return ["Sede IPG"]
+                return ["Sede IPA", "Sede IPG"]
 
-        def sedes_por_escopo(escopo: str):
-            escopo = str(escopo).strip()
-            if escopo == "Paranapiacaba": return ["Sede IPA"]
-            elif escopo == "Piaçaguera": return ["Sede IPG"]
-            elif escopo == "Todas": return ["Sede IPA", "Sede IPG"]
-            return ["Sede IPA"]
+            opcoes_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Gestão de Usuários", "Exportar SAP", "Governança"]
 
-        with st.form("form_novo_user", clear_on_submit=True):
-            n_user = st.text_input("Login (Nova conta)", key="novo_user_login")
-            n_perf = st.selectbox("Perfil", ["Técnico", "Coordenador", "Gerência"], key="novo_user_perfil")
-            n_esco = st.selectbox("Escopo", ["Paranapiacaba", "Piaçaguera", "Todas"], key="novo_user_escopo")
+            #region 8.2.1: Criar Novo Usuário (Formulário)
+            with st.form("form_novo_user", clear_on_submit=True):
+                n_user = st.text_input("Matrícula / Username", key="novo_user_login")
+                n_nome = st.text_input("Nome do Colaborador", key="novo_user_nome")
+                n_perf = st.selectbox("Perfil", ["Técnico", "Assistente", "Coordenador", "Gerência"], key="novo_user_perfil")
+                n_esco = st.selectbox("Escopo (Base)", ["Paranapiacaba", "Piaçaguera", "Todas"], key="novo_user_escopo")
+                sedes_validas = sedes_por_escopo(n_esco)
+                n_sede = st.selectbox("Sede Física", sedes_validas, key="novo_user_sede", format_func=lambda x: x.replace("Sede ", ""))
+                st.markdown("---")
+                st.markdown("**Governança (O que o usuário pode ver/fazer?)**")
 
-            sedes_validas = sedes_por_escopo(n_esco)
+                if n_perf == "Técnico": def_gov = ["Mapa de Campo"]
+                elif n_perf == "Assistente": def_gov = ["Painel Gerencial", "Upload de Dados", "Exportar SAP"]
+                elif n_perf == "Coordenador": def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Exportar SAP", "Governança"]
+                else: def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Gestão de Usuários", "Exportar SAP", "Governança"]
 
-            sede_default = {
-                "Paranapiacaba": "Sede IPA",
-                "Piaçaguera": "Sede IPG",
-                "Todas": "Sede IPA"
-            }.get(n_esco, "Sede IPA")
+                n_gov = st.multiselect("Permissões de Acesso:", opcoes_gov, default=def_gov, key="novo_user_gov")
 
-            idx_sede_default = sedes_validas.index(sede_default) if sede_default in sedes_validas else 0
-
-            n_sede = st.selectbox(
-                "Sede",
-                sedes_validas,
-                index=idx_sede_default,
-                key="novo_user_sede",
-                format_func=lambda x: x.replace("Sede ", "")
-            )
-
-            st.caption("A senha inicial padrão será definida automaticamente como **mrs123**.")
-
-            if st.form_submit_button("Salvar Novo Usuário"):
-                if n_user:
-                    conn = get_connection()
-                    cur = conn.cursor()
-                    try:
-                        cur.execute(
-                            """
-                            INSERT INTO usuarios
-                            (username, senha_hash, perfil, escopo, palavra_recuperacao, dica_recuperacao, coordenacao_padrao, reset_obrigatorio)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                            """,
-                            (n_user.strip(), hash_senha("mrs123"), n_perf, n_esco, "PENDENTE", "PENDENTE", n_sede, 1)
-                        )
-                        conn.commit()
-                        st.session_state["msg_sucesso_user"] = f"Usuário '{n_user}' criado com sucesso!"
-                        st.rerun()
-                    except psycopg2.IntegrityError:
-                        conn.rollback()
-                        st.error("Erro: Este usuário já existe no sistema.")
-                    finally:
-                        cur.close()
-                        release_connection(conn)
-                else:
-                    st.warning("Preencha o login do usuário.")
-
-        st.markdown("<br><b style='color: #F8FAFC;'>👥 Gerenciar Usuários</b>", unsafe_allow_html=True)
-
-        conn = get_connection()
-        df_usuarios = pd.read_sql_query("SELECT username, perfil, escopo, coordenacao_padrao FROM usuarios", conn)
-        release_connection(conn)
-
-        lista_users = df_usuarios["username"].tolist()
-
-        usr_sel = st.selectbox("Selecione um usuário para gerenciar:", [""] + lista_users, key="gerenciar_usuario_select")
-
-        if usr_sel != "":
-            dados_usr = df_usuarios[df_usuarios["username"] == usr_sel].iloc[0]
-
-            st.caption(
-                f"**Perfil Atual:** {dados_usr['perfil']} | "
-                f"**Visão:** {dados_usr['escopo']} | "
-                f"**Sede Atual:** {str(dados_usr['coordenacao_padrao']).replace('Sede ', '')}"
-            )
-
-            acao = st.radio(
-                "Escolha a ação:",
-                ["✏️ Editar Acesso", "🔑 Resetar Senha", "🗑️ Excluir"],
-                horizontal=True,
-                key=f"acao_usuario_{usr_sel}"
-            )
-
-            if acao == "✏️ Editar Acesso":
-                with st.form(f"form_edit_{usr_sel}"):
-                    perfis_validos = ["Técnico", "Coordenador", "Gerência"]
-                    escopos_validos = ["Paranapiacaba", "Piaçaguera", "Todas"]
-
-                    idx_perf = perfis_validos.index(dados_usr["perfil"]) if dados_usr["perfil"] in perfis_validos else 0
-                    idx_esco = escopos_validos.index(dados_usr["escopo"]) if dados_usr["escopo"] in escopos_validos else 0
-
-                    n_perf_edit = st.selectbox("Novo Perfil", perfis_validos, index=idx_perf, key=f"edit_perf_{usr_sel}")
-                    n_esco_edit = st.selectbox("Nova Visão", escopos_validos, index=idx_esco, key=f"edit_escopo_{usr_sel}")
-
-                    sedes_validas_edit = sedes_por_escopo(n_esco_edit)
-
-                    sede_atual = str(dados_usr["coordenacao_padrao"]).strip() if pd.notna(dados_usr["coordenacao_padrao"]) else "Sede IPA"
-                    idx_sede = sedes_validas_edit.index(sede_atual) if sede_atual in sedes_validas_edit else 0
-
-                    n_sede_edit = st.selectbox("Sede", sedes_validas_edit, index=idx_sede, key=f"edit_sede_{usr_sel}", format_func=lambda x: x.replace("Sede ", ""))
-
-                    if st.form_submit_button("Salvar Alterações"):
+                if st.form_submit_button("Salvar Novo Usuário"):
+                    if n_user and n_nome:
                         conn = get_connection()
                         cur = conn.cursor()
-                        cur.execute(
-                            "UPDATE usuarios SET perfil = %s, escopo = %s, coordenacao_padrao = %s WHERE username = %s",
-                            (n_perf_edit, n_esco_edit, n_sede_edit, usr_sel)
-                        )
-                        conn.commit()
-                        cur.close()
-                        release_connection(conn)
-                        st.session_state["msg_sucesso_user"] = f"Permissões de {usr_sel} atualizadas!"
-                        st.rerun()
+                        try:
+                            cur.execute("""
+                                INSERT INTO usuarios (username, nome, senha_hash, perfil, escopo, palavra_recuperacao, dica_recuperacao, coordenacao_padrao, reset_obrigatorio, governanca)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                """, (n_user.strip(), n_nome.strip(), hash_senha("mrs123"), n_perf, n_esco, "PENDENTE", "PENDENTE", n_sede, 1, ",".join(n_gov)))
+                            conn.commit()
+                            st.session_state["msg_sucesso_user"] = f"Usuário '{n_nome}' ({n_user}) criado com sucesso!"
+                            st.rerun(scope="fragment")
+                        except psycopg2.IntegrityError: conn.rollback(); st.error("Erro: Esta matrícula/usuário já existe.")
+                        finally: cur.close(); release_connection(conn)
+                    else: st.warning("Preencha a matrícula e o nome do colaborador.")
+            #endregion 8.2.1
 
-            elif acao == "🔑 Resetar Senha":
-                st.warning("A senha voltará para 'mrs123' e o usuário será forçado a criar uma nova.")
-                if st.button("Confirmar Reset", key=f"btn_reset_{usr_sel}"):
-                    conn = get_connection()
-                    cur = conn.cursor()
-                    cur.execute(
-                        "UPDATE usuarios SET senha_hash = %s, reset_obrigatorio = 1 WHERE username = %s",
-                        (hash_senha("mrs123"), usr_sel)
-                    )
-                    conn.commit()
-                    cur.close()
-                    release_connection(conn)
-                    st.session_state["msg_sucesso_user"] = f"Senha de {usr_sel} resetada com sucesso!"
-                    st.rerun()
+            #region 8.2.2: Gerenciar Existentes
+            st.markdown("**👥 Gerenciar Usuários**", unsafe_allow_html=True)
+            conn = get_connection()
+            df_usuarios = pd.read_sql_query("SELECT username, nome, perfil, escopo, coordenacao_padrao, governanca FROM usuarios", conn)
+            release_connection(conn)
 
-            elif acao == "🗑️ Excluir":
-                if usr_sel == st.session_state["username"]:
-                    st.error("Você não pode excluir a si mesmo para evitar bloqueio do sistema.")
-                else:
-                    st.warning("O acesso será removido. O histórico de OS continuará intacto.")
-                    if st.button("Confirmar Exclusão", key=f"btn_del_{usr_sel}", type="primary"):
-                        conn = get_connection()
-                        cur = conn.cursor()
-                        cur.execute("DELETE FROM usuarios WHERE username = %s", (usr_sel,))
-                        conn.commit()
-                        cur.close()
-                        release_connection(conn)
-                        st.session_state["msg_sucesso_user"] = f"Usuário {usr_sel} excluído permanentemente."
-                        st.rerun()
-#endregion
+            if not df_usuarios.empty:
+                df_usuarios["label_exibicao"] = df_usuarios.apply(lambda r: f"{str(r['nome']).strip()} ({str(r['username']).strip()})" if pd.notna(r["nome"]) and str(r["nome"]).strip() else str(r["username"]).strip(), axis=1)
+                mapa_label_para_user = dict(zip(df_usuarios["label_exibicao"], df_usuarios["username"]))
+                usr_label_sel = st.selectbox("Selecione um usuário:", [""] + df_usuarios["label_exibicao"].tolist(), key="sel_usr_frag")
 
-#region SESSÃO 7: DASHBOARD HEADER E KPI METRICS
+                if usr_label_sel != "":
+                    usr_sel = mapa_label_para_user[usr_label_sel]
+                    dados_usr = df_usuarios[df_usuarios["username"] == usr_sel].iloc[0]
+                    gov_atual_lista = str(dados_usr["governanca"]).split(",") if pd.notna(dados_usr["governanca"]) else []
+
+                    st.caption(f"**Nome:** {dados_usr['nome']} | **Matrícula:** {dados_usr['username']} | **Perfil:** {dados_usr['perfil']} | **Visão:** {dados_usr['escopo']} | **Sede:** {str(dados_usr['coordenacao_padrao']).replace('Sede ', '')}")
+                    acao = st.radio("Ação:", ["✏️ Editar Acesso", "🔑 Resetar Senha", "🗑️ Excluir"], horizontal=True, key="radio_acao_frag")
+
+                    if acao == "✏️ Editar Acesso":
+                        with st.form(f"form_edit_{usr_sel}"):
+                            n_nome_edit = st.text_input("Nome do Colaborador", value=str(dados_usr["nome"]).strip() if pd.notna(dados_usr["nome"]) else "")
+                            n_perf_edit = st.selectbox("Novo Perfil", ["Técnico", "Assistente", "Coordenador", "Gerência"], index=["Técnico", "Assistente", "Coordenador", "Gerência"].index(dados_usr["perfil"]))
+                            n_esco_edit = st.selectbox("Nova Visão", ["Paranapiacaba", "Piaçaguera", "Todas"], index=["Paranapiacaba", "Piaçaguera", "Todas"].index(dados_usr["escopo"]))
+                            n_sede_edit = st.selectbox("Sede", sedes_por_escopo(n_esco_edit), format_func=lambda x: x.replace("Sede ", ""))
+                            gov_editadas = st.multiselect("Governança:", opcoes_gov, default=[g for g in gov_atual_lista if g in opcoes_gov])
+
+                            if st.form_submit_button("Salvar Alterações"):
+                                conn = get_connection(); cur = conn.cursor()
+                                cur.execute("UPDATE usuarios SET nome=%s, perfil=%s, escopo=%s, coordenacao_padrao=%s, governanca=%s WHERE username=%s", (n_nome_edit.strip(), n_perf_edit, n_esco_edit, n_sede_edit, ",".join(gov_editadas), usr_sel))
+                                conn.commit(); cur.close(); release_connection(conn)
+                                st.session_state["msg_sucesso_user"] = f"Cadastro de {n_nome_edit} ({usr_sel}) atualizado!"
+                                st.rerun(scope="fragment")
+                    elif acao == "🔑 Resetar Senha":
+                        if st.button("Confirmar Reset", key="btn_reset_frag"):
+                            conn = get_connection(); cur = conn.cursor()
+                            cur.execute("UPDATE usuarios SET senha_hash = %s, reset_obrigatorio = 1 WHERE username = %s", (hash_senha("mrs123"), usr_sel))
+                            conn.commit(); cur.close(); release_connection(conn)
+                            st.session_state["msg_sucesso_user"] = f"Senha de {dados_usr['nome']} ({usr_sel}) resetada!"
+                            st.rerun(scope="fragment")
+                    elif acao == "🗑️ Excluir":
+                        if st.button("Confirmar Exclusão", type="primary", key="btn_excluir_frag"):
+                            conn = get_connection(); cur = conn.cursor()
+                            cur.execute("DELETE FROM usuarios WHERE username = %s", (usr_sel,))
+                            conn.commit(); cur.close(); release_connection(conn)
+                            st.session_state["msg_sucesso_user"] = f"Usuário {dados_usr['nome']} ({usr_sel}) excluído."
+                            st.rerun(scope="fragment")
+            else: st.info("Nenhum usuário cadastrado.")
+            #endregion 8.2.2
+
+            #region 8.2.3: Importação em Massa de Colaboradores (RESTAURADA)
+            st.markdown("---")
+            st.markdown("**📥 Importação em Massa de Colaboradores**")
+            st.caption("A planilha deve conter exatamente as colunas: `username`, `Nome`, `perfil`, `escopo`, `coordenacao_padrao`, `governanca`.")
+
+            arquivo_users = st.file_uploader("Selecione a planilha de colaboradores (.xlsx ou .csv)", type=["xlsx", "csv"], key="upload_users_massa")
+
+            if arquivo_users is not None:
+                if st.button("🚀 Processar Cadastro em Massa", use_container_width=True, type="primary", key="btn_users_massa"):
+                    with st.spinner("Processando colaboradores..."):
+                        try:
+                            if arquivo_users.name.lower().endswith(".csv"): df_users = pd.read_csv(arquivo_users, sep=None, engine="python", encoding="utf-8-sig")
+                            else: df_users = pd.read_excel(arquivo_users)
+
+                            df_users.columns = [str(c).strip() for c in df_users.columns]
+                            colunas_obrigatorias = ["username", "Nome", "perfil", "escopo", "coordenacao_padrao", "governanca"]
+                            faltantes = [c for c in colunas_obrigatorias if c not in df_users.columns]
+
+                            if faltantes: st.error(f"❌ Colunas obrigatórias ausentes: {', '.join(faltantes)}")
+                            else:
+                                df_users = df_users.fillna("")
+                                perfis_validos = {"Técnico", "Assistente", "Coordenador", "Gerência"}
+                                escopos_validos = {"Paranapiacaba", "Piaçaguera", "Todas"}
+                                registros, erros = [], []
+
+                                for idx, row in df_users.iterrows():
+                                    matricula = str(row["username"]).strip()
+                                    nome = str(row["Nome"]).strip()
+                                    perfil = str(row["perfil"]).strip()
+                                    escopo = str(row["escopo"]).strip()
+                                    coordenacao_padrao = str(row["coordenacao_padrao"]).strip()
+                                    governanca = str(row["governanca"]).strip()
+
+                                    if not matricula: erros.append(f"Linha {idx + 2}: username/matrícula vazio."); continue
+                                    if not nome: erros.append(f"Linha {idx + 2}: Nome vazio."); continue
+                                    if perfil not in perfis_validos: erros.append(f"Linha {idx + 2}: perfil inválido ({perfil})."); continue
+                                    if escopo not in escopos_validos: erros.append(f"Linha {idx + 2}: escopo inválido ({escopo})."); continue
+                                    if not coordenacao_padrao: erros.append(f"Linha {idx + 2}: coordenacao_padrao vazio."); continue
+
+                                    registros.append((matricula, nome, hash_senha("mrs123"), perfil, escopo, "PENDENTE", "PENDENTE", coordenacao_padrao, 1, governanca))
+
+                                if erros:
+                                    st.error("❌ Foram encontrados erros na planilha:")
+                                    for e in erros[:20]: st.write(f"- {e}")
+                                    if len(erros) > 20: st.write(f"... e mais {len(erros) - 20} erro(s).")
+                                elif not registros: st.warning("⚠️ Nenhum registro válido encontrado.")
+                                else:
+                                    conn = get_connection()
+                                    try:
+                                        cur = conn.cursor()
+                                        execute_values(cur, """
+                                            INSERT INTO usuarios (username, nome, senha_hash, perfil, escopo, palavra_recuperacao, dica_recuperacao, coordenacao_padrao, reset_obrigatorio, governanca)
+                                            VALUES %s
+                                            ON CONFLICT (username) DO UPDATE SET
+                                                nome = EXCLUDED.nome, perfil = EXCLUDED.perfil, escopo = EXCLUDED.escopo, coordenacao_padrao = EXCLUDED.coordenacao_padrao, governanca = EXCLUDED.governanca
+                                            """, registros, page_size=500)
+                                        conn.commit(); cur.close()
+                                    finally: release_connection(conn)
+
+                                    st.session_state["msg_sucesso_user"] = f"✅ Importação concluída! {len(registros)} colaborador(es) processado(s)."
+                                    st.rerun(scope="fragment")
+                        except Exception as e: st.error(f"❌ Erro ao processar a planilha: {e}")
+            #endregion 8.2.3
+
+        fragmento_gestao_usuarios()
+#endregion 8.2
+#endregion SESSÃO 8
+
+#region SESSÃO 9: Dashboard Header e KPI Metrics
+
+#region 9.1: Header do Dashboard (Título + Saudação)
 col_titulo, col_acoes = st.columns([9, 1])
 
 with col_titulo:
@@ -1734,33 +1747,33 @@ with col_titulo:
 
 with col_acoes:
     st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
-    
-    if st.button("🔄 Atualizar", use_container_width=True):
-        st.rerun()
+#endregion 9.1
+
+#region 9.2: Botões de Ação (Atualizar / Trocar Senha / Sair)
+    if st.button("🔄 Atualizar", use_container_width=True): st.rerun()
         
     if st.button("🔑 Trocar", use_container_width=True):
         usr_atual = st.session_state["username"]
         conn = get_connection()
         cur = conn.cursor()
         cur.execute("UPDATE usuarios SET reset_obrigatorio = 1 WHERE username = %s", (usr_atual,))
-        conn.commit()
-        cur.close()
-        release_connection(conn)
+        conn.commit(); cur.close(); release_connection(conn)
         
         st.session_state.clear()
-        st.session_state["logged_in"] = False
-        st.session_state["needs_reset"] = True
-        st.session_state["reset_user"] = usr_atual
+        st.session_state.update({"logged_in": False, "needs_reset": True, "reset_user": usr_atual})
         st.rerun()
         
     if st.button("🚪 Sair", use_container_width=True):
-        st.session_state.clear() 
+        keys_manter = {"gps_pending", "gps_trials", "origem_tipo"}
+        for key in list(st.session_state.keys()):
+            if key not in keys_manter: del st.session_state[key]
         st.session_state["logged_in"] = False
         st.rerun()
 
 st.markdown("---")
+#endregion 9.2
 
-# CÁLCULO DOS KPIS PARA A SESSÃO 7
+#region 9.3: Cálculo dos KPIs + CSS dos Cards
 total_os = len(df_filtrado)
 realizado_prazo = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_prazo)])
 realizado_atraso = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_atraso)])
@@ -1770,22 +1783,12 @@ taxa_conclusao = (realizado_total / total_os * 100) if total_os > 0 else 0.0
 
 st.markdown("""
     <style>
-    iframe, .stEcharts, [data-testid="stHtmlBlock"] + div iframe {
-        border-radius: 12px !important;
-        overflow: hidden !important;
-    }
+    iframe, .stEcharts, [data-testid="stHtmlBlock"] + div iframe { border-radius: 12px !important; overflow: hidden !important; }
     .kpi-header-wrapper { font-family: "Source Sans Pro", sans-serif; }
     .kpi-header-card {
-        font-family: "Source Sans Pro", sans-serif;
-        border-radius: 12px;
-        padding: 16px 20px;
-        box-shadow: 0 4px 6px rgba(15, 23, 42, 0.08);
-        height: 140px; 
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        box-sizing: border-box;
-        margin-bottom: 15px;
+        font-family: "Source Sans Pro", sans-serif; border-radius: 12px; padding: 16px 20px;
+        box-shadow: 0 4px 6px rgba(15, 23, 42, 0.08); height: 140px; display: flex;
+        flex-direction: column; justify-content: center; box-sizing: border-box; margin-bottom: 15px;
     }
     .kpi-border-gray { border-left: 5px solid #64748B; background: linear-gradient(135deg, #F8FAFC 0%, #F1F5F9 100%); }
     .kpi-border-red { border-left: 5px solid #FF4B4B; background: linear-gradient(135deg, #FEF2F2 0%, #FEE2E2 100%); }
@@ -1800,7 +1803,9 @@ st.markdown("""
     .badge-blue { background-color: #DBEAFE; color: #1E40AF; }
     </style>
 """, unsafe_allow_html=True)
+#endregion 9.3
 
+#region 9.4: Renderização dos Cards KPI
 col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
 
 with col_kpi1:
@@ -1811,7 +1816,6 @@ with col_kpi1:
             <div class="kpi-header-sub badge-gray">Total de O.S do período</div>
         </div>
     """, unsafe_allow_html=True)
-
 with col_kpi2:
     st.markdown(f"""
         <div class="kpi-header-wrapper kpi-header-card kpi-border-red">
@@ -1820,7 +1824,6 @@ with col_kpi2:
             <div class="kpi-header-sub badge-red">↑ {nao_realizado} pendentes</div>
         </div>
     """, unsafe_allow_html=True)
-
 with col_kpi3:
     st.markdown(f"""
         <div class="kpi-header-wrapper kpi-header-card kpi-border-green">
@@ -1829,7 +1832,6 @@ with col_kpi3:
             <div class="kpi-header-sub badge-green">↑ {realizado_prazo} no prazo / {realizado_atraso} atrasado</div>
         </div>
     """, unsafe_allow_html=True)
-
 with col_kpi4:
     st.markdown(f"""
         <div class="kpi-header-wrapper kpi-header-card kpi-border-blue">
@@ -1840,1048 +1842,703 @@ with col_kpi4:
     """, unsafe_allow_html=True)
 
 st.markdown("---")
+#endregion 9.4
+#endregion SESSÃO 9
+
+#region SESSÃO 10: Abas e Renderização dos Gráficos
+
+#region 10.1: Roteamento Principal (Controle de Telas)
+if st.session_state.get("tela_atual", "dashboard") == "dashboard":
+    tem_mapa_campo = "Mapa de Campo" in st.session_state.get("governanca", "")
+    tem_painel_gerencial = "Painel Gerencial" in st.session_state.get("governanca", "")
+
+    if tem_painel_gerencial and tem_mapa_campo: tab1, tab2 = st.tabs(["📊 Visão Gerencial", "🗺️ Roteirização e Mapa de Campo"])
+    elif tem_mapa_campo: tab1, tab2 = None, st.tabs(["🗺️ Roteirização e Mapa de Campo"])[0]
+    elif tem_painel_gerencial: tab1, tab2 = st.tabs(["📊 Visão Gerencial"])[0], None
+    else: tab1, tab2 = st.tabs(["📊 Visão Gerencial"])[0], None
 #endregion
 
-#region SESSÃO 8: Abas e Renderização dos Gráficos
-tab1, tab2 = st.tabs(["📊 Visão Gerencial (Indicadores)", "🗺️ Roteirização e Mapa de Campo"])
-
-#region 8.2: ABA 1 — Visão Gerencial (Indicadores)
-with tab1:
-    if st.session_state["perfil"] == "Técnico":
-        st.info("🔒 Seu perfil (Técnico) tem foco operacional. Por favor, utilize a aba 'Roteirização e Mapa de Campo'.")
-    else:
-        df_visao_base = df_filtrado.copy()
-
-        cor_plan = "#64748B"      
-        cor_real = "#3B82F6"      
-        cor_prazo = "#10B981"     
-        cor_atraso = "#F59E0B"    
-        cor_pendente = "#FF4B4B"  
-
-        if taxa_conclusao <= 25: gauge_color = cor_pendente
-        elif taxa_conclusao <= 50: gauge_color = cor_atraso
-        elif taxa_conclusao <= 80: gauge_color = cor_prazo
-        else: gauge_color = cor_real
-
-        with st.expander("Resumo Executivo (Geral)", expanded=True):
-            col_g1, col_g2, col_g5 = st.columns(3)
-
-            with col_g1:
-                st.markdown("#### Realizado x Planejado")
-                gauge_options = {
-                    "tooltip": {"formatter": "{a} <br/>{b}: {c}%"},
-                    "series": [{
-                        "name": "Conclusão", "type": "gauge", "min": 0, "max": 100, "radius": "75%",
-                        "progress": {"show": True, "width": 14, "itemStyle": {"color": gauge_color}},
-                        "axisLine": {
-                            "lineStyle": {
-                                "width": 14,
-                                "color": [[0.25, cor_pendente], [0.50, cor_atraso], [0.80, cor_prazo], [1.00, cor_real]]
-                            }
-                        },
-                        "pointer": {"show": True, "length": "60%", "width": 6},
-                        "itemStyle": {"color": gauge_color},
-                        "title": {"show": True, "offsetCenter": [0, "70%"], "fontSize": 14},
-                        "detail": {
-                            "valueAnimation": True, "offsetCenter": [0, "40%"],
-                            "formatter": f"{taxa_conclusao:.1f}%\n{realizado_total} / {total_os}", "fontSize": 16
-                        },
-                        "data": [{"value": round(taxa_conclusao, 1), "name": "Realizado"}],
-                    }],
-                }
-                st_echarts(options=gauge_options, height="350px", theme="streamlit", key="aba1_gauge")
-
-            with col_g2:
-                st.markdown("#### Distribuição por Status")
-                rosca_options = {
-                    "tooltip": {"trigger": "item", "formatter": "{b}: {c} ({d}%)"},
-                    "legend": {"orient": "horizontal", "bottom": "0%"},
-                    "series": [{
-                        "name": "Status", "type": "pie", "radius": ["45%", "75%"],
-                        "data": [
-                            {"value": realizado_prazo, "name": "No Prazo", "itemStyle": {"color": cor_prazo}},
-                            {"value": realizado_atraso, "name": "Atrasado", "itemStyle": {"color": cor_atraso}},
-                            {"value": nao_realizado, "name": "Pendentes", "itemStyle": {"color": cor_pendente}},
-                        ],
-                        "label": {"show": True, "position": "inside", "formatter": "{c}\n({d}%)", "color": "#FFFFFF", "fontWeight": "bold"},
-                    }],
-                }
-                st_echarts(options=rosca_options, height="350px", theme="streamlit", key="aba1_rosca")
-
-            with col_g5:
-                st.markdown("#### Plan x Real Acumulado")
-                df_area = df_visao_base.copy()
-                df_area["dia_programado"] = pd.to_datetime(df_area["Data inicial programada"], errors="coerce").dt.normalize()
-
-                realizado_diario_a = (df_area[df_area["Status_norm"].isin(_status_prazo | _status_atraso)].groupby("dia_realizado").size().rename("Realizado_Dia"))
-                planejado_diario_a = (df_area.groupby("dia_programado").size().rename("Planejado_Dia"))
-
-                _datas_a = pd.Index([]).union(realizado_diario_a.index).union(planejado_diario_a.index)
-
-                if len(_datas_a) > 0:
-                    _idx_da = pd.date_range(start=_datas_a.min(), end=_datas_a.max(), freq="D")
-                    _real_acum = realizado_diario_a.reindex(_idx_da, fill_value=0).cumsum()
-                    _plan_acum = planejado_diario_a.reindex(_idx_da, fill_value=0).cumsum()
-
-                    area_options = {
-                        "tooltip": {"trigger": "axis"},
-                        "legend": {"top": "bottom"},
-                        "toolbox": {"show": True, "feature": {"magicType": {"type": ["line", "bar"], "title": {"line": "Linha", "bar": "Barra"}}, "restore": {"title": "Restaurar"}, "saveAsImage": {"title": "Salvar Imagem"}}},
-                        "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}],
-                        "grid": {"left": "5%", "right": "5%", "bottom": "25%", "top": "15%", "containLabel": True},
-                        "xAxis": {"type": "category", "data": [d.strftime("%d/%m") for d in _idx_da]},
-                        "yAxis": {"type": "value"},
-                        "series": [
-                            {"name": "Realizado Acumulado", "type": "line", "smooth": True, "data": _real_acum.tolist(), "areaStyle": {"color": "rgba(59,130,246,0.2)"}, "lineStyle": {"color": cor_real, "width": 3}, "itemStyle": {"color": cor_real}},
-                            {"name": "Planejado Acumulado", "type": "line", "smooth": True, "data": _plan_acum.tolist(), "lineStyle": {"color": cor_plan, "width": 3, "type": "dashed"}, "itemStyle": {"color": cor_plan}},
-                        ],
-                    }
-                    st_echarts(options=area_options, height="350px", theme="streamlit", key="aba1_area")
-                else:
-                    st.info("Sem datas suficientes para área.")
-
-        with st.expander("Análise Operacional: Matriz de Prioridades e Execução por Categoria", expanded=True):
-            col_h1, col_h2 = st.columns([1.2, 1])
-
-            with col_h1:
-                st.markdown("#### Matriz: Prioridade vs Classificação")
-                st.caption("Volume total de OS planejadas (Cor indica concentração)")
-
-                df_heat = df_visao_base.copy()
-                agg = df_heat.groupby(["Classificacao", "Criticidade"]).size().reset_index(name="Total")
-
-                ordem_class = ["Confiabilidade", "Segurança", "Confiabilidade e Segurança"]
-                ordem_crit = ["Muito Alta", "Alta", "Média", "Baixa"]
-
-                if not agg.empty:
-                    heat_data = []
-                    max_val = 0
-
-                    for _yi, _cls in enumerate(ordem_class):
-                        for _xi, _crt in enumerate(ordem_crit):
-                            _row = agg[(agg["Classificacao"] == _cls) & (agg["Criticidade"] == _crt)]
-                            _val = int(_row["Total"].iloc[0]) if not _row.empty else 0
-                            heat_data.append([_xi, _yi, _val])
-                            if _val > max_val: max_val = _val
-
-                    heatmap_options = {
-                        "tooltip": {"position": "top"},
-                        "grid": {"height": "70%", "top": "10%", "left": "25%", "containLabel": True},
-                        "xAxis": {"type": "category", "data": ordem_crit, "splitArea": {"show": True}, "axisLine": {"show": False}, "axisTick": {"show": False}},
-                        "yAxis": {"type": "category", "data": ordem_class, "splitArea": {"show": True}, "axisLine": {"show": False}, "axisTick": {"show": False}},
-                        "visualMap": {"min": 0, "max": max_val if max_val > 0 else 10, "calculable": True, "orient": "horizontal", "left": "center", "bottom": "0%", "inRange": {"color": ["#F1F5F9", "#93C5FD", "#3B82F6", "#1E3A8A"]}},
-                        "series": [{"name": "Total de OS", "type": "heatmap", "data": heat_data, "label": {"show": True, "color": "#FFFFFF", "fontWeight": "bold", "formatter": JsCode("function(p){return p.value[2] > 0 ? p.value[2] : '';}")}, "itemStyle": {"borderColor": "#FFFFFF", "borderWidth": 2}}],
-                    }
-                    st_echarts(options=heatmap_options, height="380px", theme="streamlit", key="aba1_heatmap_discrete")
-                else:
-                    st.info("Sem dados para a Matriz.")
-
-            with col_h2:
-                st.markdown("#### Plan x Realizado por Categoria")
-                st.caption("Comparativo de volume total e execução.")
-
-                df_bar_cat = df_visao_base.copy()
-                plan_cat = df_bar_cat.groupby("Classificacao").size()
-                real_cat = (df_bar_cat[df_bar_cat["Status_norm"].isin(_status_prazo | _status_atraso)].groupby("Classificacao").size())
-
-                cats = ["Confiabilidade e Segurança", "Segurança", "Confiabilidade"]
-                val_plan = [int(plan_cat.get(c, 0)) for c in cats]
-                val_real = [int(real_cat.get(c, 0)) for c in cats]
-
-                bar_horiz_options = {
-                    "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
-                    "legend": {"bottom": "0%"},
-                    "grid": {"left": "3%", "right": "10%", "bottom": "15%", "top": "10%", "containLabel": True},
-                    "xAxis": {"type": "value", "boundaryGap": [0, 0.01]},
-                    "yAxis": {"type": "category", "data": cats, "axisLabel": {"interval": 0}},
-                    "series": [
-                        {"name": "Planejado", "type": "bar", "data": val_plan, "itemStyle": {"color": cor_plan}, "label": {"show": True, "position": "right", "color": "#475569"}},
-                        {"name": "Realizado", "type": "bar", "data": val_real, "itemStyle": {"color": cor_real}, "label": {"show": True, "position": "right", "color": "#475569"}}
-                    ]
-                }
-                st_echarts(options=bar_horiz_options, height="380px", theme="streamlit", key="aba1_bar_horiz")
-
-        with st.expander("Execução por Turno e Acumulado", expanded=True):
-            col_g3, col_g6 = st.columns(2)
-
-            _cor_turno = { "00h-07h": "#4F46E5", "07h-16h": "#3B82F6", "16h-00h": "#06B6D4" }
-
-            with col_g3:
-                st.markdown("#### Realizado por Turno")
-                df_barra_real = df_visao_base[df_visao_base["Status_norm"].isin(_status_prazo | _status_atraso)].copy()
-                x_turnos = ["00h-07h", "07h-16h", "16h-00h"]
-                _cnt_t = df_barra_real.groupby("Turno").size()
-                y_vals = [int(_cnt_t.get(t, 0)) for t in x_turnos]
-
-                barra_options = {
-                    "tooltip": {"trigger": "axis"},
-                    "xAxis": {"type": "category", "data": x_turnos},
-                    "yAxis": {"type": "value"},
-                    "toolbox": {"show": True, "feature": {"magicType": {"type": ["line", "bar"], "title": {"line": "Linha", "bar": "Barra"}}, "restore": {"title": "Restaurar"}, "saveAsImage": {"title": "Salvar Imagem"}}},
-                    "grid": {"left": "5%", "right": "5%", "bottom": "15%", "top": "15%", "containLabel": True},
-                    "series": [{"type": "bar", "barWidth": "55%", "label": {"show": True, "position": "inside", "formatter": "{c}", "color": "#FFFFFF", "fontWeight": "bold"}, "data": [{"value": v, "name": t, "itemStyle": {"color": _cor_turno.get(t, "#94A3B8")}} for t, v in zip(x_turnos, y_vals)]}],
-                }
-                st_echarts(options=barra_options, height="350px", theme="streamlit", key="aba1_barra")
-
-            with col_g6:
-                st.markdown("#### Realizado Acumulado por Turno")
-                df_linhas_plot = df_visao_base.dropna(subset=["dia_realizado"]).copy()
-
-                if not df_linhas_plot.empty:
-                    _ordem_t = ["00h-07h", "07h-16h", "16h-00h"]
-                    _idx_dt = pd.date_range(start=df_linhas_plot["dia_realizado"].min(), end=df_linhas_plot["dia_realizado"].max(), freq="D")
-
-                    _series_t = []
-                    for _t in _ordem_t:
-                        _s = (df_linhas_plot[df_linhas_plot["Turno"] == _t].groupby("dia_realizado").size().reindex(_idx_dt, fill_value=0).cumsum())
-                        _series_t.append({"name": _t, "type": "line", "smooth": True, "data": _s.tolist(), "lineStyle": {"color": _cor_turno[_t], "width": 3}, "itemStyle": {"color": _cor_turno[_t]}})
-
-                    linhas_options = {
-                        "tooltip": {"trigger": "axis"},
-                        "legend": {"top": "bottom"},
-                        "toolbox": {"show": True, "feature": {"magicType": {"type": ["line", "bar", "stack"], "title": {"line": "Linha", "bar": "Barra", "stack": "Empilhado"}}, "restore": {"title": "Restaurar"}, "saveAsImage": {"title": "Salvar Imagem"}}},
-                        "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}],
-                        "grid": {"left": "5%", "right": "5%", "bottom": "25%", "top": "15%", "containLabel": True},
-                        "xAxis": {"type": "category", "data": [d.strftime("%d/%m") for d in _idx_dt]},
-                        "yAxis": {"type": "value"},
-                        "series": _series_t,
-                    }
-                    st_echarts(options=linhas_options, height="350px", theme="streamlit", key="aba1_linhas")
-                else:
-                    st.info("Sem dados cronológicos.")
-
-        st.subheader("📋 Lista Detalhada de OS")
-        df_lista = df_visao_base.copy().rename(columns={"Ordem servico": "OS"})
-
-        if "Data inicial programada" in df_lista.columns:
-            df_lista["Data inicial programada"] = pd.to_datetime(df_lista["Data inicial programada"], errors="coerce").dt.strftime("%d/%m/%Y")
-
-        if "Data/Hora Realizado" in df_lista.columns:
-            df_lista["Data/Hora Realizado"] = pd.to_datetime(
-                df_lista["Data/Hora Realizado"], 
-                dayfirst=True, 
-                errors="coerce"
-            ).dt.strftime("%d/%m/%Y %H:%M").fillna("")
-
-        colunas_ordem = ["OS", "Patio", "Ativo", "Criticidade", "Classificacao", "Descrição Longa", "Data inicial programada", "Status da Operação", "Data/Hora Realizado", "Concluído por"]
-
-        for c in colunas_ordem:
-            if c not in df_lista.columns: df_lista[c] = ""
-
-        if not df_lista.empty:
-            df_styled = df_lista[colunas_ordem].style.set_properties(**{'text-align': 'center'}).set_table_styles([{'selector': 'th', 'props': [('text-align', 'center')]}])
-            st.dataframe(df_styled, use_container_width=True, height=400, hide_index=True)
-#endregion
-
-#region 8.3: ABA 2 — Roteirização e Mapa de Campo
-with tab2:
-    # 0. Inicialização de segurança da variável para evitar NameError
-    df_recomendado = pd.DataFrame()
-    
-    # 8.3.1 Calendário mensal
-    st.markdown("### 📅 Agenda Mensal de Demanda por Pátio")
-    
-    # CSS: Fontes e Cartões da Aba 2 com dimensões limpas e elegantes
-    st.markdown(
-        """
-        <style>
-        .kpi-wrapper { font-family: "Source Sans Pro", sans-serif; }
-
-        /* Card 1: Azul */
-        .kpi-card-blue {
-            background: linear-gradient(135deg, #EFF6FF 0%, #DBEAFE 100%);
-            border-left: 5px solid #3B82F6; 
-            border-radius: 12px;
-            padding: 16px 20px;
-            box-shadow: 0 4px 6px rgba(59, 130, 246, 0.15);
-            height: 140px; 
-            margin-bottom: 16px;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            box-sizing: border-box;
-        }
-        .kpi-title-blue { color: #1E3A8A; font-size: 14px; font-weight: 700; margin-bottom: 6px; text-transform: uppercase; }
-        .kpi-val-blue { color: #1E40AF; font-size: 32px; font-weight: 400; line-height: 1; }
-        .kpi-sub-blue { color: #3B82F6; font-size: 12px; font-weight: 400; margin-top: 8px;}
-
-        /* Card 2: Verde */
-        .kpi-card-green {
-            background: linear-gradient(135deg, #F0FDF4 0%, #D1FAE5 100%);
-            border-left: 5px solid #10B981; 
-            border-radius: 12px;
-            padding: 16px 20px;
-            box-shadow: 0 4px 6px rgba(16, 185, 129, 0.15);
-            height: 140px; 
-            margin-bottom: 16px;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            box-sizing: border-box;
-        }
-        .kpi-title-green { color: #064E3B; font-size: 14px; font-weight: 700; margin-bottom: 6px; text-transform: uppercase; }
-        .kpi-val-green { color: #065F46; font-size: 32px; font-weight: 400; line-height: 1; }
-        .kpi-badge { 
-            font-size: 12px; font-weight: 400; padding: 4px 10px; border-radius: 20px; 
-            display: inline-block; margin-top: 10px; width: fit-content; 
-        }
-
-        /* Card 3: Vermelho */
-        .kpi-card-red {
-            background: linear-gradient(135deg, #FEF2F2 0%, #FEE2E2 100%);
-            border-left: 5px solid #FF4B4B; 
-            border-radius: 12px;
-            padding: 16px 20px;
-            box-shadow: 0 4px 6px rgba(255, 75, 75, 0.15);
-            height: 140px; 
-            margin-bottom: 16px;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            box-sizing: border-box;
-        }
-        .kpi-title-red { color: #7F1D1D; font-size: 14px; font-weight: 700; margin-bottom: 6px; text-transform: uppercase; }
-        .kpi-val-red { color: #991B1B; font-size: 24px; font-weight: 400; line-height: 1.2; margin-top: 4px;} 
-        .kpi-sub-red { color: #EF4444; font-size: 12px; font-weight: 400; margin-top: 8px;}
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
-
-    hoje_ref = datetime.now()
-
-    # Garantir que as variáveis de estado existam
-    if "cal_ref_mes" not in st.session_state: st.session_state["cal_ref_mes"] = int(hoje_ref.month)
-    if "cal_ref_ano" not in st.session_state: st.session_state["cal_ref_ano"] = int(hoje_ref.year)
-
-    # Colunas criadas FORA do IF para não quebrar o layout da árvore do Streamlit
-    col_cal_ctrl_1, col_cal_ctrl_2, _ = st.columns([1, 1, 4])
-
-    is_tecnico = st.session_state.get("perfil") == "Técnico"
-
-    if is_tecnico:
-        st.session_state["cal_ref_mes"] = int(hoje_ref.month)
-        st.session_state["cal_ref_ano"] = int(hoje_ref.year)
-        with col_cal_ctrl_1: 
-            st.info(f"Mês: {hoje_ref.strftime('%m')}")
-        with col_cal_ctrl_2: 
-            st.info(f"Ano: {hoje_ref.year}")
-        st.caption(f"📌 **Visão Operacional de Campo:** Calendário fixado no mês vigente ({hoje_ref.strftime('%m/%Y')})")
-        st.markdown("<div style='margin-bottom: -10px;'></div>", unsafe_allow_html=True)
-    else:
-        with col_cal_ctrl_1:
-            mes_opcao = st.selectbox(
-                "Mês",
-                list(range(1, 13)),
-                index=int(st.session_state["cal_ref_mes"]) - 1,
-                format_func=lambda x: f"{x:02d}",
-                key="cal_mes_ref_select"
-            )
-
-        with col_cal_ctrl_2:
-            ano_atual = hoje_ref.year
-            ano_opcao = st.number_input(
-                "Ano",
-                min_value=ano_atual - 2,
-                max_value=ano_atual + 2,
-                value=int(st.session_state["cal_ref_ano"]),
-                step=1,
-                key="cal_ano_ref_input"
-            )
-
-        st.session_state["cal_ref_mes"] = int(mes_opcao)
-        st.session_state["cal_ref_ano"] = int(ano_opcao)
-
-    # Preparação dos dados do calendário
-    df_calendario = df_visao.copy()
-    
-    # Tratamento seguro caso os filtros não existam no escopo local
-    if "patios_selecionados" in locals() and "classif_selecionadas" in locals():
-        df_calendario = df_calendario[
-            (df_calendario["Patio"].isin(patios_selecionados)) &
-            (df_calendario["Classificacao"].isin(classif_selecionadas))
-        ].copy()
-
-    hoje_real = datetime.now().date()
-    if (
-        int(st.session_state["cal_ref_ano"]) == hoje_real.year and
-        int(st.session_state["cal_ref_mes"]) == hoje_real.month
-    ):
-        dia_ref_default = hoje_real
-    else:
-        dia_ref_default = datetime(
-            int(st.session_state["cal_ref_ano"]),
-            int(st.session_state["cal_ref_mes"]),
-            1
-        ).date()
-
-    user_limpo = str(st.session_state.get('username', 'usr')).replace(" ", "_").lower()
-    # Key fixa para técnico previne re-renders desnecessários
-    cal_key = f"cal_fixo_tecnico_{user_limpo}" if is_tecnico else f"cal_dinamico_{user_limpo}"
-
-    cal_state = st.session_state.get(cal_key)
-    data_ref_card = dia_ref_default
-    
-    if cal_state and isinstance(cal_state, dict):
-        if cal_state.get("callback") == "dateClick":
-            data_ref_card = pd.to_datetime(cal_state["dateClick"]["date"]).date()
-        elif cal_state.get("callback") == "eventClick":
-            data_ref_card = pd.to_datetime(cal_state["eventClick"]["event"]["start"]).date()
-            
-    if data_ref_card.year != int(st.session_state["cal_ref_ano"]) or data_ref_card.month != int(st.session_state["cal_ref_mes"]):
-        data_ref_card = dia_ref_default
-
-    calendar_events = montar_eventos_calendario_patios(
-        df_base_cal=df_calendario,
-        ano=int(st.session_state["cal_ref_ano"]),
-        mes=int(st.session_state["cal_ref_mes"]),
-        max_patios_visiveis=2
-    )
-
-    calendar_options = {
-        "initialView": "dayGridMonth",
-        "initialDate": f"{int(st.session_state['cal_ref_ano']):04d}-{int(st.session_state['cal_ref_mes']):02d}-01",
-        "locale": "pt-br",
-        "height": "auto",
-        "contentHeight": "auto",
-        "headerToolbar": { "left": "", "center": "title", "right": "" },
-        "dayMaxEvents": 2,
-        "eventOrder": "displayOrder,title",
-        "fixedWeekCount": False,
-        "showNonCurrentDates": True,
-        "expandRows": True,
-        "handleWindowResize": True,
-    }
-
-    calendar_css_base = """
-    .fc { font-size: 14px; background: #FFFFFF; border-radius: 12px; padding: 6px; box-shadow: 0 1px 8px rgba(15, 23, 42, 0.08); }
-    .fc .fc-toolbar { margin-bottom: 0.25rem !important; }
-    .fc .fc-toolbar-title { font-size: 1.4rem !important; font-weight: 800; text-align: center; text-transform: capitalize; color: #1E293B; }
-    .fc .fc-scrollgrid { border-radius: 10px; overflow: hidden; border: 1px solid #E2E8F0; }
-    .fc .fc-scroller, .fc .fc-scroller-liquid-absolute { overflow: hidden !important; }
-    .fc .fc-col-header-cell { background-color: #F8FAFC; }
-    .fc .fc-col-header-cell-cushion { font-size: 14px; font-weight: 800; color: #334155; padding: 6px 2px !important; text-transform: capitalize; }
-    .fc .fc-daygrid-day-number { font-size: 1.1rem; font-weight: 800; padding: 4px 6px !important; color: #334155; }
-    .fc .fc-daygrid-day-frame { min-height: 62px !important; cursor: pointer; transition: background-color 0.2s; }
-    .fc .fc-daygrid-day-frame:hover { background-color: #F8FAFC !important; }
-    .fc .fc-daygrid-event { border-radius: 6px; padding: 3px 5px; font-size: 12.5px !important; line-height: 1.15; font-weight: 800; margin-top: 1px !important; cursor: pointer; }
-    .fc .fc-daygrid-event .fc-event-title { white-space: nowrap !important; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0.2px; }
-    .fc .fc-theme-standard td, .fc .fc-theme-standard th { border-color: #E2E8F0; }
-    """
-
-    calendar_css_dinamico = f"""
-    {calendar_css_base}
-    .fc-daygrid-day[data-date="{data_ref_card.strftime('%Y-%m-%d')}"] {{
-        background-color: #EFF6FF !important;
-        box-shadow: inset 0 0 0 3px #3B82F6 !important;
-    }}
-    .fc-daygrid-day[data-date="{data_ref_card.strftime('%Y-%m-%d')}"] .fc-daygrid-day-number {{
-        color: #1D4ED8 !important;
-        background-color: #DBEAFE !important;
-        border-radius: 6px;
-        padding: 2px 6px !important;
-    }}
-    """
-
-    # PROPORÇÃO DAS COLUNAS CORRIGIDA PARA DAR ESPAÇO AO GRÁFICO
-    col_calendario, col_cards, col_turno = st.columns([5.8, 2.0, 2.2], gap="large")
-
-    with col_calendario:
-        calendar_state = calendar(
-            events=calendar_events,
-            options=calendar_options,
-            custom_css=calendar_css_dinamico,
-            callbacks=["dateClick", "eventClick"],
-            key=cal_key
-        )
-
-    resumo_card = resumir_demanda_calendario(
-        df_base_cal=df_calendario, ano=data_ref_card.year, mes=data_ref_card.month, dia_ref=data_ref_card.day
-    )
-
-    resumo_turno = resumir_conclusoes_por_turno_data(df_base_cal=df_calendario, data_ref=data_ref_card)
-
-    with col_cards:
-        # Card 1 - Pátios do Dia (Azul) 
-        st.markdown(
-            f"""
-            <div class="kpi-wrapper kpi-card-blue">
-                <div class="kpi-title-blue">Pátios do Dia</div>
-                <div class="kpi-val-blue">{resumo_card['qtd_patios']} <span style='font-size: 22px;'>📌</span></div>
-                <div class="kpi-sub-blue">Referência: {data_ref_card.strftime('%d/%m/%Y')}</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-        # Lógica de Variação para o Card 2 (Delta)
-        dia_idx = data_ref_card.day - 1
-        serie_mes = resumo_card["serie_total_os_mes"]
-        hoje_total = serie_mes[dia_idx] if dia_idx < len(serie_mes) else 0
-        ontem_total = serie_mes[dia_idx - 1] if dia_idx > 0 else hoje_total
-
-        if ontem_total > 0:
-            delta_pct = ((hoje_total - ontem_total) / ontem_total) * 100
-        else:
-            delta_pct = 0.0
-
-        if delta_pct > 0:
-            seta, cor_badge, bg_badge, sinal = "↑", "#065F46", "#A7F3D0", "+"
-        elif delta_pct < 0:
-            seta, cor_badge, bg_badge, sinal = "↓", "#991B1B", "#FECACA", ""
-        else:
-            seta, cor_badge, bg_badge, sinal = "→", "#475569", "#E2E8F0", ""
-
-        # Card 2 - Total de OS do Dia (Verde sem gráfico embaixo e com borda arredondada)
-        total_os_options = {
-            "backgroundColor": "transparent",
-            "animation": False,
-            "graphic": [
-                {
-                    "type": "rect",
-                    "left": 0,
-                    "top": 0,
-                    "shape": {
-                        "x": 0,
-                        "y": 0,
-                        "width": 320,
-                        "height": 140,
-                        "r": 18
-                    },
-                    "style": {
-                        "fill": "#F0FDF4"
-                    }
-                },
-                {
-                    "type": "rect",
-                    "left": 0,
-                    "top": 0,
-                    "shape": {
-                        "x": 0,
-                        "y": 0,
-                        "width": 5,
-                        "height": 140,
-                        "r": [18, 0, 0, 18]
-                    },
-                    "style": {
-                        "fill": "#10B981"
-                    }
-                },
-                {
-                    "type": "text",
-                    "left": "6%",
-                    "top": "16%",
-                    "style": {
-                        "text": "TOTAL DE OS DO DIA",
-                        "fill": "#064E3B",
-                        "font": "700 14px 'Source Sans Pro', sans-serif"
-                    }
-                },
-                {
-                    "type": "text",
-                    "left": "6%",
-                    "top": "40%",
-                    "style": {
-                        "text": f"{hoje_total} 🎯",
-                        "fill": "#065F46",
-                        "font": "400 32px 'Source Sans Pro', sans-serif"
-                    }
-                },
-                {
-                    "type": "text",
-                    "left": "6%",
-                    "top": "72%",
-                    "style": {
-                        "text": f"{seta} {sinal}{delta_pct:.1f}% vs ontem",
-                        "fill": "#10B981",
-                        "font": "400 12px 'Source Sans Pro', sans-serif"
-                    }
-                }
-            ]
-        }
-
-        st_echarts(options=total_os_options, height="140px", key="card_total_os_dia")
-        st.markdown("<div style='margin-bottom: 16px;'></div>", unsafe_allow_html=True)
-
-        # Card 3 - Pátio Prioritário (Vermelho)
-        st.markdown(
-            f"""
-            <div class="kpi-wrapper kpi-card-red">
-                <div class="kpi-title-red">Pátio Prioritário</div>
-                <div class="kpi-val-red">{resumo_card['patio_prioritario']}</div>
-                <div class="kpi-sub-red">Critério: backlog + prioridade</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-    with col_turno:
-        _cor_turno_aba2 = { "00h-07h": "#4F46E5", "07h-16h": "#3B82F6", "16h-00h": "#06B6D4" }
-        
-        dados_formatados_turno = [
-            {
-                "value": val, 
-                "itemStyle": { "color": _cor_turno_aba2.get(lbl, "#3B82F6"), "borderRadius": [0, 6, 6, 0] }
-            }
-            for lbl, val in zip(resumo_turno["labels"], resumo_turno["valores"])
-        ]
-
-        with st.container(border=True):
-            concl_turno_options = {
-                "title": {
-                    "text": resumo_turno["titulo"],
-                    "subtext": resumo_turno["subtitulo"],
-                    "left": "center",
-                    "top": "5%",
-                    "textStyle": { "fontSize": 14, "fontWeight": "bold", "color": "#1E293B", "fontFamily": '"Source Sans Pro", sans-serif' },
-                    "subtextStyle": { "fontSize": 12, "color": "#64748B", "fontFamily": '"Source Sans Pro", sans-serif' }
-                },
-                "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
-                "grid": { "left": "18%", "right": "10%", "bottom": "12%", "top": "24%", "containLabel": True },
-                "xAxis": { "type": "value", "minInterval": 1, "splitLine": { "lineStyle": { "type": "dashed", "color": "#E2E8F0" } } },
-                "yAxis": { 
-                    "type": "category", 
-                    "data": resumo_turno["labels"], 
-                    "axisLabel": { "fontSize": 12, "fontWeight": "600", "color": "#475569", "fontFamily": '"Source Sans Pro", sans-serif' },
-                    "axisLine": { "show": False }, "axisTick": { "show": False }
-                },
-                "series": [{
-                    "name": "OS Concluídas", "type": "bar", "data": dados_formatados_turno, "barWidth": "42%",
-                    "label": { "show": True, "position": "right", "color": "#1E293B", "fontWeight": "bold", "fontSize": 13, "fontFamily": '"Source Sans Pro", sans-serif' }
-                }]
-            }
-            st_echarts(options=concl_turno_options, height="435px", theme="streamlit", key="chart_conclusoes_turno_data")
-
-    st.markdown("---")
-
-# 8.3.2 Navegação geográfica operacional   # 8.3.2 Navegação geográfica operacional
-    st.markdown("### 🗺️ Navegação Geográfica Operacional")
-
-    col_mapa, col_acao = st.columns([6, 4], gap="large")
-
-    # Proteção caso df_filtrado não esteja no escopo
-    if "df_filtrado" in locals():
-        df_pendentes_f = df_filtrado[df_filtrado["Status_norm"].isin(_status_aberto)].copy()
-    else:
-        df_pendentes_f = df_visao[df_visao["Status_norm"].isin(_status_aberto)].copy()
-
-    # Inicialização de segurança
-    df_recomendado = pd.DataFrame()
-
-    with col_acao:
-        st.markdown("#### ⚙️ Ferramentas de Campo")
-
-        # Estado inicial da origem
-        if "lat_partida" not in st.session_state:
-            lat_base, lon_base, nome_base = obter_base_padrao_usuario()
-            st.session_state["lat_partida"] = lat_base
-            st.session_state["lon_partida"] = lon_base
-            st.session_state["local_nome"] = nome_base
-            st.session_state["origem_tipo"] = "BASE"
-
-        if "gps_pending" not in st.session_state:
-            st.session_state["gps_pending"] = False
-
-        if "gps_trials" not in st.session_state:
-            st.session_state["gps_trials"] = 0
-
-        if "origem_tipo" not in st.session_state:
-            st.session_state["origem_tipo"] = "BASE"
-
-        GPS_MAX_TRIALS = 25
-
-        c1, c2 = st.columns(2)
-
-        with c1:
-            if st.button("📍 Minha Localização", use_container_width=True, key="btn_gps_localizacao"):
-                st.session_state["gps_pending"] = True
-                st.session_state["gps_trials"] = 0
-                st.rerun()
-
-        with c2:
-            if st.button("🏠 Minha Base", use_container_width=True, key="btn_minha_base"):
-                lat_base, lon_base, nome_base = obter_base_padrao_usuario()
-                st.session_state["lat_partida"] = lat_base
-                st.session_state["lon_partida"] = lon_base
-                st.session_state["local_nome"] = nome_base
-                st.session_state["origem_tipo"] = "BASE"
-                st.session_state["gps_pending"] = False
-                st.session_state["gps_trials"] = 0
-                st.rerun()
-
-        # Captura do GPS
-        if st.session_state.get("gps_pending"):
-            st.info("Aguardando autorização do navegador e captura do GPS...")
-            loc = get_geolocation()
-
-            if loc and isinstance(loc, dict) and "coords" in loc:
-                coords = loc.get("coords", {})
-                lat = coords.get("latitude")
-                lon = coords.get("longitude")
-
-                if lat is not None and lon is not None:
-                    st.session_state["lat_partida"] = float(lat)
-                    st.session_state["lon_partida"] = float(lon)
-                    st.session_state["local_nome"] = reverse_geocode_coordenada(float(lat), float(lon))
-                    st.session_state["origem_tipo"] = "GPS"
-                    st.session_state["gps_pending"] = False
-                    st.session_state["gps_trials"] = 0
-                    st.success("GPS ativado com sucesso!")
-                    st.rerun()
-
-            elif loc and isinstance(loc, dict) and "error" in loc:
-                st.session_state["gps_pending"] = False
-                st.session_state["gps_trials"] = 0
-                st.error(f"GPS falhou: {loc['error'].get('message', 'Erro desconhecido')}")
-
+#region 10.2: ABA 1 — Visão Gerencial (Indicadores)
+    if tab1 is not None:
+        with tab1:
+            if st.session_state["perfil"] == "Técnico": st.info("🔒 Seu perfil tem foco operacional. Utilize a aba 'Roteirização e Mapa de Campo'.")
             else:
-                st.session_state["gps_trials"] += 1
-                if st.session_state["gps_trials"] < GPS_MAX_TRIALS:
-                    st.info("Aguardando permissão do navegador...")
-                    time.sleep(0.3)
-                    st.rerun()
-                else:
-                    st.session_state["gps_pending"] = False
-                    st.session_state["gps_trials"] = 0
-                    st.error("Tempo do GPS esgotado. Tente novamente ou use a opção Minha Base.")
+                df_visao_base = df_filtrado.copy()
+                cor_plan, cor_real, cor_prazo, cor_atraso, cor_pendente = "#64748B", "#3B82F6", "#10B981", "#F59E0B", "#FF4B4B"
 
-        st.markdown("---")
-        raio_busca_km = st.slider("📏 Raio de Atuação Visual (km):", 0, 50, 10, 5, key="slider_raio_atuacao")
+                if taxa_conclusao <= 25: gauge_color = cor_pendente
+                elif taxa_conclusao <= 50: gauge_color = cor_atraso
+                elif taxa_conclusao <= 80: gauge_color = cor_prazo
+                else: gauge_color = cor_real
 
-        origem_label = "📍 GPS" if st.session_state.get("origem_tipo") == "GPS" else "🏠 Base"
-        st.caption(f"{origem_label}: **{st.session_state['local_nome']}**")
+#region 10.2.1: Resumo Executivo (Gauge + Rosca + Área)
+                with st.expander("Resumo Executivo (Geral)", expanded=True):
+                    col_g1, col_g2, col_g5 = st.columns(3)
+                    with col_g1:
+                        st.markdown("#### Realizado x Planejado")
+                        st_echarts(options={
+                            "tooltip": {"formatter": "{a} <br/>{b}: {c}%"},
+                            "series": [{
+                                "name": "Conclusão", "type": "gauge", "min": 0, "max": 100, "radius": "75%",
+                                "progress": {"show": True, "width": 14, "itemStyle": {"color": gauge_color}},
+                                "axisLine": {"lineStyle": {"width": 14, "color": [[0.25, cor_pendente], [0.50, cor_atraso], [0.80, cor_prazo], [1.00, cor_real]]}},
+                                "pointer": {"show": True, "length": "60%", "width": 6}, "itemStyle": {"color": gauge_color},
+                                "title": {"show": True, "offsetCenter": [0, "70%"], "fontSize": 14},
+                                "detail": {"valueAnimation": True, "offsetCenter": [0, "40%"], "formatter": f"{taxa_conclusao:.1f}%\n{realizado_total} / {total_os}", "fontSize": 16},
+                                "data": [{"value": round(taxa_conclusao, 1), "name": "Realizado"}],
+                            }],
+                        }, height="350px", theme="streamlit", key="aba1_gauge")
 
-        lat_origem = float(st.session_state["lat_partida"])
-        lon_origem = float(st.session_state["lon_partida"])
+                    with col_g2:
+                        st.markdown("#### Distribuição por Status")
+                        st_echarts(options={
+                            "tooltip": {"trigger": "item", "formatter": "{b}: {c} ({d}%)"}, "legend": {"orient": "horizontal", "bottom": "0%"},
+                            "series": [{
+                                "name": "Status", "type": "pie", "radius": ["45%", "75%"],
+                                "data": [
+                                    {"value": realizado_prazo, "name": "No Prazo", "itemStyle": {"color": cor_prazo}},
+                                    {"value": realizado_atraso, "name": "Atrasado", "itemStyle": {"color": cor_atraso}},
+                                    {"value": nao_realizado, "name": "Pendentes", "itemStyle": {"color": cor_pendente}},
+                                ],
+                                "label": {"show": True, "position": "inside", "formatter": "{c}\n({d}%)", "color": "#FFFFFF", "fontWeight": "bold"},
+                            }],
+                        }, height="350px", theme="streamlit", key="aba1_rosca")
 
-        if not df_pendentes_f.empty:
-            df_calc = df_pendentes_f.copy()
-            df_calc["lat_patio"] = df_calc["Patio"].map(
-                lambda p: COORDENADAS_FIXAS.get(str(p).strip().upper(), [np.nan, np.nan])[0]
-            )
-            df_calc["lon_patio"] = df_calc["Patio"].map(
-                lambda p: COORDENADAS_FIXAS.get(str(p).strip().upper(), [np.nan, np.nan])[1]
-            )
-            com_coord = df_calc.dropna(subset=["lat_patio", "lon_patio"]).copy()
+                    with col_g5:
+                        st.markdown("#### Plan x Real Acumulado")
+                        df_area = df_visao_base.copy()
+                        df_area["dia_programado"] = pd.to_datetime(df_area["Data inicial programada"], errors="coerce").dt.normalize()
+                        realizado_diario_a = (df_area[df_area["Status_norm"].isin(_status_prazo | _status_atraso)].groupby("dia_realizado").size().rename("Realizado_Dia"))
+                        planejado_diario_a = (df_area.groupby("dia_programado").size().rename("Planejado_Dia"))
 
-            if not com_coord.empty:
-                hoje_atual = datetime.now().date()
-                com_coord["Ordem_Prazo"] = com_coord["dt_prog_filtro"].apply(
-                    lambda dt: 1 if pd.notna(dt) and dt.date() < hoje_atual
-                    else (2 if pd.notna(dt) and dt.date() == hoje_atual else 3)
-                )
-                com_coord["Distancia_km"] = haversine_vectorized(
-                    lat_origem,
-                    lon_origem,
-                    com_coord["lat_patio"],
-                    com_coord["lon_patio"]
-                )
-                df_recomendado = com_coord[
-                    com_coord["Distancia_km"] <= raio_busca_km
-                ].sort_values(by=["Ordem_Prazo", "Criticidade_rank", "Distancia_km"])
+                        _datas_a = pd.Index([]).union(realizado_diario_a.index).union(planejado_diario_a.index)
+                        if len(_datas_a) > 0:
+                            _idx_da = pd.date_range(start=_datas_a.min(), end=_datas_a.max(), freq="D")
+                            _real_acum = realizado_diario_a.reindex(_idx_da, fill_value=0).cumsum()
+                            _plan_acum = planejado_diario_a.reindex(_idx_da, fill_value=0).cumsum()
+                            st_echarts(options={
+                                "tooltip": {"trigger": "axis"}, "legend": {"top": "bottom"},
+                                "toolbox": {"show": True, "feature": {"magicType": {"type": ["line", "bar"], "title": {"line": "Linha", "bar": "Barra"}}, "restore": {"title": "Restaurar"}, "saveAsImage": {"title": "Salvar Imagem"}}},
+                                "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}],
+                                "grid": {"left": "5%", "right": "5%", "bottom": "25%", "top": "15%", "containLabel": True},
+                                "xAxis": {"type": "category", "data": [d.strftime("%d/%m") for d in _idx_da]}, "yAxis": {"type": "value"},
+                                "series": [
+                                    {"name": "Realizado Acumulado", "type": "line", "smooth": True, "data": _real_acum.tolist(), "areaStyle": {"color": "rgba(59,130,246,0.2)"}, "lineStyle": {"color": cor_real, "width": 3}, "itemStyle": {"color": cor_real}},
+                                    {"name": "Planejado Acumulado", "type": "line", "smooth": True, "data": _plan_acum.tolist(), "lineStyle": {"color": cor_plan, "width": 3, "type": "dashed"}, "itemStyle": {"color": cor_plan}},
+                                ],
+                            }, height="350px", theme="streamlit", key="aba1_area")
+                        else: st.info("Sem datas suficientes para área.")
+                #endregion 10.2.1
 
-        st.info(f"**{len(df_recomendado)} OS pendentes** encontradas no raio de {raio_busca_km} km.")
+#region 10.2.2: Análise Operacional (Matriz de Prioridades)
+                with st.expander("Análise Operacional: Matriz de Prioridades e Execução por Categoria", expanded=True):
+                    col_h1, col_h2 = st.columns([1.2, 1])
+                    with col_h1:
+                        st.markdown("#### Matriz: Prioridade vs Classificação")
+                        st.caption("Volume total de OS planejadas (Cor indica concentração)")
+                        agg = df_visao_base.copy().groupby(["Classificacao", "Criticidade"]).size().reset_index(name="Total")
+                        ordem_class = ["Confiabilidade", "Segurança", "Confiabilidade e Segurança"]
+                        ordem_crit = ["Muito Alta", "Alta", "Média", "Baixa"]
 
-        if not df_recomendado.empty:
-            st.markdown("---")
-            st.markdown("#### ✅ Confirmar Execução")
-            os_selecionada = st.selectbox(
-                "Escolha a OS concluída:",
-                df_recomendado["Ordem servico"].astype(str).tolist()
-            )
+                        if not agg.empty:
+                            heat_data, max_val = [], 0
+                            for _yi, _cls in enumerate(ordem_class):
+                                for _xi, _crt in enumerate(ordem_crit):
+                                    _row = agg[(agg["Classificacao"] == _cls) & (agg["Criticidade"] == _crt)]
+                                    _val = int(_row["Total"].iloc[0]) if not _row.empty else 0
+                                    heat_data.append([_xi, _yi, _val]); max_val = max(max_val, _val)
 
-            if st.button("Gravar Baixa no Sistema", use_container_width=True, type="primary"):
-                realizado_dt = agora_dt()
-                usr = str(st.session_state.get("username", "")).strip() or "Técnico"
+                            st_echarts(options={
+                                "tooltip": {"position": "top"}, "grid": {"height": "70%", "top": "10%", "left": "25%", "containLabel": True},
+                                "xAxis": {"type": "category", "data": ordem_crit, "splitArea": {"show": True}, "axisLine": {"show": False}, "axisTick": {"show": False}},
+                                "yAxis": {"type": "category", "data": ordem_class, "splitArea": {"show": True}, "axisLine": {"show": False}, "axisTick": {"show": False}},
+                                "visualMap": {"min": 0, "max": max_val if max_val > 0 else 10, "calculable": True, "orient": "horizontal", "left": "center", "bottom": "0%", "inRange": {"color": ["#F1F5F9", "#93C5FD", "#3B82F6", "#1E3A8A"]}},
+                                "series": [{"name": "Total de OS", "type": "heatmap", "data": heat_data, "label": {"show": True, "color": "#FFFFFF", "fontWeight": "bold", "formatter": JsCode("function(p){return p.value[2] > 0 ? p.value[2] : '';}")}, "itemStyle": {"borderColor": "#FFFFFF", "borderWidth": 2}}],
+                            }, height="380px", theme="streamlit", key="aba1_heatmap_discrete")
+                        else: st.info("Sem dados para a Matriz.")
 
-                mask = (
-                    st.session_state["df_os"]["Ordem servico"].astype(str)
-                    == str(os_selecionada)
-                )
+                    with col_h2:
+                        st.markdown("#### Plan x Realizado por Categoria")
+                        st.caption("Comparativo de volume total e execução.")
+                        df_bar_cat = df_visao_base.copy()
+                        plan_cat = df_bar_cat.groupby("Classificacao").size()
+                        real_cat = (df_bar_cat[df_bar_cat["Status_norm"].isin(_status_prazo | _status_atraso)].groupby("Classificacao").size())
+                        cats = ["Confiabilidade e Segurança", "Segurança", "Confiabilidade"]
+                        val_plan, val_real = [int(plan_cat.get(c, 0)) for c in cats], [int(real_cat.get(c, 0)) for c in cats]
 
-                dt_prog = (
-                    st.session_state["df_os"].loc[mask, "Data inicial programada"].iloc[0]
-                    if len(st.session_state["df_os"].loc[mask]) > 0 else pd.NaT
-                )
-                coord = (
-                    st.session_state["df_os"].loc[mask, "Coordenacao"].iloc[0]
-                    if len(st.session_state["df_os"].loc[mask]) > 0 else "Campo"
-                )
+                        st_echarts(options={
+                            "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}}, "legend": {"bottom": "0%"},
+                            "grid": {"left": "3%", "right": "10%", "bottom": "15%", "top": "10%", "containLabel": True},
+                            "xAxis": {"type": "value", "boundaryGap": [0, 0.01]}, "yAxis": {"type": "category", "data": cats, "axisLabel": {"interval": 0}},
+                            "series": [
+                                {"name": "Planejado", "type": "bar", "data": val_plan, "itemStyle": {"color": cor_plan}, "label": {"show": True, "position": "right", "color": "#475569"}},
+                                {"name": "Realizado", "type": "bar", "data": val_real, "itemStyle": {"color": cor_real}, "label": {"show": True, "position": "right", "color": "#475569"}}
+                            ]
+                        }, height="380px", theme="streamlit", key="aba1_bar_horiz")
+                #endregion 10.2.2
 
-                novo_status = determinar_status_execucao(
-                    pd.to_datetime(dt_prog, errors="coerce"),
-                    realizado_dt
-                )
+#region 10.2.3: Execução por Turno e Acumulado
+                with st.expander("Execução por Turno e Acumulado", expanded=True):
+                    col_g3, col_g6 = st.columns(2)
+                    _cor_turno = { "Turno Dia (07h-19h)": "#F59E0B", "Administrativo (08h-17h30)": "#3B82F6", "Turno Noite (19h-07h)": "#4F46E5" }
+                    with col_g3:
+                        st.markdown("#### Realizado por Turno")
+                        x_turnos = ["Turno Dia (07h-19h)", "Administrativo (08h-17h30)", "Turno Noite (19h-07h)"]
+                        _cnt_t = df_visao_base[df_visao_base["Status_norm"].isin(_status_prazo | _status_atraso)].groupby("Turno").size()
+                        y_vals = [int(_cnt_t.get(t, 0)) for t in x_turnos]
+                        st_echarts(options={
+                            "tooltip": {"trigger": "axis"}, "xAxis": {"type": "category", "data": x_turnos, "axisLabel": {"interval": 0, "fontSize": 10}}, "yAxis": {"type": "value"},
+                            "toolbox": {"show": True, "feature": {"magicType": {"type": ["line", "bar"], "title": {"line": "Linha", "bar": "Barra"}}, "restore": {"title": "Restaurar"}, "saveAsImage": {"title": "Salvar Imagem"}}},
+                            "grid": {"left": "5%", "right": "5%", "bottom": "15%", "top": "15%", "containLabel": True},
+                            "series": [{"type": "bar", "barWidth": "55%", "label": {"show": True, "position": "inside", "formatter": "{c}", "color": "#FFFFFF", "fontWeight": "bold"}, "data": [{"value": v, "name": t, "itemStyle": {"color": _cor_turno.get(t, "#94A3B8")}} for t, v in zip(x_turnos, y_vals)]}],
+                        }, height="350px", theme="streamlit", key="aba1_barra")
 
-                upsert_baixa(
-                    str(os_selecionada),
-                    novo_status,
-                    formatar_dt_br(realizado_dt),
-                    coord,
-                    usr
-                )
-                st.toast(f"OS {os_selecionada} baixada com sucesso!")
-                st.rerun()
+                    with col_g6:
+                        st.markdown("#### Realizado Acumulado por Turno")
+                        df_linhas_plot = df_visao_base.dropna(subset=["dia_realizado"]).copy()
+                        if not df_linhas_plot.empty:
+                            _idx_dt = pd.date_range(start=df_linhas_plot["dia_realizado"].min(), end=df_linhas_plot["dia_realizado"].max(), freq="D")
+                            _series_t = [{"name": _t, "type": "line", "smooth": True, "data": (df_linhas_plot[df_linhas_plot["Turno"] == _t].groupby("dia_realizado").size().reindex(_idx_dt, fill_value=0).cumsum()).tolist(), "lineStyle": {"color": _cor_turno[_t], "width": 3}, "itemStyle": {"color": _cor_turno[_t]}} for _t in x_turnos]
+                            st_echarts(options={
+                                "tooltip": {"trigger": "axis"}, "legend": {"top": "bottom"},
+                                "toolbox": {"show": True, "feature": {"magicType": {"type": ["line", "bar", "stack"], "title": {"line": "Linha", "bar": "Barra", "stack": "Empilhado"}}, "restore": {"title": "Restaurar"}, "saveAsImage": {"title": "Salvar Imagem"}}},
+                                "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}],
+                                "grid": {"left": "5%", "right": "5%", "bottom": "25%", "top": "15%", "containLabel": True},
+                                "xAxis": {"type": "category", "data": [d.strftime("%d/%m") for d in _idx_dt]}, "yAxis": {"type": "value"}, "series": _series_t,
+                            }, height="350px", theme="streamlit", key="aba1_linhas")
+                        else: st.info("Sem dados cronológicos.")
+                #endregion 10.2.3
 
-    with col_mapa:
-        SP_MIN_LAT, SP_MAX_LAT = -25.50, -19.50
-        SP_MIN_LON, SP_MAX_LON = -53.50, -44.00
-
-        lat_centro = min(max(lat_origem, SP_MIN_LAT), SP_MAX_LAT)
-        lon_centro = min(max(lon_origem, SP_MIN_LON), SP_MAX_LON)
-
-        def calcular_zoom_por_raio(raio_km: float, latitude_ref: float) -> int:
-            raio_km = max(float(raio_km), 0.5)
-            lat_rad = math.radians(float(latitude_ref))
-            km_por_grau_lon = 111.320 * max(math.cos(lat_rad), 0.20)
-            largura_graus = (2.0 * raio_km) / km_por_grau_lon
-            zoom = math.log2(360.0 / max(largura_graus, 1e-6))
-            return int(min(18, max(6, round(zoom))))
-
-        zoom_mapa = calcular_zoom_por_raio(raio_busca_km, lat_centro)
-
-        mapa = folium.Map(
-            location=[lat_centro, lon_centro],
-            zoom_start=zoom_mapa,
-            max_bounds=True,
-            min_lat=SP_MIN_LAT,
-            max_lat=SP_MAX_LAT,
-            min_lon=SP_MIN_LON,
-            max_lon=SP_MAX_LON,
-            control_scale=True,
-            tiles="CartoDB positron",
-            prefer_canvas=True,
-        )
-
-        # Traçado real da ferrovia
-        try:
-            import geopandas as gpd
-            from shapely.geometry import LineString, MultiLineString
-
-            caminho_kml = "malha_mrs.kml"
-            if os.path.exists(caminho_kml):
-                gdf_malha = gpd.read_file(caminho_kml, driver="KML")
-
-                def adicionar_trecho_ferrovia(geom_trecho):
-                    estilo = {
-                        "color": "#2563EB",
-                        "weight": 2,
-                        "opacity": 0.70,
-                    }
-                    folium.GeoJson(
-                        geom_trecho.__geo_interface__,
-                        style_function=lambda x, estilo=estilo: estilo,
-                        control=False,
-                    ).add_to(mapa)
-
-                for _, row in gdf_malha.iterrows():
-                    geom = row.geometry
-                    if geom is None or geom.is_empty:
-                        continue
-                    if isinstance(geom, LineString):
-                        adicionar_trecho_ferrovia(geom)
-                    elif isinstance(geom, MultiLineString):
-                        for subgeom in geom.geoms:
-                            adicionar_trecho_ferrovia(subgeom)
-        except Exception as e:
-            st.warning(f"Não foi possível carregar o traçado da ferrovia: {e}")
-
-        folium.Marker(
-            location=[lat_origem, lon_origem],
-            tooltip=f"Origem: {st.session_state['local_nome']}",
-            icon=folium.Icon(
-                color="red",
-                icon="home" if st.session_state.get("origem_tipo") != "GPS" else "map-marker",
-                prefix="fa"
-            )
-        ).add_to(mapa)
-
-        folium.Circle(
-            radius=raio_busca_km * 1000,
-            location=[lat_origem, lon_origem],
-            color="#3B82F6",
-            fill=True,
-            fill_opacity=0.08,
-            weight=2,
-            tooltip=f"Raio de atuação: {raio_busca_km} km"
-        ).add_to(mapa)
-
-        if not df_recomendado.empty:
-            agg_map = (
-                df_recomendado.groupby("Patio", as_index=False)
-                .agg(
-                    lat_patio=("lat_patio", "first"),
-                    lon_patio=("lon_patio", "first"),
-                    qtd_os=("Ordem servico", "count"),
-                    menor_dist=("Distancia_km", "min")
-                )
-                .sort_values(["menor_dist", "Patio"])
-            )
-
-            for _, row in agg_map.iterrows():
-                folium.CircleMarker(
-                    location=[row["lat_patio"], row["lon_patio"]],
-                    radius=6,
-                    color="#1D4ED8",
-                    weight=1.5,
-                    fill=True,
-                    fill_color="#3B82F6",
-                    fill_opacity=0.95,
-                    tooltip=(
-                        f"Pátio: {row['Patio']}<br>"
-                        f"OS no raio: {row['qtd_os']}<br>"
-                        f"Menor distância: {row['menor_dist']:.1f} km"
-                    )
-                ).add_to(mapa)
-
-        st_folium(mapa, height=650, use_container_width=True, key="mapa_final_limpo")
-
-    st.markdown("---")
-
-    # 8.3.4 Cronograma de Execução de Campo
-    if not df_recomendado.empty:
-        df_tabela_campo = df_recomendado.copy()
-        df_tabela_campo = df_tabela_campo.rename(columns={"Ordem servico": "OS", "Patio": "Patio", "Classificacao": "Classificação"})
-        df_tabela_campo["Data da Programação"] = df_tabela_campo["dt_prog_filtro"].dt.strftime("%d/%m/%Y")
-
-        colunas_exibir = ["OS", "Data da Programação", "Patio", "Ativo", "Criticidade", "Classificação", "Descrição Longa"]
-
-        col_tit_crono, col_btn_crono = st.columns([7.5, 2.5])
-
-        with col_tit_crono:
-            st.markdown("#### 📋 Cronograma de Execução de Campo")
-            st.caption("OS Pendentes recomendadas no raio de atuação visual por prioridade")
-
-        with col_btn_crono:
-            st.markdown("<div style='margin-top: 5px;'></div>", unsafe_allow_html=True)
-
-            def exportar_cronograma_pdf(dataframe, usuario_logado):
+#region 10.2.4: Lista Detalhada de OS (com Evidências)
+                st.subheader("📋 Lista Detalhada de OS")
+                df_lista = df_visao_base.copy().rename(columns={"Ordem servico": "OS"})
                 try:
-                    from reportlab.lib.pagesizes import letter, landscape
-                    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
-                    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-                    from reportlab.lib import colors
-                    import io
+                    df_evidencias = carregar_evidencias_df()
+                    col_atividade_lista = "Atividade ativo" if "Atividade ativo" in df_lista.columns else None
+                    if not df_evidencias.empty and "Ativo" in df_lista.columns and col_atividade_lista:
+                        df_lista = df_lista.merge(df_evidencias[["ativo", "atividade", "foto_url"]], left_on=["Ativo", col_atividade_lista], right_on=["ativo", "atividade"], how="left")
+                        df_lista["Evidência"] = df_lista["foto_url"].apply(lambda url: str(url) if pd.notna(url) and str(url).startswith("http") else None)
+                        df_lista.drop(columns=["ativo", "atividade", "foto_url"], inplace=True, errors="ignore")
+                    else: df_lista["Evidência"] = ""
+                except Exception: df_lista["Evidência"] = ""
 
-                    pdf_buffer = io.BytesIO()
-                    doc = SimpleDocTemplate(
-                        pdf_buffer,
-                        pagesize=landscape(letter),
-                        rightMargin=20,
-                        leftMargin=20,
-                        topMargin=20,
-                        bottomMargin=20,
-                    )
-                    elements = []
+                if "Data inicial programada" in df_lista.columns: df_lista["Data inicial programada"] = pd.to_datetime(df_lista["Data inicial programada"], errors="coerce").dt.strftime("%d/%m/%Y")
+                if "Data/Hora Realizado" in df_lista.columns: df_lista["Data/Hora Realizado"] = pd.to_datetime(df_lista["Data/Hora Realizado"], dayfirst=True, errors="coerce").dt.strftime("%d/%m/%Y %H:%M").fillna("")
 
-                    styles = getSampleStyleSheet()
-                    title_style = ParagraphStyle(
-                        'TitleStyle',
-                        parent=styles['Heading1'],
-                        fontName='Helvetica-Bold',
-                        fontSize=18,
-                        textColor=colors.HexColor('#1A202C'),
-                        spaceAfter=6,
-                    )
-                    sub_style = ParagraphStyle(
-                        'SubStyle',
-                        fontName='Helvetica',
-                        fontSize=10,
-                        textColor=colors.HexColor('#475569'),
-                        spaceAfter=15,
-                    )
-                    cell_style = ParagraphStyle(
-                        'CellStyle',
-                        fontName='Helvetica',
-                        fontSize=9,
-                        leading=11,
-                        textColor=colors.HexColor('#1E293B'),
-                    )
-                    header_style = ParagraphStyle(
-                        'HeaderStyle',
-                        fontName='Helvetica-Bold',
-                        fontSize=10,
-                        leading=12,
-                        textColor=colors.white,
-                    )
+                colunas_ordem = ["OS", "Patio", "Ativo", "Criticidade", "Classificacao", "Descrição Longa", "Data inicial programada", "Status da Operação", "Data/Hora Realizado", "Concluído por", "Geolocalização de Baixa", "Evidência"]
+                for c in colunas_ordem:
+                    if c not in df_lista.columns: df_lista[c] = ""
 
-                    elements.append(Paragraph("⚡ MRS LOGÍSTICA — CRONOGRAMA OPERACIONAL DE CAMPO", title_style))
-                    elements.append(Paragraph(
-                        f"Emitido em: {datetime.now().strftime('%d/%m/%Y %H:%M')} | Operador responsável: {usuario_logado.upper()}",
-                        sub_style,
-                    ))
+                if not df_lista.empty:
+                    st.dataframe(df_lista[colunas_ordem].style.set_properties(**{'text-align': 'center'}).set_table_styles([{'selector': 'th', 'props': [('text-align', 'center')]}]), use_container_width=True, height=400, hide_index=True, column_config={"Evidência": st.column_config.LinkColumn("📷 Evidência", display_text="📷 Ver Foto")})
+                #endregion 10.2.4
+#endregion 10.2
 
-                    dados_pdf = [[Paragraph(col, header_style) for col in colunas_exibir]]
+#region 10.3: ABA 2 — Roteirização e Mapa de Campo
+    if tab2 is not None:
+        with tab2:
+            df_recomendado = pd.DataFrame()
+            
+#region 10.3.1: CSS + Calendário Mensal + Cards + Turno
+            st.markdown("### 📅 Agenda Mensal de Demanda por Pátio")
+            st.markdown("""
+                <style>
+                .kpi-wrapper { font-family: "Source Sans Pro", sans-serif; }
+                .kpi-card-blue { background: linear-gradient(135deg, #EFF6FF 0%, #DBEAFE 100%); border-left: 5px solid #3B82F6; border-radius: 12px; padding: 16px 20px; box-shadow: 0 4px 6px rgba(59, 130, 246, 0.15); height: 140px; margin-bottom: 16px; display: flex; flex-direction: column; justify-content: center; box-sizing: border-box; }
+                .kpi-title-blue { color: #1E3A8A; font-size: 14px; font-weight: 700; margin-bottom: 6px; text-transform: uppercase; }
+                .kpi-val-blue { color: #1E40AF; font-size: 32px; font-weight: 400; line-height: 1; }
+                .kpi-sub-blue { color: #3B82F6; font-size: 12px; font-weight: 400; margin-top: 8px;}
+                .kpi-card-green { background: linear-gradient(135deg, #F0FDF4 0%, #D1FAE5 100%); border-left: 5px solid #10B981; border-radius: 12px; padding: 16px 20px; box-shadow: 0 4px 6px rgba(16, 185, 129, 0.15); height: 140px; margin-bottom: 16px; display: flex; flex-direction: column; justify-content: center; box-sizing: border-box; }
+                .kpi-title-green { color: #064E3B; font-size: 14px; font-weight: 700; margin-bottom: 6px; text-transform: uppercase; }
+                .kpi-val-green { color: #065F46; font-size: 32px; font-weight: 400; line-height: 1; }
+                .kpi-card-red { background: linear-gradient(135deg, #FEF2F2 0%, #FEE2E2 100%); border-left: 5px solid #FF4B4B; border-radius: 12px; padding: 16px 20px; box-shadow: 0 4px 6px rgba(255, 75, 75, 0.15); height: 140px; margin-bottom: 16px; display: flex; flex-direction: column; justify-content: center; box-sizing: border-box; }
+                .kpi-title-red { color: #7F1D1D; font-size: 14px; font-weight: 700; margin-bottom: 6px; text-transform: uppercase; }
+                .kpi-val-red { color: #991B1B; font-size: 24px; font-weight: 400; line-height: 1.2; margin-top: 4px;} 
+                .kpi-sub-red { color: #EF4444; font-size: 12px; font-weight: 400; margin-top: 8px;}
+                </style>
+            """, unsafe_allow_html=True)
 
-                    for _, row in dataframe[colunas_exibir].iterrows():
-                        linha = []
-                        for col in colunas_exibir:
-                            texto_limpo = str(row[col]).replace('<br>', ' ').replace('<br/>', ' ')
-                            linha.append(Paragraph(texto_limpo, cell_style))
-                        dados_pdf.append(linha)
+            hoje_ref = datetime.now()
+            if "cal_ref_mes" not in st.session_state: st.session_state["cal_ref_mes"] = int(hoje_ref.month)
+            if "cal_ref_ano" not in st.session_state: st.session_state["cal_ref_ano"] = int(hoje_ref.year)
+            col_cal_ctrl_1, col_cal_ctrl_2, _ = st.columns([1, 1, 4])
+            is_tecnico = st.session_state.get("perfil") == "Técnico"
 
-                    larguras_colunas = [65, 80, 50, 110, 75, 120, 252]
-                    tabela_pdf = Table(dados_pdf, colWidths=larguras_colunas, repeatRows=1)
-
-                    tabela_style = TableStyle([
-                        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1A202C')),
-                        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-                        ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
-                        ('TOPPADDING', (0, 0), (-1, 0), 8),
-                        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#CBD5E1')),
-                    ])
-
-                    for i in range(1, len(dados_pdf)):
-                        if i % 2 == 0:
-                            tabela_style.add('BACKGROUND', (0, i), (-1, i), colors.HexColor('#F8FAFC'))
-
-                    tabela_pdf.setStyle(tabela_style)
-                    elements.append(tabela_pdf)
-                    doc.build(elements)
-                    pdf_buffer.seek(0)
-                    return pdf_buffer.read()
-                except Exception:
-                    return None
-
-            pdf_bytes = exportar_cronograma_pdf(df_tabela_campo, st.session_state.get('username', 'técnico'))
-
-            if pdf_bytes:
-                st.download_button(
-                    "📄 Gerar PDF para Impressão",
-                    data=pdf_bytes,
-                    file_name=f"Cronograma_MRS_{datetime.now().strftime('%d%m%Y_%H%M')}.pdf",
-                    mime="application/pdf",
-                    use_container_width=True,
-                )
+            if is_tecnico:
+                st.session_state["cal_ref_mes"], st.session_state["cal_ref_ano"] = int(hoje_ref.month), int(hoje_ref.year)
+                with col_cal_ctrl_1: st.info(f"Mês: {hoje_ref.strftime('%m')}")
+                with col_cal_ctrl_2: st.info(f"Ano: {hoje_ref.year}")
+                st.caption(f"📌 **Visão Operacional:** Calendário fixado ({hoje_ref.strftime('%m/%Y')})")
             else:
-                st.button("📄 Erro ao estruturar PDF", disabled=True, use_container_width=True)
+                with col_cal_ctrl_1: mes_opcao = st.selectbox("Mês", list(range(1, 13)), index=int(st.session_state["cal_ref_mes"]) - 1, format_func=lambda x: f"{x:02d}", key="cal_mes_ref_select")
+                with col_cal_ctrl_2: ano_opcao = st.number_input("Ano", min_value=hoje_ref.year - 2, max_value=hoje_ref.year + 2, value=int(st.session_state["cal_ref_ano"]), step=1, key="cal_ano_ref_input")
+                st.session_state["cal_ref_mes"], st.session_state["cal_ref_ano"] = int(mes_opcao), int(ano_opcao)
 
-        def aplicar_cor_prazo(row):
-            dt = row["dt_prog_filtro"]
-            if pd.isna(dt):
-                return [""] * len(row)
-            d = dt.date()
-            hoje_ref = datetime.now().date()
-            if d < hoje_ref:
-                return ["background-color: #FEE2E2; color: #7F1D1D; font-weight: 500;"] * len(row)
-            elif d == hoje_ref:
-                return ["background-color: #FEF3C7; color: #78350F; font-weight: 500;"] * len(row)
-            return [""] * len(row)
+            df_calendario = df_visao.copy()
+            if "patios_selecionados" in locals() and "classif_selecionadas" in locals(): df_calendario = df_calendario[(df_calendario["Patio"].isin(patios_selecionados)) & (df_calendario["Classificacao"].isin(classif_selecionadas))].copy()
 
-        df_estilizado = df_tabela_campo.style.apply(aplicar_cor_prazo, axis=1)
-        st.dataframe(
-            df_estilizado,
-            use_container_width=True,
-            height=350,
-            hide_index=True,
-            column_order=colunas_exibir,
-        )
-    else:
-        st.markdown("#### 📋 Cronograma de Execução de Campo")
-        st.caption("OS Pendentes recomendadas no raio de atuação visual por prioridade")
-        st.info("Nenhuma OS pendente localizada dentro do raio de atuação selecionado.")
+            hoje_real = datetime.now().date()
+            if (int(st.session_state["cal_ref_ano"]) == hoje_real.year and int(st.session_state["cal_ref_mes"]) == hoje_real.month): dia_ref_default = hoje_real
+            else: dia_ref_default = datetime(int(st.session_state["cal_ref_ano"]), int(st.session_state["cal_ref_mes"]), 1).date()
+
+            user_limpo = str(st.session_state.get('username', 'usr')).replace(" ", "_").lower()
+            cal_key = f"cal_fixo_tecnico_{user_limpo}" if is_tecnico else f"cal_dinamico_{user_limpo}"
+            cal_state = st.session_state.get(cal_key)
+            data_ref_card = dia_ref_default
+            
+            if cal_state and isinstance(cal_state, dict):
+                if cal_state.get("callback") == "dateClick": data_ref_card = pd.to_datetime(cal_state["dateClick"]["date"]).date()
+                elif cal_state.get("callback") == "eventClick": data_ref_card = pd.to_datetime(cal_state["eventClick"]["event"]["start"]).date()
+            if data_ref_card.year != int(st.session_state["cal_ref_ano"]) or data_ref_card.month != int(st.session_state["cal_ref_mes"]): data_ref_card = dia_ref_default
+
+            st.markdown("#### 🔧 Tipo de OS")
+            if "filtro_intervalo_campo" not in st.session_state: st.session_state["filtro_intervalo_campo"] = "Todas"
+            col_int1, col_int2, col_int3 = st.columns(3)
+            with col_int1:
+                if st.button("📋 Todas", use_container_width=True, type="primary" if st.session_state["filtro_intervalo_campo"] == "Todas" else "secondary"): st.session_state["filtro_intervalo_campo"] = "Todas"; st.rerun()
+            with col_int2:
+                if st.button("🔒 Com Intervalo", use_container_width=True, type="primary" if st.session_state["filtro_intervalo_campo"] == "Com Intervalo" else "secondary"): st.session_state["filtro_intervalo_campo"] = "Com Intervalo"; st.rerun()
+            with col_int3:
+                if st.button("🔓 Sem Intervalo", use_container_width=True, type="primary" if st.session_state["filtro_intervalo_campo"] == "Sem Intervalo" else "secondary"): st.session_state["filtro_intervalo_campo"] = "Sem Intervalo"; st.rerun()
+            st.markdown("---")
+
+            _filtro_int_campo = st.session_state.get("filtro_intervalo_campo", "Todas")
+            if _filtro_int_campo != "Todas" and "Tipo_Intervalo" in df_visao.columns:
+                df_visao = df_visao[df_visao["Tipo_Intervalo"] == _filtro_int_campo].copy()
+                if "df_filtrado" in locals(): df_filtrado = df_filtrado[df_filtrado["Tipo_Intervalo"] == _filtro_int_campo].copy()
+
+            mostrar_calendario = st.toggle("📅 Mostrar Agenda Mensal de Demanda", value=False)
+            if mostrar_calendario:
+                with st.spinner("Carregando agenda..."):
+                    calendar_events = montar_eventos_calendario_patios(df_base_cal=df_calendario, ano=int(st.session_state["cal_ref_ano"]), mes=int(st.session_state["cal_ref_mes"]), max_patios_visiveis=2)
+                    calendar_options = { "initialView": "dayGridMonth", "initialDate": f"{int(st.session_state['cal_ref_ano']):04d}-{int(st.session_state['cal_ref_mes']):02d}-01", "locale": "pt-br", "height": "auto", "contentHeight": "auto", "headerToolbar": { "left": "", "center": "title", "right": "" }, "dayMaxEvents": 2, "eventOrder": "displayOrder,title", "fixedWeekCount": False, "showNonCurrentDates": True, "expandRows": True, "handleWindowResize": True }
+                    calendar_css_base = """ .fc { font-size: 14px; background: #FFFFFF; border-radius: 12px; padding: 6px; box-shadow: 0 1px 8px rgba(15, 23, 42, 0.08); } .fc .fc-toolbar-title { font-size: 1.4rem !important; font-weight: 800; text-transform: capitalize; color: #1E293B; } .fc .fc-daygrid-day-frame:hover { background-color: #F8FAFC !important; } .fc .fc-daygrid-event { border-radius: 6px; padding: 3px 5px; font-weight: 800; cursor: pointer; } """
+                    calendar_css_dinamico = f"{calendar_css_base} .fc-daygrid-day[data-date='{data_ref_card.strftime('%Y-%m-%d')}'] {{ background-color: #EFF6FF !important; box-shadow: inset 0 0 0 3px #3B82F6 !important; }}"
+
+                    col_calendario, col_cards, col_turno = st.columns([5.8, 2.0, 2.2], gap="large")
+                    with col_calendario: calendar(events=calendar_events, options=calendar_options, custom_css=calendar_css_dinamico, callbacks=["dateClick", "eventClick"], key=f"cal_dinamico_{cal_key}_{st.session_state.get('cal_ref_mes')}")
+
+                    resumo_card = resumir_demanda_calendario(df_base_cal=df_calendario, ano=data_ref_card.year, mes=data_ref_card.month, dia_ref=data_ref_card.day)
+                    resumo_turno = resumir_conclusoes_por_turno_data(df_base_cal=df_calendario, data_ref=data_ref_card)
+
+                    with col_cards:
+                        st.markdown(f"<div class='kpi-wrapper kpi-card-blue'><div class='kpi-title-blue'>Pátios do Dia</div><div class='kpi-val-blue'>{resumo_card['qtd_patios']} 📌</div><div class='kpi-sub-blue'>Ref: {data_ref_card.strftime('%d/%m/%Y')}</div></div>", unsafe_allow_html=True)
+                        dia_idx = data_ref_card.day - 1
+                        serie_mes = resumo_card["serie_total_os_mes"]
+                        hoje_total = serie_mes[dia_idx] if dia_idx < len(serie_mes) else 0
+                        ontem_total = serie_mes[dia_idx - 1] if dia_idx > 0 else hoje_total
+                        delta_pct = ((hoje_total - ontem_total) / ontem_total) * 100 if ontem_total > 0 else 0.0
+                        seta, sinal = ("↑", "+") if delta_pct > 0 else ("↓", "") if delta_pct < 0 else ("→", "")
+                        st_echarts(options={"graphic": [{"type": "rect", "shape": {"width": 320, "height": 140, "r": 18}, "style": {"fill": "#F0FDF4"}}, {"type": "rect", "shape": {"width": 5, "height": 140, "r": [18, 0, 0, 18]}, "style": {"fill": "#10B981"}}, {"type": "text", "left": "6%", "top": "16%", "style": {"text": "TOTAL DE OS DO DIA", "fill": "#064E3B", "font": "700 14px 'Source Sans Pro', sans-serif"}}, {"type": "text", "left": "6%", "top": "40%", "style": {"text": f"{hoje_total} 🎯", "fill": "#065F46", "font": "400 32px 'Source Sans Pro', sans-serif"}}, {"type": "text", "left": "6%", "top": "72%", "style": {"text": f"{seta} {sinal}{delta_pct:.1f}% vs ontem", "fill": "#10B981", "font": "400 12px 'Source Sans Pro', sans-serif"}}]}, height="140px", key="card_total_os_dia")
+                        st.markdown(f"<div style='margin-bottom: 16px;'></div><div class='kpi-wrapper kpi-card-red'><div class='kpi-title-red'>Pátio Prioritário</div><div class='kpi-val-red'>{resumo_card['patio_prioritario']}</div><div class='kpi-sub-red'>Critério: backlog + prioridade</div></div>", unsafe_allow_html=True)
+
+                    with col_turno:
+                        _cor_turno_aba2 = { "Turno Dia (07h-19h)": "#F59E0B", "Administrativo (08h-17h30)": "#3B82F6", "Turno Noite (19h-07h)": "#4F46E5" }
+                        dados_formatados_turno = [{"value": val, "itemStyle": { "color": _cor_turno_aba2.get(lbl, "#3B82F6"), "borderRadius": [0, 6, 6, 0] }} for lbl, val in zip(resumo_turno["labels"], resumo_turno["valores"])]
+            st.markdown("---")
+            #endregion 10.3.1
+
+ #region 10.3.2: Navegação Geográfica Operacional (GPS + Raio)
+            st.markdown("### 🗺️ Navegação Geográfica Operacional")
+            col_mapa, col_acao = st.columns([6, 4], gap="large")
+
+            if "df_filtrado" in locals(): df_pendentes_f = df_filtrado[df_filtrado["Status_norm"].isin(_status_aberto)].copy()
+            else: df_pendentes_f = df_visao[df_visao["Status_norm"].isin(_status_aberto)].copy()
+
+            with col_acao:
+                st.markdown("#### ⚙️ Ferramentas de Campo")
+                if "lat_partida" not in st.session_state:
+                    lat_base, lon_base, nome_base = obter_base_padrao_usuario()
+                    st.session_state.update({"lat_partida": lat_base, "lon_partida": lon_base, "local_nome": nome_base})
+
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("📍 Minha Localização", use_container_width=True, key="btn_gps_localizacao"):
+                        st.session_state.update({"gps_pending": True, "gps_trials": 0}); st.rerun()
+                with c2:
+                    if st.button("🏠 Minha Base", use_container_width=True, key="btn_minha_base"):
+                        lat_base, lon_base, nome_base = obter_base_padrao_usuario()
+                        st.session_state.update({"lat_partida": lat_base, "lon_partida": lon_base, "local_nome": nome_base, "origem_tipo": "BASE", "gps_pending": False, "gps_trials": 0})
+                        st.rerun()
+
+                if st.session_state.get("gps_pending"):
+                    st.info("Aguardando autorização do navegador e captura do GPS...")
+                    loc = get_geolocation()
+                    if loc and isinstance(loc, dict) and "coords" in loc:
+                        coords = loc.get("coords", {})
+                        lat, lon = coords.get("latitude"), coords.get("longitude")
+                        if lat is not None and lon is not None:
+                            st.session_state.update({"lat_partida": float(lat), "lon_partida": float(lon), "local_nome": reverse_geocode_coordenada(float(lat), float(lon)), "origem_tipo": "GPS", "gps_pending": False, "gps_trials": 0})
+                            st.success("GPS ativado com sucesso!"); st.rerun()
+                    elif loc and isinstance(loc, dict) and "error" in loc:
+                        st.session_state.update({"gps_pending": False, "gps_trials": 0})
+                        st.error(f"GPS falhou: {loc['error'].get('message', 'Erro desconhecido')}")
+                    else:
+                        st.session_state["gps_trials"] += 1
+                        if st.session_state["gps_trials"] < 10: time.sleep(0.3); st.rerun()
+                        else:
+                            st.session_state.update({"gps_pending": False, "gps_trials": 0})
+                            st.error("Tempo do GPS esgotado. Tente novamente ou use a Minha Base.")
+
+                st.markdown("---")
+                raio_busca_km = st.slider("📏 Raio de Atuação Visual (km):", 0, 50, 10, 5, key="slider_raio_atuacao")
+                origem_label = "📍 GPS" if st.session_state.get("origem_tipo") == "GPS" else "🏠 Base"
+                st.caption(f"{origem_label}: **{st.session_state['local_nome']}**")
+
+                lat_origem, lon_origem = float(st.session_state["lat_partida"]), float(st.session_state["lon_partida"])
+
+                if not df_pendentes_f.empty:
+                    df_calc = df_pendentes_f.copy()
+                    df_calc["lat_patio"] = df_calc["Patio"].map(lambda p: COORDENADAS_FIXAS.get(str(p).strip().upper(), [np.nan, np.nan])[0])
+                    df_calc["lon_patio"] = df_calc["Patio"].map(lambda p: COORDENADAS_FIXAS.get(str(p).strip().upper(), [np.nan, np.nan])[1])
+                    com_coord = df_calc.dropna(subset=["lat_patio", "lon_patio"]).copy()
+
+                    if not com_coord.empty:
+                        hoje_atual = datetime.now().date()
+                        com_coord["Ordem_Prazo"] = com_coord["dt_prog_filtro"].apply(lambda dt: 1 if pd.notna(dt) and dt.date() < hoje_atual else (2 if pd.notna(dt) and dt.date() == hoje_atual else 3))
+                        com_coord["Distancia_km"] = haversine_vectorized(lat_origem, lon_origem, com_coord["lat_patio"], com_coord["lon_patio"])
+                        df_recomendado = com_coord[com_coord["Distancia_km"] <= raio_busca_km].sort_values(by=["Ordem_Prazo", "Criticidade_rank", "Distancia_km"])
+
+                st.info(f"**{len(df_recomendado)} OS pendentes** encontradas no raio de {raio_busca_km} km.")
+                if not df_recomendado.empty:
+            #endregion 10.3.2
+
+ #region 10.3.3: Formulário de Baixa de OS + Evidências (fragment)
+                    @st.fragment
+                    def renderizar_bloco_apontamento():
+                        st.markdown("---")
+                        st.markdown("#### ✅ Apontamento e Conclusão de OS")
+                        os_selecionadas = st.multiselect("1. Selecione as OSs que deseja baixar:", df_recomendado["Ordem servico"].astype(str).unique().tolist())
+
+                        if os_selecionadas:
+                            os_distantes = [os_id for os_id in os_selecionadas if df_recomendado.loc[df_recomendado["Ordem servico"].astype(str) == str(os_id), "Distancia_km"].iloc[0] > 5.0]
+                            if os_distantes:
+                                st.error(f"🛑 **Bloqueio Geográfico:** O sistema exige estar em um raio máximo de **5 km** do local.")
+                                st.warning(f"Você está muito longe das OSs: **{', '.join(os_distantes)}**.")
+                                st.info("💡 Aproxime-se do pátio e atualize sua posição em '📍 Minha Localização'.")
+                                return
+
+                            st.markdown("---")
+                            st.markdown("#### 📷 Evidências Fotográficas")
+                            st.caption("Registre a evidência de **cada OS**. A imagem será comprimida automaticamente.")
+                            fotos_por_os = {os_id: st.file_uploader("📸 Tirar Foto ou 🖼️ Galeria", type=["jpg", "jpeg", "png"], key=f"foto_{os_id}") for os_id in os_selecionadas}
+
+                            conn = get_connection()
+                            try: df_users_equipe = pd.read_sql_query("SELECT username FROM usuarios", conn)
+                            finally: release_connection(conn)
+                            
+                            lista_equipe_disp = df_users_equipe["username"].tolist()
+                            usr_logado = st.session_state.get("username", "")
+                            if usr_logado in lista_equipe_disp: lista_equipe_disp.remove(usr_logado)
+                            
+                            with st.form("form_apontamento_os"):
+                                equipe_selecionada = st.multiselect("2. Selecione a sua equipe:", lista_equipe_disp)
+                                st.markdown("---")
+                                st.markdown("#### ⏳ Apontamento de Tempos Individuais")
+                                apontamentos, todos_preenchidos = {}, True
+                                
+                                for os_id in set(os_selecionadas):
+                                    st.markdown(f"<b style='color: #3B82F6;'>OS: {os_id}</b>", unsafe_allow_html=True)
+                                    c1, c2 = st.columns(2)
+                                    with c1: h_ini = st.time_input(f"Horário Início", key=f"time_ini_{os_id}", value=None)
+                                    with c2: h_fim = st.time_input(f"Horário Fim", key=f"time_fim_{os_id}", value=None)
+                                    apontamentos[os_id] = {"inicio": h_ini, "fim": h_fim}
+                                    if h_ini is None or h_fim is None: todos_preenchidos = False
+                                    st.markdown("<hr style='margin: 8px 0; border-color: #333D4E;'>", unsafe_allow_html=True)
+
+                                origem = st.session_state.get("origem_tipo", "BASE")
+                                if st.form_submit_button("🚀 Concluir e Gravar OS(s)", use_container_width=True):
+                                    if origem != "GPS": st.warning("📍 A geolocalização é obrigatória. Atualize sua posição.")
+                                    elif not todos_preenchidos: st.warning("⚠️ Preencha os horários de **início e fim** de todas as OSs.")
+                                    else:
+                                        geo_baixa = f"{st.session_state.get('local_nome', 'Local')} (Lat: {st.session_state.get('lat_partida')}, Lon: {st.session_state.get('lon_partida')})"
+                                        equipe_str = ", ".join(equipe_selecionada) if equipe_selecionada else "Sozinho"
+                                        data_hoje_br, realizado_dt = datetime.now().strftime("%d/%m/%Y"), agora_dt()
+                                        
+                                        for os_id in set(os_selecionadas):
+                                            mask = (st.session_state["df_os"]["Ordem servico"].astype(str) == str(os_id))
+                                            dt_prog = st.session_state["df_os"].loc[mask, "Data inicial programada"].iloc[0] if len(st.session_state["df_os"].loc[mask]) > 0 else pd.NaT
+                                            coord = st.session_state["df_os"].loc[mask, "Coordenacao"].iloc[0] if len(st.session_state["df_os"].loc[mask]) > 0 else "Campo"
+                                            
+                                            upsert_baixa(
+                                                os_id=str(os_id), status=determinar_status_execucao(pd.to_datetime(dt_prog, errors="coerce"), realizado_dt),
+                                                realizado_em_str=formatar_dt_br(realizado_dt), coordenacao=coord, concluido_por=usr_logado,
+                                                geolocalizacao_baixa=geo_baixa, equipe=equipe_str, data_inicio=data_hoje_br,
+                                                hora_inicio=apontamentos[os_id]["inicio"].strftime("%H:%M:%S"), data_fim=data_hoje_br,
+                                                hora_fim=apontamentos[os_id]["fim"].strftime("%H:%M:%S")
+                                            )
+
+                                        fotos_enviadas = 0
+                                        for os_id_foto in set(os_selecionadas):
+                                            foto_da_os = fotos_por_os.get(str(os_id_foto))
+                                            if foto_da_os is None: continue
+                                            with st.spinner(f"📤 Comprimindo e enviando foto da OS {os_id_foto}..."):
+                                                try:
+                                                    df_match = st.session_state["df_os"].loc[st.session_state["df_os"]["Ordem servico"].astype(str) == str(os_id_foto)]
+                                                    if df_match.empty: continue
+                                                    ativo_val = str(df_match["Ativo"].iloc[0]).strip()
+                                                    atividade_val = str(df_match["Atividade ativo"].iloc[0]).strip() if "Atividade ativo" in df_match.columns else "N_A"
+                                                    url_foto = upload_foto_supabase(foto_da_os.getvalue(), re.sub(r'[^\w\-.]', '_', f"{ativo_val}__{atividade_val}.jpg"))
+                                                    upsert_evidencia(ativo=ativo_val, atividade=atividade_val, foto_url=url_foto, os_referencia=str(os_id_foto), concluido_por=usr_logado, geolocalizacao=f"Lat: {st.session_state.get('lat_partida')}, Lon: {st.session_state.get('lon_partida')}")
+                                                    fotos_enviadas += 1
+                                                except Exception as e_foto: st.warning(f"⚠️ Foto da OS {os_id_foto} falhou: {e_foto}")
+                                        
+                                        if fotos_enviadas > 0: st.info(f"📷 {fotos_enviadas} evidência(s) registrada(s) com sucesso!")
+                                        st.success(f"✅ Execução registrada com sucesso!")
+                                        time.sleep(2); st.rerun()
+
+                    renderizar_bloco_apontamento()
+                    st.markdown("---")
+            #endregion 10.3.3
+
+ #region 10.3.4: Mapa Interativo Otimizado (Cache da Malha)
+            with col_mapa:
+                lat_centro = min(max(lat_origem, -25.50), -19.50)
+                lon_centro = min(max(lon_origem, -53.50), -44.00)
+                zoom_mapa = int(min(18, max(6, round(math.log2(360.0 / max((2.0 * max(float(raio_busca_km), 0.5)) / (111.320 * max(math.cos(math.radians(float(lat_centro))), 0.20)), 1e-6))))))
+
+                mapa = folium.Map(location=[lat_centro, lon_centro], zoom_start=zoom_mapa, max_bounds=True, min_lat=-25.50, max_lat=-19.50, min_lon=-53.50, max_lon=-44.00, control_scale=True, tiles="CartoDB positron", prefer_canvas=True)
+
+                # FIX: USO DO KML CACHEADO DA MEMÓRIA
+                gdf_malha_cache = carregar_malha_cacheada()
+                if gdf_malha_cache is not None:
+                    def adicionar_trecho(geom): folium.GeoJson(geom.__geo_interface__, style_function=lambda x: {"color": "#2563EB", "weight": 2, "opacity": 0.70}, control=False).add_to(mapa)
+                    for _, row in gdf_malha_cache.iterrows():
+                        geom = row.geometry
+                        if geom is None or geom.is_empty: continue
+                        if geom.geom_type == 'LineString': adicionar_trecho(geom)
+                        elif geom.geom_type == 'MultiLineString':
+                            for subgeom in geom.geoms: adicionar_trecho(subgeom)
+
+                folium.Marker(location=[lat_origem, lon_origem], tooltip=f"Origem: {st.session_state['local_nome']}", icon=folium.Icon(color="red", icon="home" if st.session_state.get("origem_tipo") != "GPS" else "map-marker", prefix="fa")).add_to(mapa)
+                folium.Circle(radius=raio_busca_km * 1000, location=[lat_origem, lon_origem], color="#3B82F6", fill=True, fill_opacity=0.08, weight=2, tooltip=f"Raio: {raio_busca_km} km").add_to(mapa)
+
+                if not df_recomendado.empty:
+                    agg_map = df_recomendado.groupby("Patio", as_index=False).agg(lat_patio=("lat_patio", "first"), lon_patio=("lon_patio", "first"), qtd_os=("Ordem servico", "count"), menor_dist=("Distancia_km", "min"))
+                    for _, row in agg_map.iterrows(): folium.CircleMarker(location=[row["lat_patio"], row["lon_patio"]], radius=6, color="#1D4ED8", weight=1.5, fill=True, fill_color="#3B82F6", fill_opacity=0.95, tooltip=f"Pátio: {row['Patio']}<br>OS: {row['qtd_os']}<br>Distância: {row['menor_dist']:.1f} km").add_to(mapa)
+
+                st_folium(mapa, height=650, use_container_width=True, returned_objects=[], key="mapa_final_limpo")
+            st.markdown("---")
+            #endregion 10.3.4
+
+#region 10.3.5: Cronograma de Execução de Campo (Tabela/PDF)
+            if not df_recomendado.empty:
+                df_tabela_campo = df_recomendado.copy().rename(columns={"Ordem servico": "OS", "Classificacao": "Classificação"})
+                df_tabela_campo["Data da Programação"] = df_tabela_campo["dt_prog_filtro"].dt.strftime("%d/%m/%Y")
+                colunas_exibir = ["OS", "Data da Programação", "Patio", "Ativo", "Criticidade", "Classificação", "Descrição Longa"]
+
+                col_tit_crono, col_btn_crono = st.columns([7.5, 2.5])
+                with col_btn_crono:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    try:
+                        from reportlab.lib.pagesizes import A4, landscape; from reportlab.lib import colors; from reportlab.lib.units import mm
+                        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer; from reportlab.lib.styles import getSampleStyleSheet
+                        def gerar_pdf_cronograma(df_pdf, colunas):
+                            buf = io.BytesIO()
+                            doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=10*mm, rightMargin=10*mm, topMargin=15*mm, bottomMargin=15*mm)
+                            styles, elementos = getSampleStyleSheet(), [Paragraph("📋 Cronograma de Execução de Campo", getSampleStyleSheet()["Title"]), Paragraph(f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')} | Origem: {st.session_state.get('local_nome', 'N/A')} | Raio: {raio_busca_km} km", getSampleStyleSheet()["Normal"]), Spacer(1, 6*mm)]
+                            data_rows = [[str(c) for c in colunas]]
+                            style_cell = styles["Normal"]; style_cell.fontSize, style_cell.leading = 7, 9
+                            for _, row in df_pdf[colunas].iterrows(): data_rows.append([Paragraph(str(v)[:80], style_cell) for v in row.values])
+                            col_widths = [45, 45, 35, 90, 45, 70, landscape(A4)[0] - 20*mm - 330]
+                            tabela = Table(data_rows, colWidths=col_widths, repeatRows=1)
+                            tabela.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E3A8A")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("FONTSIZE", (0, 0), (-1, 0), 8), ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("ALIGN", (0, 0), (-1, -1), "CENTER"), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")), ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]), ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]))
+                            elementos.append(tabela); doc.build(elementos); buf.seek(0)
+                            return buf.getvalue()
+
+                        st.download_button("🖨️ Gerar Impressão PDF", data=gerar_pdf_cronograma(df_tabela_campo, colunas_exibir), file_name=f"Crono_Campo_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf", mime="application/pdf", use_container_width=True)
+                    except ImportError: st.warning("⚠️ 'reportlab' não instalada.")
+                
+                with col_tit_crono: st.markdown("#### 📋 Cronograma de Execução de Campo\n<small>OS Pendentes recomendadas no raio de atuação visual por prioridade</small>", unsafe_allow_html=True)
+                def aplicar_cor_prazo(row):
+                    dt = row["dt_prog_filtro"]
+                    if pd.isna(dt): return [""] * len(row)
+                    if dt.date() < datetime.now().date(): return ["background-color: #FEE2E2; color: #7F1D1D; font-weight: 500;"] * len(row)
+                    elif dt.date() == datetime.now().date(): return ["background-color: #FEF3C7; color: #78350F; font-weight: 500;"] * len(row)
+                    return [""] * len(row)
+                st.dataframe(df_tabela_campo.style.apply(aplicar_cor_prazo, axis=1), use_container_width=True, height=350, hide_index=True, column_order=colunas_exibir)
+            else: st.info("Nenhuma OS pendente localizada dentro do raio de atuação selecionado.")
+            #endregion 10.3.5
+#endregion 10.3
+#endregion SESSÃO 10
+
+#region SESSÃO 11: Tela Isolada de Governança e Auditoria
+
+if st.session_state.get("tela_atual") == "governanca":
+    col_gov_t1, col_gov_t2 = st.columns([8, 2])
+    with col_gov_t1: st.title("🛡️ Motor de Governança e Auditoria")
+    with col_gov_t2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("⬅️ Voltar ao Painel", use_container_width=True): st.session_state.update({"tela_atual": "dashboard", "gov_auth_ok": False}); st.rerun()
+    st.markdown("Análise estatística de eficiência, variabilidade de cronograma, aderência de login e rastreabilidade de campo.")
+    st.markdown("---")
+
+    #region 11.1: Controle de acesso e segurança
+    if not st.session_state.get("gov_auth_ok", False):
+        st.error("🔒 **Acesso Restrito:** Confirme sua credencial para métricas de auditoria.")
+        col_auth1, _ = st.columns([1, 2])
+        with col_auth1:
+            with st.form("form_auth_gov"):
+                senha_confirm = st.text_input("Digite sua Senha", type="password")
+                if st.form_submit_button("Desbloquear Painel", use_container_width=True):
+                    conn = get_connection()
+                    cur = conn.cursor()
+                    cur.execute("SELECT senha_hash FROM usuarios WHERE username = %s", (st.session_state.get("username"),))
+                    row = cur.fetchone()
+                    cur.close(); release_connection(conn)
+                    if row and row[0] == hash_senha(senha_confirm): st.session_state["gov_auth_ok"] = True; st.rerun()
+                    else: st.error("❌ Senha incorreta. Acesso negado.")
+        st.stop()
+    #endregion 11.1
+
+    #region 11.2: Carregamento de dados de auditoria
+    with st.spinner("Compilando logs de auditoria e telemetria..."):
+        if st.session_state.get("chk_sim", False): df_baixas_full, df_logs = st.session_state.get("df_baixas_sim", pd.DataFrame()), st.session_state.get("df_logs_sim", pd.DataFrame())
+        else:
+            conn = get_connection()
+            df_baixas_full = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim FROM baixas", conn)
+            df_logs = pd.read_sql_query("SELECT username, data_hora_login FROM logs_acesso", conn)
+            release_connection(conn)
+
+        df_os_base = st.session_state.get("df_os", pd.DataFrame())
+        if df_baixas_full.empty or df_os_base.empty: st.warning("Não há dados suficientes para auditoria."); st.stop()
+
+        df_gov = df_baixas_full.merge(df_os_base[["Ordem servico", "Patio", "Ativo", "Classificacao", "Criticidade_rank", "Nivel_Prioridade", "Criticidade"]], left_on="os", right_on="Ordem servico", how="inner")
+        df_gov = df_gov[df_gov["status"].str.upper().isin(["REALIZADO", "REALIZADO FORA DA DATA DE PROGRAMAÇÃO", "REALIZADO FORA DO PRAZO"])]
+
+        def calc_duracao(row):
+            try:
+                diff = (pd.to_datetime(row['hora_fim'], format='%H:%M:%S') - pd.to_datetime(row['hora_inicio'], format='%H:%M:%S')).total_seconds() / 60.0
+                return diff + (24 * 60) if diff < 0 else diff
+            except: return 0.0
+
+        df_gov["Tempo_Minutos"] = df_gov.apply(calc_duracao, axis=1)
+        df_gov["Data_Real"] = pd.to_datetime(df_gov["data_inicio"], format="%d/%m/%Y", errors="coerce").dt.date
+        df_gov["Via_GPS"] = df_gov["geolocalizacao_baixa"].apply(lambda x: 0 if "Base" in str(x) or "Sede" in str(x) else 1)
+        df_gov["Alta_Prioridade"] = df_gov["Criticidade_rank"].apply(lambda x: 1 if x in [1, 2] else 0)
+    #endregion 11.2
+
+    #region 11.3: Fragmento de Governança (@st.fragment)
+    @st.fragment
+    def fragmento_governanca():
+        col_f1, col_f2, col_f3 = st.columns(3)
+        with col_f1: tecnicos_disp = sorted(df_gov["concluido_por"].dropna().unique().tolist()); tec_selecionado = st.multiselect("👤 Filtrar Colaborador(es):", tecnicos_disp, default=tecnicos_disp)
+        with col_f2: patios_gov = sorted(df_gov["Patio"].dropna().unique().tolist()); patio_selecionado = st.multiselect("📍 Filtrar Pátio(s):", patios_gov, default=patios_gov)
+        with col_f3:
+            min_d, max_d = df_gov["Data_Real"].min(), df_gov["Data_Real"].max()
+            if pd.isna(min_d): min_d = max_d = datetime.now().date()
+            data_gov = st.date_input("📅 Período de Execução:", value=(min_d, max_d), min_value=min_d, max_value=max_d, format="DD/MM/YYYY")
+
+        d_inicio, d_fim = data_gov if isinstance(data_gov, tuple) and len(data_gov) == 2 else (data_gov[0] if isinstance(data_gov, tuple) else data_gov, data_gov[0] if isinstance(data_gov, tuple) else data_gov)
+        df_gov_f = df_gov[(df_gov["concluido_por"].isin(tec_selecionado)) & (df_gov["Patio"].isin(patio_selecionado)) & (df_gov["Data_Real"] >= d_inicio) & (df_gov["Data_Real"] <= d_fim)].copy()
+
+        if df_gov_f.empty: st.info("Nenhuma execução encontrada para os filtros selecionados."); return
+
+        total_os_gov = len(df_gov_f)
+        # FIX: Evitando o NaN na divisão de minutos da Governança
+        tme_minutos = df_gov_f["Tempo_Minutos"].fillna(0).mean() 
+        taxa_gps = (df_gov_f["Via_GPS"].sum() / total_os_gov) * 100 if total_os_gov > 0 else 0
+        taxa_prio = (df_gov_f["Alta_Prioridade"].sum() / total_os_gov) * 100 if total_os_gov > 0 else 0
+
+        c_k1, c_k2, c_k3, c_k4 = st.columns(4)
+        c_k1.metric("🔧 Volume de Execução", f"{total_os_gov} OS")
+        c_k2.metric("⏱️ Tempo Médio / OS (TME)", f"{int(tme_minutos // 60)}h {int(tme_minutos % 60):02d}m" if not pd.isna(tme_minutos) else "0h 00m")
+        c_k3.metric("🎯 Aderência à Prioridade", f"{taxa_prio:.1f}%")
+        c_k4.metric("📍 Integridade de GPS", f"{taxa_gps:.1f}%")
+        st.markdown("---")
+
+        #region 11.4: Volume Diário e Produtividade Acumulada
+        col_l1_c1, col_l1_c2 = st.columns(2, gap="large")
+        df_real_dia = df_gov_f.groupby("Data_Real").size().reset_index(name="Realizado")
+        df_os_base["Data_Prog_Pure"] = pd.to_datetime(df_os_base["Data inicial programada"], errors="coerce").dt.date
+        df_plan_dia = df_os_base.groupby("Data_Prog_Pure").size().reset_index(name="Planejado_Backlog")
+
+        df_merge_vol = pd.merge(df_real_dia, df_plan_dia, left_on="Data_Real", right_on="Data_Prog_Pure", how="outer")
+        df_merge_vol["Data_Real"] = df_merge_vol["Data_Real"].combine_first(df_merge_vol["Data_Prog_Pure"])
+        df_merge_vol = df_merge_vol.fillna(0).sort_values(by="Data_Real")
+        eixo_x_l1 = [d.strftime("%d/%m") if hasattr(d, "strftime") else str(d) for d in df_merge_vol["Data_Real"]]
+
+        with col_l1_c1:
+            st.markdown("#### 📈 Volume Diário")
+            st_echarts(options={ "tooltip": {"trigger": "axis"}, "legend": {"data": ["Volume Diário", "Planejado + Backlog"], "bottom": "0%"}, "toolbox": {"show": True, "feature": {"magicType": {"type": ["line", "bar"], "title": {"line": "Linha", "bar": "Barra"}}, "restore": {"title": "Restaurar"}, "saveAsImage": {"title": "Salvar Imagem"}}}, "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}], "grid": {"left": "5%", "right": "5%", "bottom": "25%", "top": "15%", "containLabel": True}, "xAxis": {"type": "category", "data": eixo_x_l1}, "yAxis": {"type": "value"}, "series": [ {"name": "Volume Diário", "type": "bar", "data": df_merge_vol["Realizado"].tolist(), "itemStyle": {"color": "#3B82F6"}}, {"name": "Planejado + Backlog", "type": "line", "data": df_merge_vol["Planejado_Backlog"].tolist(), "smooth": True, "lineStyle": {"type": "dashed", "color": "#64748B", "width": 3}, "itemStyle": {"color": "#64748B"}} ] }, height="350px", theme="streamlit", key="gov_vol_diario")
+
+        with col_l1_c2:
+            st.markdown("#### 📈 Produtividade Acumulada")
+            df_merge_vol["Real_Acum"], df_merge_vol["Plan_Acum"] = df_merge_vol["Realizado"].cumsum(), df_merge_vol["Planejado_Backlog"].cumsum()
+            st_echarts(options={ "tooltip": {"trigger": "axis"}, "legend": {"data": ["Realizado Acumulado", "Planejado Acumulado"], "bottom": "0%"}, "toolbox": {"show": True, "feature": {"magicType": {"type": ["line", "bar"], "title": {"line": "Linha", "bar": "Barra"}}, "restore": {"title": "Restaurar"}, "saveAsImage": {"title": "Salvar Imagem"}}}, "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}], "grid": {"left": "5%", "right": "5%", "bottom": "25%", "top": "15%", "containLabel": True}, "xAxis": {"type": "category", "data": eixo_x_l1}, "yAxis": {"type": "value"}, "series": [ {"name": "Realizado Acumulado", "type": "line", "smooth": True, "data": df_merge_vol["Real_Acum"].tolist(), "areaStyle": {"color": "rgba(59,130,246,0.15)"}, "lineStyle": {"color": "#3B82F6", "width": 3}, "itemStyle": {"color": "#3B82F6"}}, {"name": "Planejado Acumulado", "type": "line", "smooth": True, "data": df_merge_vol["Plan_Acum"].tolist(), "lineStyle": {"type": "dashed", "color": "#64748B", "width": 3}, "itemStyle": {"color": "#64748B"}} ] }, height="350px", theme="streamlit", key="gov_prod_acum")
+        #endregion 11.4
+
+        #region 11.5: Produtividade Individual, Esforço e Heatmap
+        st.markdown("<br>", unsafe_allow_html=True); st.markdown("---")
+        col_l2_c1, col_l2_c2, col_l2_c3 = st.columns(3, gap="medium")
+
+        with col_l2_c1:
+            st.markdown("#### 👥 Produtividade Individual")
+            df_crit = df_gov_f.groupby("Criticidade").size().reset_index(name="Volume")
+            st_echarts(options={ "tooltip": {"trigger": "item"}, "legend": {"orient": "horizontal", "bottom": "0%"}, "series": [{ "type": "pie", "radius": ["40%", "70%"], "data": [{"value": int(r["Volume"]), "name": str(r["Criticidade"])} for _, r in df_crit.iterrows()], "label": {"show": True, "formatter": "{c}"} }] }, height="320px", key="gov_donut_criticidade")
+
+        with col_l2_c2:
+            st.markdown("#### ⏱️ Esforço x Classificação")
+            df_classif = df_gov_f.groupby("Classificacao").agg(Tempo_Medio=("Tempo_Minutos", "mean")).fillna(0).reset_index().sort_values("Tempo_Medio", ascending=True)
+            st_echarts(options={ "tooltip": {"trigger": "axis"}, "xAxis": {"type": "value"}, "yAxis": {"type": "category", "data": df_classif["Classificacao"].tolist()}, "series": [{"type": "bar", "data": df_classif["Tempo_Medio"].round(1).tolist(), "itemStyle": {"color": "#F59E0B"}}] }, height="320px", key="gov_esforco_classe")
+
+        with col_l2_c3:
+            st.markdown("#### 🔁 Tipo de OS x Frequência")
+            agg_heatmap = df_gov_f.groupby(["Patio", "Classificacao"]).size().reset_index(name="Total")
+            p_list, c_list = sorted(df_gov_f["Patio"].unique().tolist()), ["Confiabilidade e Segurança", "Segurança", "Confiabilidade"]
+            h_data, max_v = [], 0
+            for yi, c_n in enumerate(c_list):
+                for xi, p_n in enumerate(p_list):
+                    val = int(agg_heatmap[(agg_heatmap["Patio"] == p_n) & (agg_heatmap["Classificacao"] == c_n)]["Total"].iloc[0]) if not agg_heatmap[(agg_heatmap["Patio"] == p_n) & (agg_heatmap["Classificacao"] == c_n)].empty else 0
+                    h_data.append([xi, yi, val]); max_v = max(max_v, val)
+            st_echarts(options={ "tooltip": {"position": "top"}, "grid": {"height": "65%", "top": "5%", "bottom": "20%", "left": "20%"}, "xAxis": {"type": "category", "data": p_list, "axisLabel": {"interval": 0, "rotate": 45}}, "yAxis": {"type": "category", "data": c_list}, "visualMap": {"min": 0, "max": max_v if max_v > 0 else 5, "orient": "horizontal", "left": "center", "bottom": "0%", "inRange": {"color": ["#F8FAFC", "#93C5FD", "#1D4ED8"]}}, "series": [{"type": "heatmap", "data": h_data, "label": {"show": True}, "itemStyle": {"borderColor": "#FFFFFF", "borderWidth": 1.5}}] }, height="320px", key="gov_heatmap_freq")
+        #endregion 11.5
+
+        #region 11.6: Aderência, Top Técnicos e Variabilidade
+        st.markdown("<br>", unsafe_allow_html=True); st.markdown("---")
+        col_l3_c1, col_l3_c2, col_l3_c3 = st.columns(3, gap="medium")
+
+        with col_l3_c1:
+            st.markdown("#### 🕒 Aderência: Login vs. Apontamento")
+            df_logs["Data_Real_Pure"] = pd.to_datetime(df_logs["data_hora_login"]).dt.date
+            df_gov_f["dt_baixa_calc"] = pd.to_datetime(df_gov_f["data_fim"] + " " + df_gov_f["hora_fim"], format="%d/%m/%Y %H:%M:%S", errors="coerce")
+            df_primeira_baixa = df_gov_f.groupby(["concluido_por", "Data_Real"])["dt_baixa_calc"].min().reset_index(name="dt_baixa_1os")
+            df_aderencia = df_logs.merge(df_primeira_baixa, left_on=["username", "Data_Real_Pure"], right_on=["concluido_por", "Data_Real"])
+
+            if not df_aderencia.empty:
+                df_aderencia["x_date"] = pd.to_datetime(df_aderencia["data_hora_login"]).dt.strftime("%d/%m")
+                dt_login, dt_baixa = pd.to_datetime(df_aderencia["data_hora_login"]), pd.to_datetime(df_aderencia["dt_baixa_1os"])
+                df_aderencia["y_login_frac"] = dt_login.dt.hour + dt_login.dt.minute / 60.0
+                df_aderencia["y_baixa_frac"] = dt_baixa.dt.hour + dt_baixa.dt.minute / 60.0
+                df_aderencia = df_aderencia.sort_values("Data_Real_Pure")
+                login_data = [[row["x_date"], round(row["y_login_frac"], 2), row["username"]] for _, row in df_aderencia.iterrows()]
+                baixa_data = [[row["x_date"], round(row["y_baixa_frac"], 2), row["username"]] for _, row in df_aderencia.iterrows()]
+                st_echarts(options={ "tooltip": { "trigger": "item", "formatter": JsCode("""function (p) { var hh = Math.floor(p.data[1]); var mm = Math.round((p.data[1] - hh) * 60); if (mm == 60) { hh += 1; mm = 0; } return '<b>' + p.data[2] + '</b><br>' + p.seriesName + ': ' + (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm + '<br>Data: ' + p.data[0]; }""") }, "legend": {"data": ["Login", "Primeira Baixa"], "bottom": "0%"}, "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}], "grid": {"top": "10%", "bottom": "25%", "left": "12%", "right": "5%"}, "xAxis": {"type": "category", "data": sorted(df_aderencia["x_date"].unique().tolist())}, "yAxis": { "type": "value", "name": "Horário", "min": 0, "max": 24, "interval": 4, "axisLabel": { "formatter": JsCode("""function(value) { var hh = Math.floor(value); return (hh < 10 ? '0' : '') + hh + ':00'; }""") } }, "series": [ {"name": "Login", "type": "scatter", "data": login_data, "symbolSize": 10, "itemStyle": {"color": "#3B82F6"}}, {"name": "Primeira Baixa", "type": "scatter", "data": baixa_data, "symbolSize": 10, "itemStyle": {"color": "#10B981"}} ] }, height="400px", theme="streamlit", key="gov_scatter_aderencia")
+            else: st.info("Dados insuficientes para cruzar login com apontamento.")
+
+        with col_l3_c2:
+            st.markdown("#### 🔝 Top Técnicos: OS por Pátio")
+            df_freq = df_gov_f.groupby(["concluido_por", "Patio"]).size().reset_index(name="Qtd")
+            tecnicos_top, patios_top = df_freq["concluido_por"].unique().tolist(), sorted(df_freq["Patio"].unique().tolist())
+            series_top = [{"name": patio, "type": "bar", "stack": "total", "data": [int(df_freq[(df_freq["concluido_por"] == tec) & (df_freq["Patio"] == patio)]["Qtd"].iloc[0]) if not df_freq[(df_freq["concluido_por"] == tec) & (df_freq["Patio"] == patio)].empty else 0 for tec in tecnicos_top], "label": {"show": False}} for patio in patios_top]
+            st_echarts(options={ "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}}, "legend": {"bottom": "0%", "textStyle": {"fontSize": 10}}, "grid": {"left": "5%", "right": "5%", "bottom": "18%", "top": "10%", "containLabel": True}, "xAxis": {"type": "category", "data": tecnicos_top, "axisLabel": {"interval": 0, "rotate": 30, "fontSize": 10}}, "yAxis": {"type": "value"}, "series": series_top }, height="400px", theme="streamlit", key="gov_top_tec")
+
+        with col_l3_c3:
+            st.markdown("#### 📊 Variabilidade de Execução")
+            # FIX: Garantindo que valores nulos sejam limpos para evitar falha no e-charts
+            df_var = df_gov_f.groupby("concluido_por")["Tempo_Minutos"].mean().fillna(0).reset_index().sort_values("Tempo_Minutos", ascending=True)
+            st_echarts(options={ "tooltip": {"trigger": "axis"}, "grid": {"left": "5%", "right": "8%", "bottom": "10%", "top": "10%", "containLabel": True}, "xAxis": {"type": "value", "name": "Minutos"}, "yAxis": {"type": "category", "data": df_var["concluido_por"].tolist(), "axisLabel": {"fontSize": 10}}, "series": [{"type": "bar", "data": df_var["Tempo_Minutos"].round(1).tolist(), "itemStyle": {"color": "#8B5CF6"}, "label": {"show": True, "position": "right", "formatter": "{c} min", "fontSize": 10}}] }, height="400px", theme="streamlit", key="gov_variab")
+        #endregion 11.6
+
+        #region 11.7: Tabela de Auditoria GPS
+        st.markdown("---")
+        st.markdown("#### 📍 Tabela de Auditoria de Apontamentos (GPS)")
+        df_auditoria = df_gov_f[["Ordem servico", "concluido_por", "data_inicio", "hora_fim", "geolocalizacao_baixa", "equipe", "Tempo_Minutos"]].copy().sort_values(by=["data_inicio", "hora_fim"], ascending=[False, False]).rename(columns={"Ordem servico": "OS", "concluido_por": "Apontador Principal", "data_inicio": "Data", "hora_fim": "Hora Apontada", "geolocalizacao_baixa": "Localização do Celular", "equipe": "Co-Executantes", "Tempo_Minutos": "Tempo Gasto (min)"})
+        df_auditoria["Tempo Gasto (min)"] = df_auditoria["Tempo Gasto (min)"].fillna(0).round(0).astype(int)
+        st.dataframe(df_auditoria.style.map(lambda v: 'background-color: #FEE2E2; color: #991B1B; font-weight: bold;' if pd.notna(v) and ('Base' in str(v) or 'Sede' in str(v)) else 'color: #065F46;', subset=["Localização do Celular"]), use_container_width=True, height=300, hide_index=True)
+        #endregion 11.7
+        
+    fragmento_governanca()
+    st.stop()
+#endregion SESSÃO 11
 #endregion
-#endregion
-
-
