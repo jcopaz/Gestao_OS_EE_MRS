@@ -182,7 +182,6 @@ for _key, _val in _defaults_session.items():
     if _key not in st.session_state:
         st.session_state[_key] = _val
 #endregion
-
 #endregion SESSÃO 1
 
 #region SESSÃO 2: Barreira de Login com Governança e GPS Obrigatório
@@ -1058,14 +1057,12 @@ def render_tela_admin():
     #endregion 3.8.5
 #endregion 3.8
 
-#region 3.9: Gerador de App Offline (HTML/JS)
+#region 3.9: Gerador Offline - Extração de Dados e CSS (Estilos)
 def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
-    if df_pendentes.empty:
-        return b""
+    if df_pendentes.empty: return b""
         
     colunas_export = ["Ordem servico", "Ativo", "Atividade ativo", "Patio", "Criticidade"]
-    if "Descrição Longa" in df_pendentes.columns:
-        colunas_export.append("Descrição Longa")
+    if "Descrição Longa" in df_pendentes.columns: colunas_export.append("Descrição Longa")
         
     df_export = df_pendentes.head(100)[colunas_export].fillna("")
     os_json = df_export.to_json(orient="records", force_ascii=False)
@@ -1076,13 +1073,12 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         cur = conn.cursor()
         cur.execute("SELECT username FROM usuarios")
         for row in cur.fetchall():
-            if row[0] != usuario:
-                opcoes_usuarios += f'<option value="{row[0]}">{row[0]}</option>'
+            if row[0] != usuario: opcoes_usuarios += f'<option value="{row[0]}">{row[0]}</option>'
         cur.close()
     except Exception: pass
     finally: release_connection(conn)
     
-    html = f"""<!DOCTYPE html>
+    html_head = f"""<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
@@ -1104,7 +1100,11 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         .alerta-foco {{ background-color: #FEF3C7; color: #92400E; padding: 10px; border-radius: 8px; font-size: 14px; margin-bottom: 15px; border: 1px solid #F59E0B; display: none; }}
         .card-bloqueado {{ opacity: 0.55; border-left: 4px solid #94A3B8 !important; background-color: #F8FAFC; }}
     </style>
-</head>
+</head>"""
+#endregion 3.9
+
+#region 3.10: Gerador Offline - Estrutura do Corpo (HTML)
+    html_body = f"""
 <body>
     <div id="networkStatus" class="status-bar online">📡 Online</div>
     <div class="card" style="border-left: 4px solid #10B981;">
@@ -1140,8 +1140,11 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 
     <button onclick="salvarLotePreenchido()" style="background-color: #F59E0B; font-size: 18px; margin-bottom: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">💾 Gravar OS(s) Preenchida(s)</button>
 
-    <div id="listaOS"></div>
+    <div id="listaOS"></div>"""
+#endregion 3.10
 
+#region 3.11: Gerador Offline - Lógica JS Core (Banco Local e Renderização)
+    js_core = f"""
     <script>
         const API_URL = "https://api-sgo-mrs.onrender.com/sincronizar_baixa_offline";
         const OS_DADOS = {os_json};
@@ -1226,26 +1229,27 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                         <input type="file" id="foto_${{os['Ordem servico']}}" accept="image/*" capture="environment" style="width: 100%; margin-bottom: 5px;" ${{btnInputsDisabled}}>
                     </div>`;
             }});
-        }}
+        }}"""
+#endregion 3.11
 
-        // --- NOVA LÓGICA DE SALVAMENTO EM LOTE ---
+#region 3.12: Gerador Offline - Lógica JS de Lote e Confirmação de Tempo
+    js_lote = f"""
         async function salvarLotePreenchido() {{
             let osParaSalvar = [];
             let osIncompletas = [];
             
-            // Verifica a trava de prioridade globalmente
             let temMuitoAlta = OS_DADOS.filter(os => !osConcluidasSessao.has(os['Ordem servico'])).some(os => os.Criticidade === "Muito Alta");
 
             for (let os of OS_DADOS) {{
                 let os_id = os['Ordem servico'];
                 if (osConcluidasSessao.has(os_id)) continue;
-                if (temMuitoAlta && os.Criticidade !== "Muito Alta") continue; // Ignora as bloqueadas
+                if (temMuitoAlta && os.Criticidade !== "Muito Alta") continue; 
 
                 let horaIni = document.getElementById(`hora_ini_${{os_id}}`);
                 let horaFim = document.getElementById(`hora_fim_${{os_id}}`);
                 let fotoInput = document.getElementById(`foto_${{os_id}}`);
 
-                if (!horaIni) continue; // OS não está renderizada na tela atual
+                if (!horaIni) continue; 
 
                 let isPreenchida = horaIni.value || horaFim.value || fotoInput.files.length > 0;
                 let isCompleta = horaIni.value && horaFim.value && fotoInput.files.length > 0;
@@ -1253,6 +1257,22 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 if (isPreenchida && !isCompleta) {{
                     osIncompletas.push(os_id);
                 }} else if (isCompleta) {{
+                    
+                    // --- VALIDAÇÃO INTELIGENTE (CONFIRMAÇÃO EM VEZ DE BLOQUEIO) ---
+                    let [hI, mI] = horaIni.value.split(':').map(Number);
+                    let [hF, mF] = horaFim.value.split(':').map(Number);
+                    let minIni = hI * 60 + mI;
+                    let minFim = hF * 60 + mF;
+                    
+                    let duracaoMin = minFim < minIni ? (24 * 60 - minIni) + minFim : minFim - minIni;
+
+                    if (duracaoMin > 12 * 60) {{
+                        let resposta = confirm(`⚠️ Atenção na OS ${{os_id}}:\\n\\nA duração calculada é de ${(duracaoMin/60).toFixed(1)} horas. Está correto?\\n\\n(Se o serviço terminou à tarde, lembre-se de usar 13:00 em vez de 01:00). Clique em OK para confirmar e salvar.`);
+                        if (!resposta) {{
+                            return; 
+                        }}
+                    }}
+
                     osParaSalvar.push({{
                         os_id: os_id,
                         ativo_id: os.Ativo,
@@ -1276,7 +1296,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             const acomp = document.getElementById(`acompGlobal`).value;
             const dataHora = new Date().toISOString();
 
-            // Pega o GPS apenas 1x para o lote todo
             navigator.geolocation.getCurrentPosition(
                 (pos) => {{ gravarNoBanco(osParaSalvar, acomp, dataHora, pos.coords.latitude, pos.coords.longitude); }}, 
                 (err) => {{ gravarNoBanco(osParaSalvar, acomp, dataHora, 0.0, 0.0); }}, 
@@ -1289,7 +1308,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 
             const finalizarProcesso = () => {{
                 alert(`✅ ${{totalSalvas}} OS(s) gravada(s) com sucesso no celular!`);
-                renderizarOS(); // Só recarrega a tela AQUI, apagando as que já foram salvas
+                renderizarOS();
                 atualizarContador();
                 if(navigator.onLine) sincronizarDados();
             }};
@@ -1320,8 +1339,11 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 }}
                 finalizarProcesso();
             }}
-        }}
+        }}"""
+#endregion 3.12
 
+#region 3.13: Gerador Offline - Lógica JS de Sincronização e Fetch
+    js_sync = f"""
         async function enviarLote(baixas) {{
             if (baixas.length === 0) return;
             document.getElementById('btnSync').disabled = true;
@@ -1405,9 +1427,11 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     </script>
 </body>
 </html>"""
-    return html.encode("utf-8")
-#endregion 3.9
-#endregion SESSÃO 3
+
+    # Concatenação final de todas as partes modulares criadas acima
+    html_final = html_head + html_body + js_core + js_lote + js_sync
+    return html_final.encode("utf-8")
+#endregion 3.13
 #endregion
 
 #region SESSÃO 4: Banco de Coordenadas Fixo
@@ -2462,6 +2486,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                 else:
                     st.info("Nenhuma OS encontrada para a pesquisa.")
 #endregion 10.2.4
+#endregion 10.2
 
 #region 10.3: ABA 2 — Roteirização e Mapa de Campo
     if tab2 is not None:
@@ -2700,21 +2725,39 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                                     if origem != "GPS": st.warning("📍 A geolocalização é obrigatória. Atualize sua posição.")
                                     elif not todos_preenchidos: st.warning("⚠️ Preencha os horários de **início e fim** de todas as OSs.")
                                     else:
+                                        # --- PREPARAÇÃO DE DADOS (SEM BLOQUEIO DE TEMPO) ---
                                         geo_baixa = f"{st.session_state.get('local_nome', 'Local')} (Lat: {st.session_state.get('lat_partida')}, Lon: {st.session_state.get('lon_partida')})"
                                         equipe_str = ", ".join(equipe_selecionada) if equipe_selecionada else "Sozinho"
-                                        data_hoje_br, realizado_dt = datetime.now().strftime("%d/%m/%Y"), agora_dt()
+                                        realizado_dt = agora_dt()
                                         
                                         for os_id in set(os_selecionadas):
                                             mask = (st.session_state["df_os"]["Ordem servico"].astype(str) == str(os_id))
                                             dt_prog = st.session_state["df_os"].loc[mask, "Data inicial programada"].iloc[0] if len(st.session_state["df_os"].loc[mask]) > 0 else pd.NaT
                                             coord = st.session_state["df_os"].loc[mask, "Coordenacao"].iloc[0] if len(st.session_state["df_os"].loc[mask]) > 0 else "Campo"
                                             
+                                            h_i = apontamentos[os_id]["inicio"]
+                                            h_f = apontamentos[os_id]["fim"]
+                                            
+                                            # --- CORREÇÃO AUTOMÁTICA DE DATA PARA O SAP (CRUZAMENTO DE MADRUGADA) ---
+                                            if h_f < h_i:
+                                                data_inicio_str = (realizado_dt - timedelta(days=1)).strftime("%d/%m/%Y")
+                                            else:
+                                                data_inicio_str = realizado_dt.strftime("%d/%m/%Y")
+                                                
+                                            data_fim_str = realizado_dt.strftime("%d/%m/%Y")
+                                            
                                             upsert_baixa(
-                                                os_id=str(os_id), status=determinar_status_execucao(pd.to_datetime(dt_prog, errors="coerce"), realizado_dt),
-                                                realizado_em_str=formatar_dt_br(realizado_dt), coordenacao=coord, concluido_por=usr_logado,
-                                                geolocalizacao_baixa=geo_baixa, equipe=equipe_str, data_inicio=data_hoje_br,
-                                                hora_inicio=apontamentos[os_id]["inicio"].strftime("%H:%M:%S"), data_fim=data_hoje_br,
-                                                hora_fim=apontamentos[os_id]["fim"].strftime("%H:%M:%S")
+                                                os_id=str(os_id), 
+                                                status=determinar_status_execucao(pd.to_datetime(dt_prog, errors="coerce"), realizado_dt),
+                                                realizado_em_str=formatar_dt_br(realizado_dt), 
+                                                coordenacao=coord, 
+                                                concluido_por=usr_logado,
+                                                geolocalizacao_baixa=geo_baixa, 
+                                                equipe=equipe_str, 
+                                                data_inicio=data_inicio_str,      # Data tratada (ontem se cruzou a meia noite)
+                                                hora_inicio=h_i.strftime("%H:%M:%S"), 
+                                                data_fim=data_fim_str,            # Data tratada (hoje)
+                                                hora_fim=h_f.strftime("%H:%M:%S")
                                             )
 
                                         fotos_enviadas = 0
