@@ -2292,12 +2292,30 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                 try:
                     df_evidencias = carregar_evidencias_df()
                     col_atividade_lista = "Atividade ativo" if "Atividade ativo" in df_lista.columns else None
+                    
+                    # Faz o cruzamento para pegar as fotos do modo Online (Supabase)
                     if not df_evidencias.empty and "Ativo" in df_lista.columns and col_atividade_lista:
                         df_lista = df_lista.merge(df_evidencias[["ativo", "atividade", "foto_url"]], left_on=["Ativo", col_atividade_lista], right_on=["ativo", "atividade"], how="left")
-                        df_lista["Evidência"] = df_lista["foto_url"].apply(lambda url: str(url) if pd.notna(url) and str(url).startswith("http") else None)
-                        df_lista.drop(columns=["ativo", "atividade", "foto_url"], inplace=True, errors="ignore")
-                    else: df_lista["Evidência"] = ""
-                except Exception: df_lista["Evidência"] = ""
+                    else: 
+                        df_lista["foto_url"] = None
+
+                    # --- LÓGICA HÍBRIDA DE EVIDÊNCIAS ---
+                    def obter_link_ou_foto(row):
+                        # 1º Tenta pegar a foto do modo Offline (Base64 salva direto na OS do Neon)
+                        if "foto_evidencia" in row and pd.notna(row["foto_evidencia"]) and str(row["foto_evidencia"]).startswith("data:image"):
+                            return str(row["foto_evidencia"])
+                        # 2º Tenta pegar a foto do modo Online (Link HTTP do Supabase)
+                        elif "foto_url" in row and pd.notna(row["foto_url"]) and str(row["foto_url"]).startswith("http"):
+                            return str(row["foto_url"])
+                        return None
+
+                    df_lista["Evidência"] = df_lista.apply(obter_link_ou_foto, axis=1)
+                    
+                    # Limpa as colunas auxiliares
+                    df_lista.drop(columns=["ativo", "atividade", "foto_url"], inplace=True, errors="ignore")
+                    
+                except Exception: 
+                    df_lista["Evidência"] = None
 
                 if "Data inicial programada" in df_lista.columns: df_lista["Data inicial programada"] = pd.to_datetime(df_lista["Data inicial programada"], errors="coerce").dt.strftime("%d/%m/%Y")
                 if "Data/Hora Realizado" in df_lista.columns: df_lista["Data/Hora Realizado"] = pd.to_datetime(df_lista["Data/Hora Realizado"], dayfirst=True, errors="coerce").dt.strftime("%d/%m/%Y %H:%M").fillna("")
@@ -2307,9 +2325,15 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     if c not in df_lista.columns: df_lista[c] = ""
 
                 if not df_lista.empty:
-                    st.dataframe(df_lista[colunas_ordem].style.set_properties(**{'text-align': 'center'}).set_table_styles([{'selector': 'th', 'props': [('text-align', 'center')]}]), use_container_width=True, height=400, hide_index=True, column_config={"Evidência": st.column_config.LinkColumn("📷 Evidência", display_text="📷 Ver Foto")})
-                #endregion 10.2.4
-#endregion 10.2
+                    st.dataframe(
+                        df_lista[colunas_ordem].style.set_properties(**{'text-align': 'center'}).set_table_styles([{'selector': 'th', 'props': [('text-align', 'center')]}]), 
+                        use_container_width=True, 
+                        height=400, 
+                        hide_index=True, 
+                        # A MÁGICA FINAL: Transforma a coluna em uma miniatura de Imagem!
+                        column_config={"Evidência": st.column_config.ImageColumn("📷 Evidência")}
+                    )
+#endregion 10.2.4
 
 #region 10.3: ABA 2 — Roteirização e Mapa de Campo
     if tab2 is not None:
