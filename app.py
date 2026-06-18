@@ -1057,7 +1057,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     if "Descrição Longa" in df_pendentes.columns:
         colunas_export.append("Descrição Longa")
         
-    df_export = df_pendentes.head(50)[colunas_export]
+    # O .fillna("") previne erros de JS caso alguma OS venha com dados vazios do SAP
+    df_export = df_pendentes.head(50)[colunas_export].fillna("")
     os_json = df_export.to_json(orient="records", force_ascii=False)
     
     html = f"""<!DOCTYPE html>
@@ -1092,20 +1093,32 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     <div id="listaOS"></div>
 
     <script>
-        // COLOQUE AQUI A SUA URL REAL DO RENDER!
-        const API_URL = "https://api-sgo-mrs.onrender.com"; 
+        // COLOQUE AQUI A SUA URL DA API NO RENDER!
+        const API_URL = "https://api-sgo-mrs.onrender.com/sincronizar_baixa_offline"; 
         const OS_DADOS = {os_json};
         const USUARIO = "{usuario}";
-        let db;
+        
+        let db = null;
+        let filaMemoria = []; // Redundância para celulares que bloqueiam banco offline
 
-        const request = indexedDB.open("SGO_Offline_DB", 2); // Atualizei a versão do banco interno para aceitar os novos campos
-        request.onupgradeneeded = (e) => {{
-            db = e.target.result;
-            if (!db.objectStoreNames.contains("baixas")) {{
-                db.createObjectStore("baixas", {{ keyPath: "os_id" }});
-            }}
-        }};
-        request.onsuccess = (e) => {{ db = e.target.result; renderizarOS(); atualizarContador(); }};
+        // 1. FORÇA A RENDERIZAÇÃO IMEDIATA DAS OS (Ignorando se o DB vai abrir ou não)
+        renderizarOS();
+
+        // 2. TENTA ABRIR O BANCO EM SEGUNDO PLANO
+        try {{
+            const request = indexedDB.open("SGO_Offline_DB", 3);
+            request.onupgradeneeded = (e) => {{
+                db = e.target.result;
+                if (!db.objectStoreNames.contains("baixas")) {{
+                    db.createObjectStore("baixas", {{ keyPath: "os_id" }});
+                }}
+            }};
+            request.onsuccess = (e) => {{ 
+                db = e.target.result; 
+                atualizarContador(); 
+            }};
+            request.onerror = (e) => {{ console.warn("Navegador bloqueou DB. Ativando Modo Memória."); }};
+        }} catch (err) {{ console.warn("Erro ao iniciar banco local", err); }}
 
         function updateNetworkStatus() {{
             const statusDiv = document.getElementById('networkStatus');
@@ -1136,22 +1149,23 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                         
                         <div class="input-group">
                             <label>Acompanhante (Matrícula/Nome):</label>
-                            <input type="text" id="acomp_${{os['Ordem servico']}}" placeholder="Deixe em branco se estiver sozinho">
-                            
-                            <label>Horário de Início (Obrigatório):</label>
+                            <input type="text" id="acomp_${{os['Ordem servico']}}" placeholder="Sozinho">
+                            <label>Início (Obrigatório):</label>
                             <input type="time" id="hora_ini_${{os['Ordem servico']}}">
-                            
-                            <label>Horário de Fim (Obrigatório):</label>
+                            <label>Fim (Obrigatório):</label>
                             <input type="time" id="hora_fim_${{os['Ordem servico']}}">
                         </div>
 
                         <input type="file" id="foto_${{os['Ordem servico']}}" accept="image/*" capture="environment" style="width: 100%; margin-bottom: 10px;">
-                        <button onclick="registrarBaixa('${{os['Ordem servico']}}', '${{os.Ativo}}')">✅ Dar Baixa Offline</button>
+                        <button onclick="registrarBaixa('${{os['Ordem servico']}}')">✅ Dar Baixa Offline</button>
                     </div>`;
             }});
         }}
 
-        async function registrarBaixa(os_id, ativo_id) {{
+        async function registrarBaixa(os_id) {{
+            const osObj = OS_DADOS.find(o => o['Ordem servico'] == os_id);
+            const ativo_id = osObj ? osObj.Ativo : 'DESCONHECIDO';
+            
             const fotoInput = document.getElementById(`foto_${{os_id}}`);
             const acomp = document.getElementById(`acomp_${{os_id}}`).value;
             const horaIni = document.getElementById(`hora_ini_${{os_id}}`).value;
@@ -1169,65 +1183,90 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                     data_hora: dataHora, foto: fotoBlob, usuario: USUARIO,
                     acompanhante: acomp, horario_inicio: horaIni, horario_fim: horaFim
                 }};
-                const tx = db.transaction("baixas", "readwrite");
-                tx.objectStore("baixas").put(baixa);
-                tx.oncomplete = () => {{
-                    alert("✅ Salvo com segurança no celular!");
+                
+                if (db) {{
+                    const tx = db.transaction("baixas", "readwrite");
+                    tx.objectStore("baixas").put(baixa);
+                    tx.oncomplete = () => {{
+                        alert("✅ Salvo com segurança no celular!");
+                        document.getElementById(`card_${{os_id}}`).style.display = 'none';
+                        atualizarContador();
+                        if(navigator.onLine) sincronizarDados();
+                    }};
+                }} else {{
+                    // Fallback para celulares bloqueados
+                    filaMemoria.push(baixa);
+                    alert("⚠️ Baixa salva temporariamente! Como seu navegador bloqueou o salvamento local, NÃO FECHE esta tela até chegar em área com internet e clicar em 'Enviar Dados'.");
                     document.getElementById(`card_${{os_id}}`).style.display = 'none';
                     atualizarContador();
                     if(navigator.onLine) sincronizarDados();
-                }};
+                }}
             }};
 
             navigator.geolocation.getCurrentPosition(
                 (pos) => {{ salvarNoBanco(pos.coords.latitude, pos.coords.longitude); }}, 
-                (err) => {{ 
-                    alert("Aviso: O navegador bloqueou o GPS. O sistema usará a localização extraída direto da foto que você acabou de tirar. Certifique-se de que a localização da Câmera do celular está ativada!"); 
-                    salvarNoBanco(0.0, 0.0); 
-                }}, 
+                (err) => {{ salvarNoBanco(0.0, 0.0); }}, 
                 {{ enableHighAccuracy: true, timeout: 10000 }}
             );
         }}
 
-        function sincronizarDados() {{
-            if (!navigator.onLine) return;
-            const tx = db.transaction("baixas", "readonly");
-            const store = tx.objectStore("baixas");
-            const req = store.getAll();
-            req.onsuccess = async () => {{
-                const baixas = req.result;
-                if (baixas.length === 0) return;
-                document.getElementById('btnSync').disabled = true;
-                document.getElementById('btnSync').innerText = "Sincronizando...";
+        async function enviarLote(baixas) {{
+            if (baixas.length === 0) return;
+            document.getElementById('btnSync').disabled = true;
+            document.getElementById('btnSync').innerText = "Sincronizando...";
 
-                for (let baixa of baixas) {{
-                    let fd = new FormData();
-                    fd.append("os_id", baixa.os_id); fd.append("ativo_id", baixa.ativo_id); fd.append("usuario", baixa.usuario);
-                    fd.append("lat_browser", baixa.lat); fd.append("lon_browser", baixa.lon); fd.append("data_hora_local", baixa.data_hora);
-                    fd.append("acompanhante", baixa.acompanhante); 
-                    fd.append("horario_inicio", baixa.horario_inicio); 
-                    fd.append("horario_fim", baixa.horario_fim);
-                    fd.append("foto", baixa.foto, "evidencia.jpg");
+            for (let baixa of baixas) {{
+                let fd = new FormData();
+                fd.append("os_id", baixa.os_id); fd.append("ativo_id", baixa.ativo_id); fd.append("usuario", baixa.usuario);
+                fd.append("lat_browser", baixa.lat); fd.append("lon_browser", baixa.lon); fd.append("data_hora_local", baixa.data_hora);
+                fd.append("acompanhante", baixa.acompanhante); 
+                fd.append("horario_inicio", baixa.horario_inicio); 
+                fd.append("horario_fim", baixa.horario_fim);
+                fd.append("foto", baixa.foto, "evidencia.jpg");
 
-                    try {{
-                        let res = await fetch(API_URL, {{ method: "POST", body: fd }});
-                        if (res.ok) {{
+                try {{
+                    let res = await fetch(API_URL, {{ method: "POST", body: fd }});
+                    if (res.ok) {{
+                        if (db) {{
                             const txDel = db.transaction("baixas", "readwrite");
                             txDel.objectStore("baixas").delete(baixa.os_id);
-                            txDel.oncomplete = () => atualizarContador();
+                        }} else {{
+                            filaMemoria = filaMemoria.filter(b => b.os_id !== baixa.os_id);
                         }}
-                    }} catch (e) {{ console.error("Falha ao enviar", e); }}
-                }}
-                document.getElementById('btnSync').disabled = false;
-                document.getElementById('btnSync').innerText = "Enviar Dados Localizados";
-            }};
+                    }}
+                }} catch (e) {{ console.error("Falha ao enviar", e); }}
+            }}
+            atualizarContador();
+            document.getElementById('btnSync').disabled = false;
+            document.getElementById('btnSync').innerText = "Enviar Dados Localizados";
+        }}
+
+        function sincronizarDados() {{
+            if (!navigator.onLine) return;
+            if (db) {{
+                try {{
+                    const tx = db.transaction("baixas", "readonly");
+                    const store = tx.objectStore("baixas");
+                    const req = store.getAll();
+                    req.onsuccess = async () => {{ await enviarLote(req.result); }};
+                }} catch (e) {{ enviarLote(filaMemoria); }}
+            }} else {{
+                enviarLote(filaMemoria);
+            }}
         }}
 
         function atualizarContador() {{
-            const tx = db.transaction("baixas", "readonly");
-            const req = tx.objectStore("baixas").count();
-            req.onsuccess = () => {{ document.getElementById('contadorFila').innerText = req.result; }};
+            if (db) {{
+                try {{
+                    const tx = db.transaction("baixas", "readonly");
+                    const req = tx.objectStore("baixas").count();
+                    req.onsuccess = () => {{ document.getElementById('contadorFila').innerText = req.result; }};
+                }} catch (e) {{ document.getElementById('contadorFila').innerText = filaMemoria.length; }}
+            }} else {{
+                document.getElementById('contadorFila').innerText = filaMemoria.length;
+            }}
         }}
+        
         updateNetworkStatus();
     </script>
 </body>
