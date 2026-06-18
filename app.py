@@ -1102,8 +1102,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         .input-group input, .input-group select {{ width: 100%; padding: 8px; border: 1px solid #CBD5E1; border-radius: 4px; box-sizing: border-box; margin-bottom: 8px; font-size: 14px; background-color: white; }}
         .badge-crit {{ background-color: #FEF2F2; color: #991B1B; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; border: 1px solid #FF4B4B; display: inline-block; margin-bottom: 5px;}}
         .alerta-foco {{ background-color: #FEF3C7; color: #92400E; padding: 10px; border-radius: 8px; font-size: 14px; margin-bottom: 15px; border: 1px solid #F59E0B; display: none; }}
-        
-        /* Classe CSS para OS Bloqueada (Cinza e Transparente) */
         .card-bloqueado {{ opacity: 0.55; border-left: 4px solid #94A3B8 !important; background-color: #F8FAFC; }}
     </style>
 </head>
@@ -1139,6 +1137,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     <div id="alertaFoco" class="alerta-foco">
         ⚠️ <b>Foco Operacional:</b> Existem OS Críticas (Muito Alta). As demais estão bloqueadas até que estas sejam concluídas.
     </div>
+
+    <button onclick="salvarLotePreenchido()" style="background-color: #F59E0B; font-size: 18px; margin-bottom: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">💾 Gravar OS(s) Preenchida(s)</button>
 
     <div id="listaOS"></div>
 
@@ -1197,14 +1197,10 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             alerta.style.display = temMuitoAlta ? "block" : "none";
 
             osFiltradas.forEach(os => {{
-                // LÓGICA DE BLOQUEIO VISUAL (Sem esconder a OS)
                 const isBloqueada = temMuitoAlta && os.Criticidade !== "Muito Alta";
                 const classeCard = isBloqueada ? "card card-bloqueado" : "card";
                 const msgBloqueio = isBloqueada ? `<div style="color:#EF4444; font-weight:bold; font-size:12px; margin-bottom:8px;">🔒 Conclua a OS Prioritária para liberar.</div>` : ``;
                 const btnInputsDisabled = isBloqueada ? "disabled" : "";
-                const btnHTML = isBloqueada 
-                    ? `<button disabled>🔒 OS Bloqueada</button>`
-                    : `<button onclick="registrarBaixa('${{os['Ordem servico']}}')">✅ Dar Baixa Offline</button>`;
 
                 const descLonga = os['Descrição Longa'] ? os['Descrição Longa'] : 'N/A';
                 const badgeCrit = os.Criticidade === "Muito Alta" ? `<div class="badge-crit">⚠️ ${{os.Criticidade}}</div>` : `<div style="font-size:12px; color:#64748B; margin-bottom:5px;">${{os.Criticidade}}</div>`;
@@ -1227,60 +1223,103 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                             <input type="time" id="hora_fim_${{os['Ordem servico']}}" ${{btnInputsDisabled}}>
                         </div>
 
-                        <input type="file" id="foto_${{os['Ordem servico']}}" accept="image/*" capture="environment" style="width: 100%; margin-bottom: 10px;" ${{btnInputsDisabled}}>
-                        ${{btnHTML}}
+                        <input type="file" id="foto_${{os['Ordem servico']}}" accept="image/*" capture="environment" style="width: 100%; margin-bottom: 5px;" ${{btnInputsDisabled}}>
                     </div>`;
             }});
         }}
 
-        async function registrarBaixa(os_id) {{
-            const osObj = OS_DADOS.find(o => o['Ordem servico'] == os_id);
-            const ativo_id = osObj ? osObj.Ativo : 'DESCONHECIDO';
+        // --- NOVA LÓGICA DE SALVAMENTO EM LOTE ---
+        async function salvarLotePreenchido() {{
+            let osParaSalvar = [];
+            let osIncompletas = [];
             
-            const fotoInput = document.getElementById(`foto_${{os_id}}`);
-            // CAPTURA O ACOMPANHANTE GLOBAL
-            const acomp = document.getElementById(`acompGlobal`).value;
-            const horaIni = document.getElementById(`hora_ini_${{os_id}}`).value;
-            const horaFim = document.getElementById(`hora_fim_${{os_id}}`).value;
+            // Verifica a trava de prioridade globalmente
+            let temMuitoAlta = OS_DADOS.filter(os => !osConcluidasSessao.has(os['Ordem servico'])).some(os => os.Criticidade === "Muito Alta");
 
-            if (!horaIni || !horaFim) {{ alert("É obrigatório preencher o Horário de Início e o Horário de Fim!"); return; }}
-            if (fotoInput.files.length === 0) {{ alert("É obrigatório tirar a foto da evidência!"); return; }}
-            
-            const fotoBlob = fotoInput.files[0];
+            for (let os of OS_DADOS) {{
+                let os_id = os['Ordem servico'];
+                if (osConcluidasSessao.has(os_id)) continue;
+                if (temMuitoAlta && os.Criticidade !== "Muito Alta") continue; // Ignora as bloqueadas
+
+                let horaIni = document.getElementById(`hora_ini_${{os_id}}`);
+                let horaFim = document.getElementById(`hora_fim_${{os_id}}`);
+                let fotoInput = document.getElementById(`foto_${{os_id}}`);
+
+                if (!horaIni) continue; // OS não está renderizada na tela atual
+
+                let isPreenchida = horaIni.value || horaFim.value || fotoInput.files.length > 0;
+                let isCompleta = horaIni.value && horaFim.value && fotoInput.files.length > 0;
+
+                if (isPreenchida && !isCompleta) {{
+                    osIncompletas.push(os_id);
+                }} else if (isCompleta) {{
+                    osParaSalvar.push({{
+                        os_id: os_id,
+                        ativo_id: os.Ativo,
+                        horario_inicio: horaIni.value,
+                        horario_fim: horaFim.value,
+                        fotoBlob: fotoInput.files[0]
+                    }});
+                }}
+            }}
+
+            if (osIncompletas.length > 0) {{
+                alert(`⚠️ Atenção! As seguintes OS estão preenchidas pela metade: ${{osIncompletas.join(", ")}}.\\n\\nPreencha todos os horários e a foto delas, ou apague os dados para continuar.`);
+                return;
+            }}
+
+            if (osParaSalvar.length === 0) {{
+                alert("Nenhuma OS foi totalmente preenchida. Informe horários e foto para gravar.");
+                return;
+            }}
+
+            const acomp = document.getElementById(`acompGlobal`).value;
             const dataHora = new Date().toISOString();
 
-            const salvarNoBanco = (lat, lon) => {{
-                const baixa = {{ 
-                    os_id: os_id, ativo_id: ativo_id, lat: lat, lon: lon, 
-                    data_hora: dataHora, foto: fotoBlob, usuario: USUARIO,
-                    acompanhante: acomp, horario_inicio: horaIni, horario_fim: horaFim
-                }};
-                
-                if (db) {{
-                    const tx = db.transaction("baixas", "readwrite");
-                    tx.objectStore("baixas").put(baixa);
-                    tx.oncomplete = () => {{
-                        alert("✅ Salvo com segurança no celular!");
-                        osConcluidasSessao.add(os_id); 
-                        renderizarOS(); 
-                        atualizarContador();
-                        if(navigator.onLine) sincronizarDados();
-                    }};
-                }} else {{
-                    filaMemoria.push(baixa);
-                    alert("⚠️ Baixa salva temporariamente na memória!");
-                    osConcluidasSessao.add(os_id);
-                    renderizarOS();
-                    atualizarContador();
-                    if(navigator.onLine) sincronizarDados();
-                }}
-            }};
-
+            // Pega o GPS apenas 1x para o lote todo
             navigator.geolocation.getCurrentPosition(
-                (pos) => {{ salvarNoBanco(pos.coords.latitude, pos.coords.longitude); }}, 
-                (err) => {{ salvarNoBanco(0.0, 0.0); }}, 
+                (pos) => {{ gravarNoBanco(osParaSalvar, acomp, dataHora, pos.coords.latitude, pos.coords.longitude); }}, 
+                (err) => {{ gravarNoBanco(osParaSalvar, acomp, dataHora, 0.0, 0.0); }}, 
                 {{ enableHighAccuracy: true, timeout: 10000 }}
             );
+        }}
+
+        function gravarNoBanco(listaOS, acomp, dataHora, lat, lon) {{
+            let totalSalvas = 0;
+
+            const finalizarProcesso = () => {{
+                alert(`✅ ${{totalSalvas}} OS(s) gravada(s) com sucesso no celular!`);
+                renderizarOS(); // Só recarrega a tela AQUI, apagando as que já foram salvas
+                atualizarContador();
+                if(navigator.onLine) sincronizarDados();
+            }};
+
+            if (db) {{
+                const tx = db.transaction("baixas", "readwrite");
+                for (let os of listaOS) {{
+                    const baixa = {{ 
+                        os_id: os.os_id, ativo_id: os.ativo_id, lat: lat, lon: lon, 
+                        data_hora: dataHora, foto: os.fotoBlob, usuario: USUARIO,
+                        acompanhante: acomp, horario_inicio: os.horario_inicio, horario_fim: os.horario_fim
+                    }};
+                    tx.objectStore("baixas").put(baixa);
+                    osConcluidasSessao.add(os.os_id);
+                    totalSalvas++;
+                }}
+                tx.oncomplete = finalizarProcesso;
+            }} else {{
+                for (let os of listaOS) {{
+                    const baixa = {{ 
+                        os_id: os.os_id, ativo_id: os.ativo_id, lat: lat, lon: lon, 
+                        data_hora: dataHora, foto: os.fotoBlob, usuario: USUARIO,
+                        acompanhante: acomp, horario_inicio: os.horario_inicio, horario_fim: os.horario_fim
+                    }};
+                    filaMemoria.push(baixa);
+                    osConcluidasSessao.add(os.os_id);
+                    totalSalvas++;
+                }}
+                finalizarProcesso();
+            }}
         }}
 
         async function enviarLote(baixas) {{
@@ -1312,10 +1351,10 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                         }}
                     }} else {{
                         let erroServidor = await res.text();
-                        alert("❌ O Servidor (Render/API) recusou a OS " + baixa.os_id + ". Motivo: " + erroServidor);
+                        alert("❌ O Servidor recusou a OS " + baixa.os_id + ". Motivo: " + erroServidor);
                     }}
                 }} catch (e) {{ 
-                    alert("⚠️ Erro de Rede. Tentaremos na próxima!"); 
+                    alert("⚠️ Erro de Rede ao sincronizar a OS " + baixa.os_id + "."); 
                 }}
             }}
             atualizarContador();
