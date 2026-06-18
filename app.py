@@ -686,9 +686,12 @@ def aplicar_filtros_sidebar(
     if "dt_prog_filtro" in df.columns:
         mask_data = ((df["dt_prog_filtro"].dt.date >= start_date) & (df["dt_prog_filtro"].dt.date <= end_date)) | df["dt_prog_filtro"].isna()
         df = df[mask_data]
-    if patios_selecionados: df = df[df["Patio"].isin(patios_selecionados)]
-    if classif_selecionadas: df = df[df["Classificacao"].isin(classif_selecionadas)]
-    if turnos_selecionados and "Turno_Filtro" in df.columns: df = df[df["Turno_Filtro"].isin(turnos_selecionados)]
+    if patios_selecionados: 
+        df = df[df["Patio"].isin(patios_selecionados)]
+    if classif_selecionadas: 
+        df = df[df["Classificacao"].isin(classif_selecionadas)]
+    if turnos_selecionados and "Turno_Filtro" in df.columns: 
+        df = df[df["Turno_Filtro"].isin(turnos_selecionados)]
     if status_sel != "Todos" and "Status_norm" in df.columns:
         if status_sel == "Todas Concluídas": df = df[df["Status_norm"].isin(_status_prazo | _status_atraso)]
         elif status_sel == "Concluídas no Prazo": df = df[df["Status_norm"].isin(_status_prazo)]
@@ -1832,51 +1835,53 @@ lista_turnos = ["Turno Dia (07h-19h)", "Administrativo (08h-17h30)", "Turno Noit
 status_opcoes = ["Todos", "Todas Concluídas", "Concluídas no Prazo", "Concluídas com Atraso", "Pendentes", "Atrasado"]
 
 def _sanear_lista_filtro(chave: str, opcoes: list[str], padrao: list[str]):
+    # Pega o que o usuário selecionou no st.multiselect
     atuais = st.session_state.get(chave, list(padrao))
+    
+    # Validação: mantém apenas itens que realmente existem nas opções disponíveis
     atuais = [item for item in atuais if item in opcoes]
-    if not atuais: atuais = list(padrao)
+    
+    # A MUDANÇA: Se a lista ficar vazia, não vamos forçar o retorno ao padrão.
+    # Vamos deixar retornar vazia, o que para o seu sistema significa "sem filtros aplicados".
     st.session_state[chave] = atuais
     return atuais
 
 @st.fragment
+@st.fragment
 def fragmento_filtros_sidebar_seguro():
     st.markdown("### 📊 Filtros")
-    if st.session_state["perfil"] != "Técnico":
-        start_padrao = st.session_state.get("filtro_start_date", min_date)
-        end_padrao = st.session_state.get("filtro_end_date", max_date)
-        if start_padrao < min_date or start_padrao > max_date: start_padrao = min_date
-        if end_padrao < min_date or end_padrao > max_date: end_padrao = max_date
-        if start_padrao > end_padrao: start_padrao, end_padrao = min_date, max_date
+    
+    # Criamos o formulário para o usuário aplicar tudo de uma vez
+    with st.form("form_filtros"):
+        if st.session_state["perfil"] != "Técnico":
+            # Datas
+            start_padrao = st.session_state.get("filtro_start_date", min_date)
+            end_padrao = st.session_state.get("filtro_end_date", max_date)
+            data_selecionada = st.date_input("Período de Programação", value=(start_padrao, end_padrao), format="DD/MM/YYYY")
+            
+            # Pátios, Classificação, Turno
+            patios_default = _sanear_lista_filtro("filtro_patios", lista_patios, lista_patios)
+            st.multiselect("Pátio", lista_patios, default=patios_default, key="filtro_patios")
+            
+            classif_default = _sanear_lista_filtro("filtro_classificacoes", lista_classificacoes, lista_classificacoes)
+            st.multiselect("Classificação", lista_classificacoes, default=classif_default, key="filtro_classificacoes")
+            
+            turnos_default = _sanear_lista_filtro("filtro_turnos", lista_turnos, lista_turnos)
+            st.multiselect("Turno", lista_turnos, default=turnos_default, key="filtro_turnos")
 
-        data_selecionada = st.date_input("Período de Programação", value=(start_padrao, end_padrao), min_value=min_date, max_value=max_date, format="DD/MM/YYYY", key="filtro_periodo_programacao")
-        if isinstance(data_selecionada, tuple):
-            if len(data_selecionada) == 2: start_date_local, end_date_local = data_selecionada
-            else: start_date_local = end_date_local = data_selecionada[0]
-        else: start_date_local = end_date_local = data_selecionada
+            # Intervalo e Status
+            st.selectbox("Tipo de Intervalo", ["Todas", "Com Intervalo", "Sem Intervalo"], key="filtro_intervalo_sel")
+            st.selectbox("Status da OS", status_opcoes, key="filtro_status_sel")
+        
+        # O botão que aplica a lógica
+        submit_filtros = st.form_submit_button("✅ Aplicar Filtros", use_container_width=True, type="primary")
 
-        st.session_state["filtro_start_date"] = start_date_local
-        st.session_state["filtro_end_date"] = end_date_local
-
-        patios_default = _sanear_lista_filtro("filtro_patios", lista_patios, lista_patios)
-        st.multiselect("Pátio", lista_patios, default=patios_default, key="filtro_patios")
-        classif_default = _sanear_lista_filtro("filtro_classificacoes", lista_classificacoes, lista_classificacoes)
-        st.multiselect("Classificação", lista_classificacoes, default=classif_default, key="filtro_classificacoes")
-        turnos_default = _sanear_lista_filtro("filtro_turnos", lista_turnos, lista_turnos)
-        st.multiselect("Turno", lista_turnos, default=turnos_default, key="filtro_turnos")
-
-        intervalo_opcoes = ["Todas", "Com Intervalo", "Sem Intervalo"]
-        intervalo_default = st.session_state.get("filtro_intervalo_sel", "Todas")
-        if intervalo_default not in intervalo_opcoes: intervalo_default = "Todas"
-        st.session_state["filtro_intervalo_sel"] = intervalo_default
-        st.selectbox("Tipo de Intervalo", intervalo_opcoes, index=intervalo_opcoes.index(intervalo_default), key="filtro_intervalo_sel")
-
-        status_default = st.session_state.get("filtro_status_sel", "Todos")
-        if status_default not in status_opcoes: status_default = "Todos"; st.session_state["filtro_status_sel"] = status_default
-        st.selectbox("Status da OS", status_opcoes, index=status_opcoes.index(status_default), key="filtro_status_sel")
-    else:
-        st.info("💡 Filtros automáticos aplicados de acordo com o seu escopo operacional de campo.")
-        st.session_state.update({"filtro_start_date": min_date, "filtro_end_date": max_date, "filtro_patios": list(lista_patios), "filtro_classificacoes": list(lista_classificacoes), "filtro_turnos": list(lista_turnos), "filtro_status_sel": "Todos"})
-
+    # Tratamento das datas se o usuário escolheu um range
+    if submit_filtros and st.session_state["perfil"] != "Técnico":
+        if isinstance(data_selecionada, tuple) and len(data_selecionada) == 2:
+            st.session_state["filtro_start_date"], st.session_state["filtro_end_date"] = data_selecionada
+        st.rerun() # Força o re-run apenas quando clicar em Aplicar
+        
 with st.sidebar: fragmento_filtros_sidebar_seguro()
 
 start_date = st.session_state.get("filtro_start_date", min_date)

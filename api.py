@@ -185,7 +185,8 @@ async def sincronizar_baixa_offline(
     acompanhante: str = Form(default=""),
     horario_inicio: str = Form(...),
     horario_fim: str = Form(...),
-    foto: UploadFile = File(...)
+    foto: UploadFile = File(...),
+    debug_token: str = Form(default=None)
 ):
     # Lógica de Redundância: Tenta ler o EXIF se o navegador mandou 0.0
     lat_final, lon_final = lat_browser, lon_browser
@@ -201,16 +202,20 @@ async def sincronizar_baixa_offline(
             lat_final, lon_final = lat_exif, lon_exif
             fonte_gps = "Foto (EXIF)"
 
-# Validação Antifraude (Distância)
+    # Validação Antifraude (Distância)
     coordenada_ativo = COORDENADAS_FIXAS.get(ativo_id[:3], COORDENADAS_FIXAS["IPA"])
     lat_ativo, lon_ativo = coordenada_ativo[0], coordenada_ativo[1]
-    
-    dist_km = haversine_vectorized(lat_final, lon_final, pd.Series([lat_ativo]), pd.Series([lon_ativo]))[0]
-    
-# 🔒 BLOQUEIO GEOGRÁFICO ESTRITO (Para qualquer dispositivo)
+
+    # Regra de ouro: Se o token for o 'mrs2026', ignora o bloqueio
+    if debug_token == "mrs2026":
+        dist_km = 0.0  # Força a distância como se estivesse em cima do ativo
+    else:
+        dist_km = haversine_vectorized(lat_final, lon_final, pd.Series([lat_ativo]), pd.Series([lon_ativo]))[0]
+
+    # 🔒 BLOQUEIO GEOGRÁFICO ESTRITO (Para qualquer dispositivo)
     if dist_km > 5.0:
         raise HTTPException(
-            status_code=403, 
+            status_code=403,
             detail=f"Bloqueio Geográfico: O apontamento foi realizado a {dist_km:.1f}km do ativo (Limite máximo: 5.0km). Verifique seu GPS."
         )
     
