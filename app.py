@@ -1108,6 +1108,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         <h3>🔄 Sincronização e Fila</h3>
         <p>OS aguardando envio: <span id="contadorFila" style="font-weight:bold; font-size:18px;">0</span></p>
         <button id="btnSync" class="sync" onclick="sincronizarDados()">Enviar Dados Localizados</button>
+        <button id="btnLimpar" style="background-color: #EF4444;" onclick="limparTudo()">🗑️ Limpar Filas e Reiniciar</button>
     </div>
     
     <h3 style="color: #475569;">Sua Rota Offline</h3>
@@ -1321,6 +1322,26 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                     req.onsuccess = () => {{ document.getElementById('contadorFila').innerText = req.result; }};
                 }} catch (e) {{ document.getElementById('contadorFila').innerText = filaMemoria.length; }}
             }} else {{ document.getElementById('contadorFila').innerText = filaMemoria.length; }}
+        }}
+
+        function limparTudo() {{
+            if(confirm("Tem certeza que deseja apagar TODAS as baixas não sincronizadas? Esta ação não pode ser desfeita.")) {{
+                if (db) {{
+                    const tx = db.transaction("baixas", "readwrite");
+                    tx.objectStore("baixas").clear();
+                    tx.oncomplete = () => {{
+                        filaMemoria = [];
+                        alert("✅ Fila limpa com sucesso!");
+                        atualizarContador();
+                        renderizarOS();
+                    }};
+                }} else {{
+                    filaMemoria = [];
+                    alert("✅ Fila limpa com sucesso!");
+                    atualizarContador();
+                    renderizarOS();
+                }}
+            }}
         }}
     </script>
 </body>
