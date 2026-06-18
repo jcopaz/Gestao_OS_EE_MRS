@@ -39,17 +39,47 @@ if not st.session_state.get("logged_in", False):
 #region 1.3: Conexão com Banco de Dados e Constantes de Status
 @st.cache_resource
 def init_connection_pool():
-    return psycopg2.pool.SimpleConnectionPool(
-        1, 20, st.secrets["NEON_POSTGRES_URL"]
-    )
+    import time
+    max_retries = 10
+    
+    for tentativa in range(max_retries):
+        try:
+            # Adicionando um timeout de conexão para não travar o pooler do Neon
+            return psycopg2.pool.SimpleConnectionPool(
+                1, 20, 
+                dsn=st.secrets["NEON_POSTGRES_URL"],
+                connect_timeout=10
+            )
+        except psycopg2.OperationalError as e:
+            if tentativa == max_retries - 1:
+                raise e # Se falhar 10 vezes, aí sim repassa o erro
+            print(f"⚠️ Banco de dados Neon acordando... Tentativa {tentativa + 1} de {max_retries}. Aguardando 4 segundos.")
+            time.sleep(4)
 
 pool_conexoes = init_connection_pool()
 
 def get_connection():
-    return pool_conexoes.getconn()
+    global pool_conexoes # A declaração global OBRIGATORIAMENTE precisa ser a primeira linha
+    
+    # Tenta pegar a conexão do pool. Se estiver "morta" (fechada pelo Neon), recria o pool.
+    try:
+        conn = pool_conexoes.getconn()
+        # Teste rápido ("ping") para ver se a conexão está realmente viva
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+        return conn
+    except (psycopg2.OperationalError, psycopg2.InterfaceError, AttributeError):
+        print("🔄 Conexão perdida ou inválida. Recriando conexão com o banco...")
+        st.cache_resource.clear()
+        pool_conexoes = init_connection_pool()
+        return pool_conexoes.getconn()
 
 def release_connection(conn):
-    pool_conexoes.putconn(conn)
+    if pool_conexoes is not None:
+        try:
+            pool_conexoes.putconn(conn)
+        except Exception:
+            pass # Ignora erros ao devolver conexões mortas ao pool
 
 def hash_senha(senha):
     return hashlib.sha256(senha.encode()).hexdigest()
@@ -747,6 +777,8 @@ def resumir_demanda_calendario(df_base_cal: pd.DataFrame, ano: int, mes: int, di
     return {"dia_ref": dia_atual_ref, "qtd_patios": int(qtd_patios), "total_os": int(total_os), "patio_prioritario": patio_prioritario_txt, "serie_total_os_mes": serie_total_os_mes, "labels_mes": labels_mes}
 
 @st.cache_data(show_spinner=False)
+#endregion
+
 #region 3.7.4: Resumo de Conclusões por Turno
 def resumir_conclusoes_por_turno_data(df_base_cal: pd.DataFrame, data_ref) -> dict:
     ordem_turnos = ["Turno Dia (07h-19h)", "Administrativo (08h-17h30)", "Turno Noite (19h-07h)"]
@@ -1016,6 +1048,143 @@ def render_tela_admin():
     #endregion 3.8.5
 #endregion 3.8
 
+#region 3.9: Gerador de App Offline (HTML/JS)
+def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
+    if df_pendentes.empty:
+        return b""
+        
+    df_export = df_pendentes.head(50)[["Ordem servico", "Ativo", "Atividade ativo", "Patio"]]
+    os_json = df_export.to_json(orient="records", force_ascii=False)
+    
+    html = f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SGO MRS - Modo Offline ({usuario})</title>
+    <style>
+        body {{ font-family: 'Segoe UI', Tahoma, sans-serif; padding: 15px; background-color: #F8FAFC; color: #1E293B; }}
+        .card {{ background: white; padding: 15px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 15px; border-left: 4px solid #3B82F6; }}
+        button {{ background-color: #3B82F6; color: white; border: none; padding: 12px; border-radius: 8px; width: 100%; font-size: 16px; cursor: pointer; font-weight: bold; margin-top: 10px; }}
+        button.sync {{ background-color: #10B981; }}
+        button:disabled {{ background-color: #94A3B8; }}
+        .status-bar {{ text-align: center; padding: 10px; border-radius: 6px; margin-bottom: 20px; font-weight: bold; }}
+        .online {{ background-color: #D1FAE5; color: #065F46; border: 1px solid #10B981; }}
+        .offline {{ background-color: #FEE2E2; color: #991B1B; border: 1px solid #FF4B4B; }}
+    </style>
+</head>
+<body>
+    <div id="networkStatus" class="status-bar online">📡 Online</div>
+    <div class="card" style="border-left: 4px solid #10B981;">
+        <h3>🔄 Sincronização e Fila</h3>
+        <p>OS aguardando envio: <span id="contadorFila" style="font-weight:bold; font-size:18px;">0</span></p>
+        <button id="btnSync" class="sync" onclick="sincronizarDados()">Enviar Dados Localizados</button>
+    </div>
+    
+    <h3 style="color: #475569;">Sua Rota Offline</h3>
+    <div id="listaOS"></div>
+
+    <script>
+        const API_URL = "http://localhost:8000/sincronizar_baixa_offline"; // Atualize para a URL real da sua API em produção
+        const OS_DADOS = {os_json};
+        const USUARIO = "{usuario}";
+        let db;
+
+        const request = indexedDB.open("SGO_Offline_DB", 1);
+        request.onupgradeneeded = (e) => {{
+            db = e.target.result;
+            db.createObjectStore("baixas", {{ keyPath: "os_id" }});
+        }};
+        request.onsuccess = (e) => {{ db = e.target.result; renderizarOS(); atualizarContador(); }};
+
+        function updateNetworkStatus() {{
+            const statusDiv = document.getElementById('networkStatus');
+            if (navigator.onLine) {{
+                statusDiv.className = 'status-bar online'; statusDiv.innerText = '📡 Conectado - Sincronização Ativa';
+                sincronizarDados();
+            }} else {{
+                statusDiv.className = 'status-bar offline'; statusDiv.innerText = '🚫 Área de Sombra (Modo Offline)';
+            }}
+        }}
+        window.addEventListener('online', updateNetworkStatus);
+        window.addEventListener('offline', updateNetworkStatus);
+
+        function renderizarOS() {{
+            const container = document.getElementById("listaOS");
+            container.innerHTML = "";
+            OS_DADOS.forEach(os => {{
+                container.innerHTML += `
+                    <div class="card" id="card_${{os['Ordem servico']}}">
+                        <h4 style="margin:0 0 5px 0;">📍 ${{os.Patio}} | OS: ${{os['Ordem servico']}}</h4>
+                        <p style="margin:0 0 10px 0; font-size:14px;">Ativo: ${{os.Ativo}}<br>Ação: ${{os['Atividade ativo']}}</p>
+                        <input type="file" id="foto_${{os['Ordem servico']}}" accept="image/*" capture="environment" style="width: 100%; margin-bottom: 10px;">
+                        <button onclick="registrarBaixa('${{os['Ordem servico']}}', '${{os.Ativo}}')">✅ Dar Baixa Offline</button>
+                    </div>`;
+            }});
+        }}
+
+        async function registrarBaixa(os_id, ativo_id) {{
+            const fotoInput = document.getElementById(`foto_${{os_id}}`);
+            if (fotoInput.files.length === 0) {{ alert("É obrigatório tirar a foto da evidência!"); return; }}
+            
+            const fotoBlob = fotoInput.files[0];
+            const dataHora = new Date().toISOString();
+
+            navigator.geolocation.getCurrentPosition((pos) => {{
+                const baixa = {{ os_id: os_id, ativo_id: ativo_id, lat: pos.coords.latitude, lon: pos.coords.longitude, data_hora: dataHora, foto: fotoBlob, usuario: USUARIO }};
+                const tx = db.transaction("baixas", "readwrite");
+                tx.objectStore("baixas").put(baixa);
+                tx.oncomplete = () => {{
+                    alert("✅ Salvo com segurança no celular!");
+                    document.getElementById(`card_${{os_id}}`).style.display = 'none';
+                    atualizarContador();
+                    if(navigator.onLine) sincronizarDados();
+                }};
+            }}, (err) => {{ alert("Erro: O GPS do navegador precisa estar ativado e permitido."); }}, {{ enableHighAccuracy: true }});
+        }}
+
+        function sincronizarDados() {{
+            if (!navigator.onLine) return;
+            const tx = db.transaction("baixas", "readonly");
+            const store = tx.objectStore("baixas");
+            const req = store.getAll();
+            req.onsuccess = async () => {{
+                const baixas = req.result;
+                if (baixas.length === 0) return;
+                document.getElementById('btnSync').disabled = true;
+                document.getElementById('btnSync').innerText = "Sincronizando...";
+
+                for (let baixa of baixas) {{
+                    let fd = new FormData();
+                    fd.append("os_id", baixa.os_id); fd.append("ativo_id", baixa.ativo_id); fd.append("usuario", baixa.usuario);
+                    fd.append("lat_browser", baixa.lat); fd.append("lon_browser", baixa.lon); fd.append("data_hora_local", baixa.data_hora);
+                    fd.append("foto", baixa.foto, "evidencia.jpg");
+
+                    try {{
+                        let res = await fetch(API_URL, {{ method: "POST", body: fd }});
+                        if (res.ok) {{
+                            const txDel = db.transaction("baixas", "readwrite");
+                            txDel.objectStore("baixas").delete(baixa.os_id);
+                            txDel.oncomplete = () => atualizarContador();
+                        }}
+                    }} catch (e) {{ console.error("Falha ao enviar", e); }}
+                }}
+                document.getElementById('btnSync').disabled = false;
+                document.getElementById('btnSync').innerText = "Enviar Dados Localizados";
+            }};
+        }}
+
+        function atualizarContador() {{
+            const tx = db.transaction("baixas", "readonly");
+            const req = tx.objectStore("baixas").count();
+            req.onsuccess = () => {{ document.getElementById('contadorFila').innerText = req.result; }};
+        }}
+        updateNetworkStatus();
+    </script>
+</body>
+</html>"""
+    return html.encode("utf-8")
+#endregion 3.9
 #endregion SESSÃO 3
 #endregion
 
@@ -2138,7 +2307,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
             st.markdown("---")
             #endregion 10.3.1
 
- #region 10.3.2: Navegação Geográfica Operacional (GPS + Raio)
+#region 10.3.2: Navegação Geográfica Operacional (GPS + Raio)
             st.markdown("### 🗺️ Navegação Geográfica Operacional")
             col_mapa, col_acao = st.columns([6, 4], gap="large")
 
@@ -2160,6 +2329,20 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         lat_base, lon_base, nome_base = obter_base_padrao_usuario()
                         st.session_state.update({"lat_partida": lat_base, "lon_partida": lon_base, "local_nome": nome_base, "origem_tipo": "BASE", "gps_pending": False, "gps_trials": 0})
                         st.rerun()
+
+                # Injeção do Botão Offline (Área de Sombra)
+                st.markdown("<br>", unsafe_allow_html=True)
+                if not df_pendentes_f.empty:
+                    pacote_html_bytes = gerar_html_offline(df_pendentes_f, st.session_state.get("username", "tecnico"))
+                    st.download_button(
+                        label="📴 Baixar Pacote de OS para Área de Sombra",
+                        data=pacote_html_bytes,
+                        file_name=f"Rota_Offline_{datetime.now().strftime('%Y%m%d')}.html",
+                        mime="text/html",
+                        use_container_width=True,
+                        type="primary",
+                        help="Baixe este arquivo no seu celular. Ele funcionará como um aplicativo sem internet usando o GPS do aparelho."
+                    )
 
                 if st.session_state.get("gps_pending"):
                     st.info("Aguardando autorização do navegador e captura do GPS...")
@@ -2201,7 +2384,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 
                 st.info(f"**{len(df_recomendado)} OS pendentes** encontradas no raio de {raio_busca_km} km.")
                 if not df_recomendado.empty:
-            #endregion 10.3.2
+#endregion 10.3.2
 
  #region 10.3.3: Formulário de Baixa de OS + Evidências (fragment)
                     @st.fragment
@@ -2364,6 +2547,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 
 #region SESSÃO 11: Tela Isolada de Governança e Auditoria
 
+#region 11.0: Cabeçalho e Navegação
 if st.session_state.get("tela_atual") == "governanca":
     col_gov_t1, col_gov_t2 = st.columns([8, 2])
     with col_gov_t1: st.title("🛡️ Motor de Governança e Auditoria")
@@ -2372,8 +2556,9 @@ if st.session_state.get("tela_atual") == "governanca":
         if st.button("⬅️ Voltar ao Painel", use_container_width=True): st.session_state.update({"tela_atual": "dashboard", "gov_auth_ok": False}); st.rerun()
     st.markdown("Análise estatística de eficiência, variabilidade de cronograma, aderência de login e rastreabilidade de campo.")
     st.markdown("---")
+#endregion 11.0
 
-    #region 11.1: Controle de acesso e segurança
+#region 11.1: Controle de acesso e segurança
     if not st.session_state.get("gov_auth_ok", False):
         st.error("🔒 **Acesso Restrito:** Confirme sua credencial para métricas de auditoria.")
         col_auth1, _ = st.columns([1, 2])
@@ -2389,9 +2574,9 @@ if st.session_state.get("tela_atual") == "governanca":
                     if row and row[0] == hash_senha(senha_confirm): st.session_state["gov_auth_ok"] = True; st.rerun()
                     else: st.error("❌ Senha incorreta. Acesso negado.")
         st.stop()
-    #endregion 11.1
+#endregion 11.1
 
-    #region 11.2: Carregamento de dados de auditoria
+#region 11.2: Carregamento de dados de auditoria
     with st.spinner("Compilando logs de auditoria e telemetria..."):
         if st.session_state.get("chk_sim", False): df_baixas_full, df_logs = st.session_state.get("df_baixas_sim", pd.DataFrame()), st.session_state.get("df_logs_sim", pd.DataFrame())
         else:
@@ -2416,9 +2601,9 @@ if st.session_state.get("tela_atual") == "governanca":
         df_gov["Data_Real"] = pd.to_datetime(df_gov["data_inicio"], format="%d/%m/%Y", errors="coerce").dt.date
         df_gov["Via_GPS"] = df_gov["geolocalizacao_baixa"].apply(lambda x: 0 if "Base" in str(x) or "Sede" in str(x) else 1)
         df_gov["Alta_Prioridade"] = df_gov["Criticidade_rank"].apply(lambda x: 1 if x in [1, 2] else 0)
-    #endregion 11.2
+#endregion 11.2
 
-    #region 11.3: Fragmento de Governança (@st.fragment)
+#region 11.3: Fragmento de Governança (@st.fragment)
     @st.fragment
     def fragmento_governanca():
         col_f1, col_f2, col_f3 = st.columns(3)
@@ -2446,8 +2631,9 @@ if st.session_state.get("tela_atual") == "governanca":
         c_k3.metric("🎯 Aderência à Prioridade", f"{taxa_prio:.1f}%")
         c_k4.metric("📍 Integridade de GPS", f"{taxa_gps:.1f}%")
         st.markdown("---")
+#endregion
 
-        #region 11.4: Volume Diário e Produtividade Acumulada
+#region 11.4: Volume Diário e Produtividade Acumulada
         col_l1_c1, col_l1_c2 = st.columns(2, gap="large")
         df_real_dia = df_gov_f.groupby("Data_Real").size().reset_index(name="Realizado")
         df_os_base["Data_Prog_Pure"] = pd.to_datetime(df_os_base["Data inicial programada"], errors="coerce").dt.date
@@ -2466,9 +2652,9 @@ if st.session_state.get("tela_atual") == "governanca":
             st.markdown("#### 📈 Produtividade Acumulada")
             df_merge_vol["Real_Acum"], df_merge_vol["Plan_Acum"] = df_merge_vol["Realizado"].cumsum(), df_merge_vol["Planejado_Backlog"].cumsum()
             st_echarts(options={ "tooltip": {"trigger": "axis"}, "legend": {"data": ["Realizado Acumulado", "Planejado Acumulado"], "bottom": "0%"}, "toolbox": {"show": True, "feature": {"magicType": {"type": ["line", "bar"], "title": {"line": "Linha", "bar": "Barra"}}, "restore": {"title": "Restaurar"}, "saveAsImage": {"title": "Salvar Imagem"}}}, "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}], "grid": {"left": "5%", "right": "5%", "bottom": "25%", "top": "15%", "containLabel": True}, "xAxis": {"type": "category", "data": eixo_x_l1}, "yAxis": {"type": "value"}, "series": [ {"name": "Realizado Acumulado", "type": "line", "smooth": True, "data": df_merge_vol["Real_Acum"].tolist(), "areaStyle": {"color": "rgba(59,130,246,0.15)"}, "lineStyle": {"color": "#3B82F6", "width": 3}, "itemStyle": {"color": "#3B82F6"}}, {"name": "Planejado Acumulado", "type": "line", "smooth": True, "data": df_merge_vol["Plan_Acum"].tolist(), "lineStyle": {"type": "dashed", "color": "#64748B", "width": 3}, "itemStyle": {"color": "#64748B"}} ] }, height="350px", theme="streamlit", key="gov_prod_acum")
-        #endregion 11.4
+ #endregion 11.4
 
-        #region 11.5: Produtividade Individual, Esforço e Heatmap
+#region 11.5: Produtividade Individual, Esforço e Heatmap
         st.markdown("<br>", unsafe_allow_html=True); st.markdown("---")
         col_l2_c1, col_l2_c2, col_l2_c3 = st.columns(3, gap="medium")
 
@@ -2492,9 +2678,9 @@ if st.session_state.get("tela_atual") == "governanca":
                     val = int(agg_heatmap[(agg_heatmap["Patio"] == p_n) & (agg_heatmap["Classificacao"] == c_n)]["Total"].iloc[0]) if not agg_heatmap[(agg_heatmap["Patio"] == p_n) & (agg_heatmap["Classificacao"] == c_n)].empty else 0
                     h_data.append([xi, yi, val]); max_v = max(max_v, val)
             st_echarts(options={ "tooltip": {"position": "top"}, "grid": {"height": "65%", "top": "5%", "bottom": "20%", "left": "20%"}, "xAxis": {"type": "category", "data": p_list, "axisLabel": {"interval": 0, "rotate": 45}}, "yAxis": {"type": "category", "data": c_list}, "visualMap": {"min": 0, "max": max_v if max_v > 0 else 5, "orient": "horizontal", "left": "center", "bottom": "0%", "inRange": {"color": ["#F8FAFC", "#93C5FD", "#1D4ED8"]}}, "series": [{"type": "heatmap", "data": h_data, "label": {"show": True}, "itemStyle": {"borderColor": "#FFFFFF", "borderWidth": 1.5}}] }, height="320px", key="gov_heatmap_freq")
-        #endregion 11.5
+#endregion 11.5
 
-        #region 11.6: Aderência, Top Técnicos e Variabilidade
+#region 11.6: Aderência, Top Técnicos e Variabilidade
         st.markdown("<br>", unsafe_allow_html=True); st.markdown("---")
         col_l3_c1, col_l3_c2, col_l3_c3 = st.columns(3, gap="medium")
 
@@ -2528,15 +2714,15 @@ if st.session_state.get("tela_atual") == "governanca":
             # FIX: Garantindo que valores nulos sejam limpos para evitar falha no e-charts
             df_var = df_gov_f.groupby("concluido_por")["Tempo_Minutos"].mean().fillna(0).reset_index().sort_values("Tempo_Minutos", ascending=True)
             st_echarts(options={ "tooltip": {"trigger": "axis"}, "grid": {"left": "5%", "right": "8%", "bottom": "10%", "top": "10%", "containLabel": True}, "xAxis": {"type": "value", "name": "Minutos"}, "yAxis": {"type": "category", "data": df_var["concluido_por"].tolist(), "axisLabel": {"fontSize": 10}}, "series": [{"type": "bar", "data": df_var["Tempo_Minutos"].round(1).tolist(), "itemStyle": {"color": "#8B5CF6"}, "label": {"show": True, "position": "right", "formatter": "{c} min", "fontSize": 10}}] }, height="400px", theme="streamlit", key="gov_variab")
-        #endregion 11.6
+#endregion 11.6
 
-        #region 11.7: Tabela de Auditoria GPS
+#region 11.7: Tabela de Auditoria GPS
         st.markdown("---")
         st.markdown("#### 📍 Tabela de Auditoria de Apontamentos (GPS)")
         df_auditoria = df_gov_f[["Ordem servico", "concluido_por", "data_inicio", "hora_fim", "geolocalizacao_baixa", "equipe", "Tempo_Minutos"]].copy().sort_values(by=["data_inicio", "hora_fim"], ascending=[False, False]).rename(columns={"Ordem servico": "OS", "concluido_por": "Apontador Principal", "data_inicio": "Data", "hora_fim": "Hora Apontada", "geolocalizacao_baixa": "Localização do Celular", "equipe": "Co-Executantes", "Tempo_Minutos": "Tempo Gasto (min)"})
         df_auditoria["Tempo Gasto (min)"] = df_auditoria["Tempo Gasto (min)"].fillna(0).round(0).astype(int)
         st.dataframe(df_auditoria.style.map(lambda v: 'background-color: #FEE2E2; color: #991B1B; font-weight: bold;' if pd.notna(v) and ('Base' in str(v) or 'Sede' in str(v)) else 'color: #065F46;', subset=["Localização do Celular"]), use_container_width=True, height=300, hide_index=True)
-        #endregion 11.7
+#endregion 11.7
         
     fragmento_governanca()
     st.stop()
