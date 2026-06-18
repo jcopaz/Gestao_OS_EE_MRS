@@ -1109,7 +1109,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 
     <script>
         // Lembre-se de verificar se essa URL é exatamente a do seu Render!
-        const API_URL = "https://api-sgo-mrs.onrender.com"; 
+        const API_URL = "https://api-sgo-mrs.onrender.com/sincronizar_baixa_offline";
         const OS_DADOS = {os_json};
         const USUARIO = "{usuario}";
         
