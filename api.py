@@ -39,7 +39,6 @@ if not allowed_origins:
 # ==============================================================================
 pool_conexoes = None
 
-
 def init_connection_pool():
     global pool_conexoes
     if pool_conexoes is None:
@@ -109,7 +108,6 @@ async def validar_api_key(api_key: str = Security(api_key_header)):
 # ==============================================================================
 def formatar_dt_br(dt: datetime) -> str:
     return dt.strftime("%d/%m/%Y %H:%M")
-
 
 def haversine_vectorized(lat1, lon1, lat2_series, lon2_series):
     R = 6371.0
@@ -226,9 +224,7 @@ def upload_foto_supabase(arquivo_bytes: bytes, nome_arquivo: str) -> str:
             return f"{SUPABASE_URL}/storage/v1/object/public/evidencias/{nome_arquivo}"
     except requests.RequestException:
         pass
-
     return ""
-
 
 def upsert_evidencia(
     ativo: str,
@@ -273,7 +269,6 @@ def upsert_evidencia(
         cur.close()
     finally:
         release_connection(conn)
-
 
 def upsert_baixa(
     os_id,
@@ -340,7 +335,6 @@ def upsert_baixa(
         cur.close()
     finally:
         release_connection(conn)
-
 
 # ==============================================================================
 # COORDENADAS FIXAS

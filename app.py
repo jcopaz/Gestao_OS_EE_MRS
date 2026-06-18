@@ -1057,7 +1057,7 @@ def render_tela_admin():
     #endregion 3.8.5
 #endregion 3.8
 
-#region 3.9: Gerador Offline - Produção (HTML/JS completo)
+#region 3.9: Gerador Offline - Extração de Dados e Cabeçalho
 def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     if df_pendentes.empty:
         return b""
@@ -1086,8 +1086,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 
     usuarios_json = json.dumps(usuarios_equipe, ensure_ascii=False)
 
-    html_final = f"""
-<!DOCTYPE html>
+    html_head = f"""<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
@@ -1264,7 +1263,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             background: #F8FAFC;
             color: #94A3B8;
             border-color: #E2E8F0;
-            pointer-events: none;
             opacity: 0.75;
         }}
         .os-header {{
@@ -1331,6 +1329,11 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     </style>
 </head>
 <body>
+"""
+#endregion 3.9
+
+#region 3.10: Gerador Offline - Estrutura do Corpo (HTML)
+    html_body = f"""
     <div class="container">
         <div class="topbar">
             <div>
@@ -1353,8 +1356,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                         <input id="apiUrl" type="text" value="https://SEU-ENDPOINT.onrender.com/sincronizar_baixa_offline">
                     </div>
                     <div class="field">
-                        <label for="apiKey">X-API-Key (placeholder)</label>
-                        <input id="apiKey" type="password" value="SUBSTITUA_AQUI">
+                        <label for="apiKey">X-API-Key</label>
+                        <input id="apiKey" type="password" value="">
                     </div>
                 </div>
 
@@ -1374,7 +1377,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 <div class="toolbar">
                     <div class="field">
                         <label for="filtroAtivo">🔍 Filtrar por Ativo</label>
-                        <input id="filtroAtivo" type="text" placeholder="Todos os Ativos na Rota">
+                        <input id="filtroAtivo" type="text" list="listaAtivos" placeholder="Todos os Ativos na Rota">
+                        <datalist id="listaAtivos"></datalist>
                     </div>
                     <div class="field">
                         <label for="acompanhanteGlobal">👥 Acompanhante / Equipe (aplica a todas as OS)</label>
@@ -1404,746 +1408,432 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 
         <div class="footer-space"></div>
     </div>
+"""
+#endregion 3.10
 
-    <script>
-        const OS_DATA = {os_json};
-        const USUARIOS_EQUIPE = {usuarios_json};
-        const USUARIO_LOGADO = {json.dumps(usuario, ensure_ascii=False)};
+#region 3.11: Gerador Offline - Lógica JS Core (Banco Local e Renderização)
+    js_core = f"""
+<script>
+    const OS_DATA = {os_json};
+    const USUARIOS_EQUIPE = {usuarios_json};
+    const USUARIO_LOGADO = {json.dumps(usuario, ensure_ascii=False)};
 
-        const DB_NAME = "sgo_mrs_offline_prod";
-        const STORE_NAME = "apontamentos";
-        let db = null;
-        let gpsAtual = null;
+    const DB_NAME = "sgo_mrs_offline_prod";
+    const STORE_NAME = "apontamentos";
+    let db = null;
+    let gpsAtual = null;
 
-        function abrirDB() {{
-            return new Promise((resolve, reject) => {{
-                const req = indexedDB.open(DB_NAME, 1);
+    function abrirDB() {{
+        return new Promise((resolve, reject) => {{
+            const req = indexedDB.open(DB_NAME, 1);
 
-                req.onupgradeneeded = (event) => {{
-                    const database = event.target.result;
-                    if (!database.objectStoreNames.contains(STORE_NAME)) {{
-                        const store = database.createObjectStore(STORE_NAME, {{ keyPath: "id", autoIncrement: true }});
-                        store.createIndex("os_id", "os_id", {{ unique: false }});
-                        store.createIndex("status_sync", "status_sync", {{ unique: false }});
-                    }}
-                }};
+            req.onupgradeneeded = (event) => {{
+                const database = event.target.result;
+                if (!database.objectStoreNames.contains(STORE_NAME)) {{
+                    const store = database.createObjectStore(STORE_NAME, {{ keyPath: "id", autoIncrement: true }});
+                    store.createIndex("os_id", "os_id", {{ unique: false }});
+                    store.createIndex("status_sync", "status_sync", {{ unique: false }});
+                }}
+            }};
 
-                req.onsuccess = () => {{
-                    db = req.result;
-                    resolve(db);
-                }};
+            req.onsuccess = () => {{
+                db = req.result;
+                resolve(db);
+            }};
 
-                req.onerror = () => reject(req.error);
-            }});
+            req.onerror = () => reject(req.error);
+        }});
+    }}
+
+    function txStore(mode = "readonly") {{
+        const tx = db.transaction(STORE_NAME, mode);
+        return tx.objectStore(STORE_NAME);
+    }}
+
+    function setStatusOnline() {{
+        const el = document.getElementById("statusOnline");
+        if (navigator.onLine) {{
+            el.textContent = "📡 Online";
+            el.className = "status-badge status-online";
+        }} else {{
+            el.textContent = "📡 Offline";
+            el.className = "status-badge status-offline";
         }}
+    }}
 
-        function txStore(mode = "readonly") {{
-            const tx = db.transaction(STORE_NAME, mode);
-            return tx.objectStore(STORE_NAME);
-        }}
+    function setSyncMsg(texto, tipo = "blue") {{
+        const el = document.getElementById("syncMsg");
+        el.textContent = texto;
+        el.className = "info-box " + (tipo === "red" ? "info-red" : tipo === "yellow" ? "info-yellow" : "info-blue");
+    }}
 
-        function setStatusOnline() {{
-            const el = document.getElementById("statusOnline");
-            if (navigator.onLine) {{
-                el.textContent = "📡 Online";
-                el.className = "status-badge status-online";
-            }} else {{
-                el.textContent = "📡 Offline";
-                el.className = "status-badge status-offline";
-            }}
-        }}
+    function setGpsInfo(texto, tipo = "blue") {{
+        const el = document.getElementById("gpsInfo");
+        el.textContent = texto;
+        el.className = "info-box " + (tipo === "red" ? "info-red" : tipo === "yellow" ? "info-yellow" : "info-blue");
+    }}
 
-        function setSyncMsg(texto, tipo = "blue") {{
-            const el = document.getElementById("syncMsg");
-            el.textContent = texto;
-            el.className = "info-box " + (tipo === "red" ? "info-red" : tipo === "yellow" ? "info-yellow" : "info-blue");
-        }}
+    function popularEquipe() {{
+        const sel = document.getElementById("acompanhanteGlobal");
+        sel.innerHTML = "";
+        USUARIOS_EQUIPE.forEach((nome) => {{
+            const opt = document.createElement("option");
+            opt.value = nome;
+            opt.textContent = nome;
+            sel.appendChild(opt);
+        }});
+    }}
 
-        function setGpsInfo(texto, tipo = "blue") {{
-            const el = document.getElementById("gpsInfo");
-            el.textContent = texto;
-            el.className = "info-box " + (tipo === "red" ? "info-red" : tipo === "yellow" ? "info-yellow" : "info-blue");
-        }}
+    function popularListaAtivos() {{
+        const datalist = document.getElementById("listaAtivos");
+        if (!datalist) return;
 
-        function popularEquipe() {{
-            const sel = document.getElementById("acompanhanteGlobal");
-            sel.innerHTML = "";
-            USUARIOS_EQUIPE.forEach((nome) => {{
-                const opt = document.createElement("option");
-                opt.value = nome;
-                opt.textContent = nome;
-                sel.appendChild(opt);
-            }});
-        }}
+        const ativosUnicos = [...new Set(
+            OS_DATA
+                .map(item => String(item.Ativo || "").trim())
+                .filter(v => v)
+        )].sort((a, b) => a.localeCompare(b, "pt-BR"));
 
-        function haOSCriticaPendente(lista) {{
-            return lista.some((os) => String(os.Criticidade || "").trim().toUpperCase() === "MUITO ALTA");
-        }}
+        datalist.innerHTML = "";
 
-        function renderListaOS() {{
-            const filtro = document.getElementById("filtroAtivo").value.trim().toUpperCase();
-            const osList = document.getElementById("osList");
-            osList.innerHTML = "";
+        ativosUnicos.forEach((ativo) => {{
+            const option = document.createElement("option");
+            option.value = ativo;
+            datalist.appendChild(option);
+        }});
+    }}
 
-            const listaBase = OS_DATA.filter((item) => {{
+    function haOSCriticaPendente(lista) {{
+        return lista.some((os) => String(os.Criticidade || "").trim().toUpperCase() === "MUITO ALTA");
+    }}
+
+    function renderListaOS() {{
+        const filtro = document.getElementById("filtroAtivo").value.trim().toUpperCase();
+        const osList = document.getElementById("osList");
+        osList.innerHTML = "";
+
+        const listaBase = OS_DATA
+            .map((item, originalIdx) => ({{ ...item, _origIdx: originalIdx }}))
+            .filter((item) => {{
                 const ativo = String(item.Ativo || "").toUpperCase();
                 const atividade = String(item["Atividade ativo"] || "").toUpperCase();
                 const osId = String(item["Ordem servico"] || "").toUpperCase();
                 return !filtro || ativo.includes(filtro) || atividade.includes(filtro) || osId.includes(filtro);
             }});
 
-            const temCritica = haOSCriticaPendente(listaBase);
-            document.getElementById("criticaAlert").style.display = temCritica ? "block" : "none";
+        const temCritica = haOSCriticaPendente(listaBase);
+        document.getElementById("criticaAlert").style.display = temCritica ? "block" : "none";
 
-            listaBase.forEach((item, idx) => {{
-                const osId = String(item["Ordem servico"] || "").trim();
-                const ativo = String(item.Ativo || "").trim();
-                const atividade = String(item["Atividade ativo"] || "").trim();
-                const patio = String(item.Patio || "").trim();
-                const criticidade = String(item.Criticidade || "").trim();
-                const desc = String(item["Descrição Longa"] || "").trim();
-                const isCritica = criticidade.toUpperCase() === "MUITO ALTA";
-                const locked = temCritica && !isCritica;
+        listaBase.forEach((item) => {{
+            const idx = item._origIdx;
+            const osId = String(item["Ordem servico"] || "").trim();
+            const ativo = String(item.Ativo || "").trim();
+            const atividade = String(item["Atividade ativo"] || "").trim();
+            const patio = String(item.Patio || "").trim();
+            const criticidade = String(item.Criticidade || "").trim();
+            const desc = String(item["Descrição Longa"] || "").trim();
+            const isCritica = criticidade.toUpperCase() === "MUITO ALTA";
+            const locked = temCritica && !isCritica;
 
-                const wrapper = document.createElement("div");
-                wrapper.className = "os-item" + (locked ? " locked" : "");
+            const wrapper = document.createElement("div");
+            wrapper.className = "os-item" + (locked ? " locked" : "");
 
-                wrapper.innerHTML = `
-                    <div class="os-header">
-                        <div class="os-title">OS ${{osId}}</div>
-                        <div class="chip ${{isCritica ? "chip-critical" : ""}}">${{criticidade || "Sem criticidade"}}</div>
-                    </div>
+            wrapper.innerHTML = `
+                <div class="os-header">
+                    <div class="os-title">OS ${{osId}}</div>
+                    <div class="chip ${{isCritica ? "chip-critical" : ""}}">${{criticidade || "Sem criticidade"}}</div>
+                </div>
 
-                    <div class="os-meta"><strong>Ativo:</strong> ${{ativo}}</div>
-                    <div class="os-meta"><strong>Atividade:</strong> ${{atividade}}</div>
-                    <div class="os-meta"><strong>Pátio:</strong> ${{patio}}</div>
+                <div class="os-meta"><strong>Ativo:</strong> ${{ativo}}</div>
+                <div class="os-meta"><strong>Atividade:</strong> ${{atividade}}</div>
+                <div class="os-meta"><strong>Pátio:</strong> ${{patio}}</div>
 
-                    ${{desc ? `<div class="desc-box" style="margin: 10px 0;"><strong>Descrição:</strong><br>${{desc}}</div>` : ""}}
+                ${{desc ? `<div class="desc-box" style="margin: 10px 0;"><strong>Descrição:</strong><br>${{desc}}</div>` : ""}}
 
-                    <div class="os-grid" style="margin-top: 10px;">
-                        <div class="field">
-                            <label for="ini_${{idx}}">Horário Início</label>
-                            <input id="ini_${{idx}}" type="time">
-                        </div>
-                        <div class="field">
-                            <label for="fim_${{idx}}">Horário Fim</label>
-                            <input id="fim_${{idx}}" type="time">
-                        </div>
-                    </div>
-
+                <div class="os-grid" style="margin-top: 10px;">
                     <div class="field">
-                        <label for="foto_${{idx}}">📷 Evidência Fotográfica</label>
-                        <input id="foto_${{idx}}" type="file" accept=".jpg,.jpeg,.png,image/*" capture="environment">
+                        <label for="ini_${{idx}}">Horário Início</label>
+                        <input id="ini_${{idx}}" type="time" ${{locked ? "disabled" : ""}}>
                     </div>
-
                     <div class="field">
-                        <label>
-                            <input id="sel_${{idx}}" type="checkbox" ${{locked ? "disabled" : ""}}>
-                            Marcar esta OS para gravação offline
-                        </label>
+                        <label for="fim_${{idx}}">Horário Fim</label>
+                        <input id="fim_${{idx}}" type="time" ${{locked ? "disabled" : ""}}>
                     </div>
-                `;
-                osList.appendChild(wrapper);
-            }});
-        }}
+                </div>
 
-        function calcularDuracaoHoras(inicio, fim) {{
-            if (!inicio || !fim) return null;
+                <div class="field">
+                    <label for="foto_${{idx}}">📷 Evidência Fotográfica</label>
+                    <input id="foto_${{idx}}" type="file" accept=".jpg,.jpeg,.png,image/*" capture="environment" ${{locked ? "disabled" : ""}}>
+                </div>
+            `;
+            osList.appendChild(wrapper);
+        }});
+    }}
 
-            const [hi, mi] = inicio.split(":").map(Number);
-            const [hf, mf] = fim.split(":").map(Number);
-
-            let minsIni = hi * 60 + mi;
-            let minsFim = hf * 60 + mf;
-
-            if (minsFim < minsIni) {{
-                minsFim += 24 * 60;
+    async function capturarGPS() {{
+        return new Promise((resolve) => {{
+            if (!navigator.geolocation) {{
+                setGpsInfo("Este navegador não suporta geolocalização.", "red");
+                return resolve(null);
             }}
 
-            return (minsFim - minsIni) / 60.0;
-        }}
-
-        async function capturarGPS() {{
-            return new Promise((resolve) => {{
-                if (!navigator.geolocation) {{
-                    setGpsInfo("Este navegador não suporta geolocalização.", "red");
-                    return resolve(null);
+            navigator.geolocation.getCurrentPosition(
+                (pos) => {{
+                    gpsAtual = {{
+                        lat: Number(pos.coords.latitude),
+                        lon: Number(pos.coords.longitude),
+                        accuracy: pos.coords.accuracy || null,
+                        timestamp: new Date().toISOString()
+                    }};
+                    setGpsInfo(`GPS capturado: Lat ${{gpsAtual.lat.toFixed(6)}}, Lon ${{gpsAtual.lon.toFixed(6)}}`, "blue");
+                    resolve(gpsAtual);
+                }},
+                (err) => {{
+                    setGpsInfo(`Falha ao capturar GPS: ${{err.message}}`, "red");
+                    resolve(null);
+                }},
+                {{
+                    enableHighAccuracy: true,
+                    timeout: 15000,
+                    maximumAge: 0
                 }}
-
-                navigator.geolocation.getCurrentPosition(
-                    (pos) => {{
-                        gpsAtual = {{
-                            lat: Number(pos.coords.latitude),
-                            lon: Number(pos.coords.longitude),
-                            accuracy: pos.coords.accuracy || null,
-                            timestamp: new Date().toISOString()
-                        }};
-                        setGpsInfo(`GPS capturado: Lat ${{gpsAtual.lat.toFixed(6)}}, Lon ${{gpsAtual.lon.toFixed(6)}}`, "blue");
-                        resolve(gpsAtual);
-                    }},
-                    (err) => {{
-                        setGpsInfo(`Falha ao capturar GPS: ${{err.message}}`, "red");
-                        resolve(null);
-                    }},
-                    {{
-                        enableHighAccuracy: true,
-                        timeout: 15000,
-                        maximumAge: 0
-                    }}
-                );
-            }});
-        }}
-
-        async function blobToBase64(blob) {{
-            return new Promise((resolve, reject) => {{
-                const reader = new FileReader();
-                reader.onloadend = () => resolve(reader.result);
-                reader.onerror = reject;
-                reader.readAsDataURL(blob);
-            }});
-        }}
-
-        async function salvarSelecionadasNoLote() {{
-            const acompanhanteGlobal = document.getElementById("acompanhanteGlobal").value || "Sozinho (Nenhum)";
-            const selecionadas = [];
-
-            for (let i = 0; i < OS_DATA.length; i += 1) {{
-                const checkbox = document.getElementById(`sel_${{i}}`);
-                if (!checkbox || !checkbox.checked) continue;
-
-                const inicio = document.getElementById(`ini_${{i}}`)?.value || "";
-                const fim = document.getElementById(`fim_${{i}}`)?.value || "";
-                const fileInput = document.getElementById(`foto_${{i}}`);
-                const foto = fileInput?.files?.[0] || null;
-                const osItem = OS_DATA[i];
-
-                if (!inicio || !fim) {{
-                    alert(`Preencha início e fim da OS ${{osItem["Ordem servico"]}}.`);
-                    return;
-                }}
-
-                if (!foto) {{
-                    alert(`Anexe uma foto para a OS ${{osItem["Ordem servico"]}}.`);
-                    return;
-                }}
-
-                const duracaoHoras = calcularDuracaoHoras(inicio, fim);
-                if (duracaoHoras !== null && duracaoHoras > 12) {{
-                    const ok = confirm(
-                        `A duração calculada da OS ${{osItem["Ordem servico"]}} é de ${{duracaoHoras.toFixed(1)}}h. Confirma gravar mesmo assim?`
-                    );
-                    if (!ok) {{
-                        return;
-                    }}
-                }}
-
-                const payload = {{
-                    os_id: String(osItem["Ordem servico"] || "").trim(),
-                    ativo_id: String(osItem["Ativo"] || "").trim(),
-                    usuario: USUARIO_LOGADO,
-                    acompanhante: acompanhanteGlobal === "Sozinho (Nenhum)" ? "" : acompanhanteGlobal,
-                    horario_inicio: inicio.length === 5 ? `${{inicio}}:00` : inicio,
-                    horario_fim: fim.length === 5 ? `${{fim}}:00` : fim,
-                    data_hora_local: new Date().toISOString(),
-                    lat_browser: gpsAtual ? gpsAtual.lat : 0.0,
-                    lon_browser: gpsAtual ? gpsAtual.lon : 0.0,
-                    criticidade: String(osItem["Criticidade"] || "").trim(),
-                    status_sync: "pendente",
-                    foto_blob: foto,
-                    criado_em: new Date().toISOString()
-                }};
-
-                selecionadas.push(payload);
-            }}
-
-            if (!selecionadas.length) {{
-                alert("Nenhuma OS marcada para gravação.");
-                return;
-            }}
-
-            await Promise.all(
-                selecionadas.map((item) => new Promise((resolve, reject) => {{
-                    const req = txStore("readwrite").add(item);
-                    req.onsuccess = () => resolve(true);
-                    req.onerror = () => reject(req.error);
-                }}))
             );
+        }});
+    }}
+"""
+#endregion 3.11
 
-            await atualizarFila();
-            setSyncMsg(`${{selecionadas.length}} OS gravada(s) localmente com sucesso.`, "blue");
-            alert(`✅ ${{selecionadas.length}} OS gravada(s) na fila offline.`);
+#region 3.12: Gerador Offline - Lógica JS de Lote / Persistência
+    js_lote = f"""
+<script>
+    function calcularDuracaoHoras(inicio, fim) {{
+        if (!inicio || !fim) return null;
+
+        const [hi, mi] = inicio.split(":").map(Number);
+        const [hf, mf] = fim.split(":").map(Number);
+
+        let minsIni = hi * 60 + mi;
+        let minsFim = hf * 60 + mf;
+
+        if (minsFim < minsIni) {{
+            minsFim += 24 * 60;
         }}
 
-        async function atualizarFila() {{
-            return new Promise((resolve, reject) => {{
-                const req = txStore("readonly").getAll();
-                req.onsuccess = () => {{
-                    const registros = req.result || [];
-                    const pendentes = registros.filter((r) => r.status_sync === "pendente");
-                    document.getElementById("filaCount").textContent = String(pendentes.length);
-                    resolve(pendentes.length);
-                }};
-                req.onerror = () => reject(req.error);
-            }});
+        return (minsFim - minsIni) / 60.0;
+    }}
+
+    async function salvarSelecionadasNoLote() {{
+        const acompanhanteGlobal = document.getElementById("acompanhanteGlobal").value || "Sozinho (Nenhum)";
+        const selecionadas = [];
+
+        for (let i = 0; i < OS_DATA.length; i += 1) {{
+            const inicio = document.getElementById(`ini_${{i}}`)?.value || "";
+            const fim = document.getElementById(`fim_${{i}}`)?.value || "";
+            const fileInput = document.getElementById(`foto_${{i}}`);
+            const foto = fileInput?.files?.[0] || null;
+            const osItem = OS_DATA[i];
+
+            const preenchida = Boolean(inicio && fim && foto);
+            if (!preenchida) continue;
+
+            const duracaoHoras = calcularDuracaoHoras(inicio, fim);
+            if (duracaoHoras !== null && duracaoHoras > 12) {{
+                const ok = confirm(
+                    `A duração calculada da OS ${{osItem["Ordem servico"]}} é de ${{duracaoHoras.toFixed(1)}}h. Confirma gravar mesmo assim?`
+                );
+                if (!ok) {{
+                    return;
+                }}
+            }}
+
+            const payload = {{
+                os_id: String(osItem["Ordem servico"] || "").trim(),
+                ativo_id: String(osItem["Ativo"] || "").trim(),
+                usuario: USUARIO_LOGADO,
+                acompanhante: acompanhanteGlobal === "Sozinho (Nenhum)" ? "" : acompanhanteGlobal,
+                horario_inicio: inicio.length === 5 ? `${{inicio}}:00` : inicio,
+                horario_fim: fim.length === 5 ? `${{fim}}:00` : fim,
+                data_hora_local: new Date().toISOString(),
+                lat_browser: gpsAtual ? gpsAtual.lat : 0.0,
+                lon_browser: gpsAtual ? gpsAtual.lon : 0.0,
+                criticidade: String(osItem["Criticidade"] || "").trim(),
+                status_sync: "pendente",
+                foto_blob: foto,
+                criado_em: new Date().toISOString()
+            }};
+
+            selecionadas.push(payload);
         }}
 
-        async function limparFila() {{
-            const ok = confirm("Deseja realmente apagar toda a fila local e reiniciar o pacote offline?");
-            if (!ok) return;
+        if (!selecionadas.length) {{
+            alert("Nenhuma OS preenchida para gravação.");
+            return;
+        }}
 
-            await new Promise((resolve, reject) => {{
-                const req = txStore("readwrite").clear();
+        await Promise.all(
+            selecionadas.map((item) => new Promise((resolve, reject) => {{
+                const req = txStore("readwrite").add(item);
                 req.onsuccess = () => resolve(true);
                 req.onerror = () => reject(req.error);
-            }});
+            }}))
+        );
 
-            await atualizarFila();
-            setSyncMsg("Fila local apagada com sucesso.", "yellow");
-        }}
+        await atualizarFila();
+        setSyncMsg(`${{selecionadas.length}} OS gravada(s) localmente com sucesso.`, "blue");
+        alert(`✅ ${{selecionadas.length}} OS gravada(s) na fila offline.`);
+    }}
 
-        async function sincronizarFila() {{
-            const apiUrl = document.getElementById("apiUrl").value.trim();
-            const apiKey = document.getElementById("apiKey").value.trim();
-
-            if (!apiUrl) {{
-                alert("Preencha a URL da API de Produção.");
-                return;
-            }}
-            if (!apiKey) {{
-                alert("Preencha o X-API-Key para sincronização.");
-                return;
-            }}
-            if (!navigator.onLine) {{
-                alert("Sem internet. Conecte-se antes de sincronizar.");
-                return;
-            }}
-
-            const registros = await new Promise((resolve, reject) => {{
-                const req = txStore("readonly").getAll();
-                req.onsuccess = () => resolve(req.result || []);
-                req.onerror = () => reject(req.error);
-            }});
-
-            const pendentes = registros.filter((r) => r.status_sync === "pendente");
-            if (!pendentes.length) {{
-                setSyncMsg("Nenhuma OS pendente para sincronizar.", "yellow");
-                return;
-            }}
-
-            let sucesso = 0;
-            let falha = 0;
-
-            for (const item of pendentes) {{
-                try {{
-                    const formData = new FormData();
-                    formData.append("os_id", item.os_id);
-                    formData.append("ativo_id", item.ativo_id);
-                    formData.append("usuario", item.usuario);
-                    formData.append("lat_browser", String(item.lat_browser ?? 0.0));
-                    formData.append("lon_browser", String(item.lon_browser ?? 0.0));
-                    formData.append("data_hora_local", item.data_hora_local);
-                    formData.append("acompanhante", item.acompanhante || "");
-                    formData.append("horario_inicio", item.horario_inicio);
-                    formData.append("horario_fim", item.horario_fim);
-                    formData.append("foto", item.foto_blob, `${{item.ativo_id}}_${{item.os_id}}.jpg`);
-
-                    const resp = await fetch(apiUrl, {{
-                        method: "POST",
-                        headers: {{
-                            "x-api-key": apiKey
-                        }},
-                        body: formData
-                    }});
-
-                    if (!resp.ok) {{
-                        const textoErro = await resp.text();
-                        throw new Error(textoErro || `HTTP ${{resp.status}}`);
-                    }}
-
-                    await new Promise((resolve, reject) => {{
-                        const reqUpdate = txStore("readwrite").put({{
-                            ...item,
-                            status_sync: "sincronizado",
-                            sincronizado_em: new Date().toISOString()
-                        }});
-                        reqUpdate.onsuccess = () => resolve(true);
-                        reqUpdate.onerror = () => reject(reqUpdate.error);
-                    }});
-
-                    sucesso += 1;
-                }} catch (e) {{
-                    console.error("Falha na sincronização da OS", item.os_id, e);
-                    falha += 1;
-                }}
-            }}
-
-            await atualizarFila();
-
-            if (falha === 0) {{
-                setSyncMsg(`Sincronização concluída com sucesso. ${{sucesso}} OS enviada(s).`, "blue");
-            }} else {{
-                setSyncMsg(`Sincronização parcial. ${{sucesso}} enviada(s) e ${{falha}} falha(s).`, "yellow");
-            }}
-        }}
-
-        async function bootstrap() {{
-            await abrirDB();
-            setStatusOnline();
-            popularEquipe();
-            renderListaOS();
-            await atualizarFila();
-
-            window.addEventListener("online", () => {{
-                setStatusOnline();
-            }});
-            window.addEventListener("offline", () => {{
-                setStatusOnline();
-            }});
-
-            document.getElementById("filtroAtivo").addEventListener("input", renderListaOS);
-            document.getElementById("btnCapturarGps").addEventListener("click", capturarGPS);
-            document.getElementById("btnSalvarLote").addEventListener("click", salvarSelecionadasNoLote);
-            document.getElementById("btnSync").addEventListener("click", sincronizarFila);
-            document.getElementById("btnClear").addEventListener("click", limparFila);
-        }}
-
-        bootstrap().catch((err) => {{
-            console.error(err);
-            alert("Falha ao inicializar o pacote offline.");
+    async function atualizarFila() {{
+        return new Promise((resolve, reject) => {{
+            const req = txStore("readonly").getAll();
+            req.onsuccess = () => {{
+                const registros = req.result || [];
+                const pendentes = registros.filter((r) => r.status_sync === "pendente");
+                document.getElementById("filaCount").textContent = String(pendentes.length);
+                resolve(pendentes.length);
+            }};
+            req.onerror = () => reject(req.error);
         }});
-    </script>
+    }}
+
+    async function limparFila() {{
+        const ok = confirm("Deseja realmente apagar toda a fila local e reiniciar o pacote offline?");
+        if (!ok) return;
+
+        await new Promise((resolve, reject) => {{
+            const req = txStore("readwrite").clear();
+            req.onsuccess = () => resolve(true);
+            req.onerror = () => reject(req.error);
+        }});
+
+        await atualizarFila();
+        setSyncMsg("Fila local apagada com sucesso.", "yellow");
+    }}
+"""
+#endregion 3.12
+
+#region 3.13: Gerador Offline - Lógica JS de Sincronização e Fechamento
+    js_sync = f"""
+<script>
+    async function sincronizarFila() {{
+        const apiUrl = document.getElementById("apiUrl").value.trim();
+        const apiKey = document.getElementById("apiKey").value.trim();
+
+        if (!apiUrl) {{
+            alert("Preencha a URL da API de Produção.");
+            return;
+        }}
+        if (!apiKey) {{
+            alert("Preencha o X-API-Key para sincronização.");
+            return;
+        }}
+        if (!navigator.onLine) {{
+            alert("Sem internet. Conecte-se antes de sincronizar.");
+            return;
+        }}
+
+        const registros = await new Promise((resolve, reject) => {{
+            const req = txStore("readonly").getAll();
+            req.onsuccess = () => resolve(req.result || []);
+            req.onerror = () => reject(req.error);
+        }});
+
+        const pendentes = registros.filter((r) => r.status_sync === "pendente");
+        if (!pendentes.length) {{
+            setSyncMsg("Nenhuma OS pendente para sincronizar.", "yellow");
+            return;
+        }}
+
+        let sucesso = 0;
+        let falha = 0;
+        const detalhesFalha = [];
+
+        for (const item of pendentes) {{
+            try {{
+                const formData = new FormData();
+                formData.append("os_id", item.os_id);
+                formData.append("ativo_id", item.ativo_id);
+                formData.append("usuario", item.usuario);
+                formData.append("lat_browser", String(item.lat_browser ?? 0.0));
+                formData.append("lon_browser", String(item.lon_browser ?? 0.0));
+                formData.append("data_hora_local", item.data_hora_local);
+                formData.append("acompanhante", item.acompanhante || "");
+                formData.append("horario_inicio", item.horario_inicio);
+                formData.append("horario_fim", item.horario_fim);
+                formData.append("foto", item.foto_blob, `${{item.ativo_id}}_${{item.os_id}}.jpg`);
+
+                const resp = await fetch(apiUrl, {{
+                    method: "POST",
+                    headers: {{
+                        "x-api-key": apiKey
+                    }},
+                    body: formData
+                }});
+
+                if (!resp.ok) {{
+                    const textoErro = await resp.text();
+                    throw new Error(`HTTP ${{resp.status}}: ${{textoErro || "Falha na API"}}`);
+                }}
+
+                await new Promise((resolve, reject) => {{
+                    const reqUpdate = txStore("readwrite").put({{
+                        ...item,
+                        status_sync: "sincronizado",
+                        sincronizado_em: new Date().toISOString()
+                    }});
+                    reqUpdate.onsuccess = () => resolve(true);
+                    reqUpdate.onerror = () => reject(reqUpdate.error);
+                }});
+
+                sucesso += 1;
+            }} catch (e) {{
+                console.error("Falha na sincronização da OS", item.os_id, e);
+                falha += 1;
+                detalhesFalha.push(`OS ${{item.os_id}}: ${{e.message || e}}`);
+            }}
+        }}
+
+        await atualizarFila();
+
+        if (falha === 0) {{
+            setSyncMsg(`Sincronização concluída com sucesso. ${{sucesso}} OS enviada(s).`, "blue");
+        }} else {{
+            const detalhe = detalhesFalha.length ? ` Primeira falha: ${{detalhesFalha[0]}}` : "";
+            setSyncMsg(`Sincronização parcial. ${{sucesso}} enviada(s) e ${{falha}} falha(s).${{detalhe}}`, "yellow");
+        }}
+    }}
+
+    async function bootstrap() {{
+        await abrirDB();
+        setStatusOnline();
+        popularEquipe();
+        popularListaAtivos();
+        renderListaOS();
+        await atualizarFila();
+
+        window.addEventListener("online", () => {{
+            setStatusOnline();
+        }});
+        window.addEventListener("offline", () => {{
+            setStatusOnline();
+        }});
+
+        document.getElementById("filtroAtivo").addEventListener("input", renderListaOS);
+        document.getElementById("btnCapturarGps").addEventListener("click", capturarGPS);
+        document.getElementById("btnSalvarLote").addEventListener("click", salvarSelecionadasNoLote);
+        document.getElementById("btnSync").addEventListener("click", sincronizarFila);
+        document.getElementById("btnClear").addEventListener("click", limparFila);
+    }}
+
+    bootstrap().catch((err) => {{
+        console.error(err);
+        alert("Falha ao inicializar o pacote offline.");
+    }});
+</script>
 </body>
 </html>
 """
-    return html_final.encode("utf-8")
-#endregion 3.9
 
-#region 3.10: Gerador Offline - Estrutura do Corpo (HTML)
-    html_body = f"""
-<body>
-    <div id="networkStatus" class="status-bar online">📡 Online</div>
-    <div class="card" style="border-left: 4px solid #10B981;">
-        <h3>🔄 Sincronização e Fila</h3>
-        <p>OS aguardando envio: <span id="contadorFila" style="font-weight:bold; font-size:18px;">0</span></p>
-        
-        <div class="input-group" style="margin-top: 10px; margin-bottom: 10px;">
-            <label>🛠️ Token de Debug (Para Testes):</label>
-            <input type="text" id="debugToken" placeholder="Digite o token (ex: mrs2026)">
-        </div>
-
-        <button id="btnSync" class="sync" onclick="sincronizarDados()">Enviar Dados Localizados</button>
-        <button id="btnLimpar" style="background-color: #EF4444;" onclick="limparTudo()">🗑️ Limpar Filas e Reiniciar</button>
-    </div>
-    
-    <h3 style="color: #475569;">Sua Rota Offline</h3>
-    
-    <div class="input-group">
-        <label>🔍 Filtrar por Ativo:</label>
-        <select id="filtroAtivo" onchange="renderizarOS()">
-            <option value="TODOS">Todos os Ativos na Rota</option>
-        </select>
-        
-        <label style="margin-top: 10px;">👥 Acompanhante / Equipe (Aplica a todas as OS):</label>
-        <select id="acompGlobal">
-            {opcoes_usuarios}
-        </select>
-    </div>
-
-    <div id="alertaFoco" class="alerta-foco">
-        ⚠️ <b>Foco Operacional:</b> Existem OS Críticas (Muito Alta). As demais estão bloqueadas até que estas sejam concluídas.
-    </div>
-
-    <button onclick="salvarLotePreenchido()" style="background-color: #F59E0B; font-size: 18px; margin-bottom: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">💾 Gravar OS(s) Preenchida(s)</button>
-
-    <div id="listaOS"></div>"""
-#endregion 3.10
-
-#region 3.11: Gerador Offline - Lógica JS Core (Banco Local e Renderização)
-    js_core = f"""
-    <script>
-        const API_URL = "https://api-sgo-mrs.onrender.com/sincronizar_baixa_offline";
-        const OS_DADOS = {os_json};
-        const USUARIO = "{usuario}";
-        
-        let db = null;
-        let filaMemoria = []; 
-        let osConcluidasSessao = new Set();
-
-        const ativosUnicos = [...new Set(OS_DADOS.map(os => os.Ativo))].sort();
-        const selectAtivo = document.getElementById("filtroAtivo");
-        ativosUnicos.forEach(ativo => {{
-            selectAtivo.innerHTML += `<option value="${{ativo}}">${{ativo}}</option>`;
-        }});
-
-        try {{
-            const request = indexedDB.open("SGO_Offline_DB", 3);
-            request.onupgradeneeded = (e) => {{
-                db = e.target.result;
-                if (!db.objectStoreNames.contains("baixas")) {{
-                    db.createObjectStore("baixas", {{ keyPath: "os_id" }});
-                }}
-            }};
-            request.onsuccess = (e) => {{ db = e.target.result; atualizarContador(); renderizarOS(); }};
-            request.onerror = (e) => {{ console.warn("Navegador bloqueou DB."); renderizarOS(); }};
-        }} catch (err) {{ console.warn("Erro BD local", err); renderizarOS(); }}
-
-        function updateNetworkStatus() {{
-            const statusDiv = document.getElementById('networkStatus');
-            if (navigator.onLine) {{
-                statusDiv.className = 'status-bar online'; statusDiv.innerText = '📡 Conectado - Sincronização Ativa';
-                sincronizarDados();
-            }} else {{
-                statusDiv.className = 'status-bar offline'; statusDiv.innerText = '🚫 Área de Sombra (Modo Offline)';
-            }}
-        }}
-        window.addEventListener('online', updateNetworkStatus);
-        window.addEventListener('offline', updateNetworkStatus);
-
-        function renderizarOS() {{
-            const container = document.getElementById("listaOS");
-            const ativoSel = document.getElementById("filtroAtivo").value;
-            const alerta = document.getElementById("alertaFoco");
-            container.innerHTML = "";
-
-            let osFiltradas = OS_DADOS.filter(os => !osConcluidasSessao.has(os['Ordem servico']));
-            
-            if (ativoSel !== "TODOS") {{
-                osFiltradas = osFiltradas.filter(os => os.Ativo === ativoSel);
-            }}
-
-            const temMuitoAlta = osFiltradas.some(os => os.Criticidade === "Muito Alta");
-            alerta.style.display = temMuitoAlta ? "block" : "none";
-
-            osFiltradas.forEach(os => {{
-                const isBloqueada = temMuitoAlta && os.Criticidade !== "Muito Alta";
-                const classeCard = isBloqueada ? "card card-bloqueado" : "card";
-                const msgBloqueio = isBloqueada ? `<div style="color:#EF4444; font-weight:bold; font-size:12px; margin-bottom:8px;">🔒 Conclua a OS Prioritária para liberar.</div>` : ``;
-                const btnInputsDisabled = isBloqueada ? "disabled" : "";
-
-                const descLonga = os['Descrição Longa'] ? os['Descrição Longa'] : 'N/A';
-                const badgeCrit = os.Criticidade === "Muito Alta" ? `<div class="badge-crit">⚠️ ${{os.Criticidade}}</div>` : `<div style="font-size:12px; color:#64748B; margin-bottom:5px;">${{os.Criticidade}}</div>`;
-                
-                container.innerHTML += `
-                    <div class="${{classeCard}}" id="card_${{os['Ordem servico']}}">
-                        ${{msgBloqueio}}
-                        ${{badgeCrit}}
-                        <h4 style="margin:0 0 5px 0;">📍 ${{os.Patio}} | OS: ${{os['Ordem servico']}}</h4>
-                        <p style="margin:0 0 10px 0; font-size:14px; line-height: 1.4;">
-                            <b>Ativo:</b> ${{os.Ativo}}<br>
-                            <b>Descrição:</b> ${{descLonga}}<br>
-                            <b>Ação:</b> ${{os['Atividade ativo']}}
-                        </p>
-                        
-                        <div class="input-group">
-                            <label>Início (Obrigatório):</label>
-                            <input type="time" id="hora_ini_${{os['Ordem servico']}}" ${{btnInputsDisabled}}>
-                            <label>Fim (Obrigatório):</label>
-                            <input type="time" id="hora_fim_${{os['Ordem servico']}}" ${{btnInputsDisabled}}>
-                        </div>
-
-                        <input type="file" id="foto_${{os['Ordem servico']}}" accept="image/*" capture="environment" style="width: 100%; margin-bottom: 5px;" ${{btnInputsDisabled}}>
-                    </div>`;
-            }});
-        }}"""
-#endregion 3.11
-
-#region 3.12: Gerador Offline - Lógica JS de Lote e Confirmação de Tempo
-    js_lote = f"""
-        async function salvarLotePreenchido() {{
-            let osParaSalvar = [];
-            let osIncompletas = [];
-            
-            let temMuitoAlta = OS_DADOS.filter(os => !osConcluidasSessao.has(os['Ordem servico'])).some(os => os.Criticidade === "Muito Alta");
-
-            for (let os of OS_DADOS) {{
-                let os_id = os['Ordem servico'];
-                if (osConcluidasSessao.has(os_id)) continue;
-                if (temMuitoAlta && os.Criticidade !== "Muito Alta") continue; 
-
-                let horaIni = document.getElementById(`hora_ini_${{os_id}}`);
-                let horaFim = document.getElementById(`hora_fim_${{os_id}}`);
-                let fotoInput = document.getElementById(`foto_${{os_id}}`);
-
-                if (!horaIni) continue; 
-
-                let isPreenchida = horaIni.value || horaFim.value || fotoInput.files.length > 0;
-                let isCompleta = horaIni.value && horaFim.value && fotoInput.files.length > 0;
-
-                if (isPreenchida && !isCompleta) {{
-                    osIncompletas.push(os_id);
-                }} else if (isCompleta) {{
-                    
-                    let [hI, mI] = horaIni.value.split(':').map(Number);
-                    let [hF, mF] = horaFim.value.split(':').map(Number);
-                    let minIni = hI * 60 + mI;
-                    let minFim = hF * 60 + mF;
-                    
-                    let duracaoMin = minFim < minIni ? (24 * 60 - minIni) + minFim : minFim - minIni;
-
-                    if (duracaoMin > 12 * 60) {{
-                        // CORREÇÃO AQUI: Chaves duplas {{ }} em volta da matemática do JS
-                        let resposta = confirm(`⚠️ Atenção na OS ${{os_id}}:\\n\\nA duração calculada é de ${{(duracaoMin/60).toFixed(1)}} horas. Está correto?\\n\\n(Se o serviço terminou à tarde, lembre-se de usar 13:00 em vez de 01:00). Clique em OK para confirmar e salvar.`);
-                        if (!resposta) {{
-                            return; 
-                        }}
-                    }}
-
-                    osParaSalvar.push({{
-                        os_id: os_id,
-                        ativo_id: os.Ativo,
-                        horario_inicio: horaIni.value,
-                        horario_fim: horaFim.value,
-                        fotoBlob: fotoInput.files[0]
-                    }});
-                }}
-            }}
-
-            if (osIncompletas.length > 0) {{
-                alert(`⚠️ Atenção! As seguintes OS estão preenchidas pela metade: ${{osIncompletas.join(", ")}}.\\n\\nPreencha todos os horários e a foto delas, ou apague os dados para continuar.`);
-                return;
-            }}
-
-            if (osParaSalvar.length === 0) {{
-                alert("Nenhuma OS foi totalmente preenchida. Informe horários e foto para gravar.");
-                return;
-            }}
-
-            const acomp = document.getElementById(`acompGlobal`).value;
-            const dataHora = new Date().toISOString();
-
-            navigator.geolocation.getCurrentPosition(
-                (pos) => {{ gravarNoBanco(osParaSalvar, acomp, dataHora, pos.coords.latitude, pos.coords.longitude); }}, 
-                (err) => {{ gravarNoBanco(osParaSalvar, acomp, dataHora, 0.0, 0.0); }}, 
-                {{ enableHighAccuracy: true, timeout: 10000 }}
-            );
-        }}
-
-        function gravarNoBanco(listaOS, acomp, dataHora, lat, lon) {{
-            let totalSalvas = 0;
-
-            const finalizarProcesso = () => {{
-                alert(`✅ ${{totalSalvas}} OS(s) gravada(s) com sucesso no celular!`);
-                renderizarOS();
-                atualizarContador();
-                if(navigator.onLine) sincronizarDados();
-            }};
-
-            if (db) {{
-                const tx = db.transaction("baixas", "readwrite");
-                for (let os of listaOS) {{
-                    const baixa = {{ 
-                        os_id: os.os_id, ativo_id: os.ativo_id, lat: lat, lon: lon, 
-                        data_hora: dataHora, foto: os.fotoBlob, usuario: USUARIO,
-                        acompanhante: acomp, horario_inicio: os.horario_inicio, horario_fim: os.horario_fim
-                    }};
-                    tx.objectStore("baixas").put(baixa);
-                    osConcluidasSessao.add(os.os_id);
-                    totalSalvas++;
-                }}
-                tx.oncomplete = finalizarProcesso;
-            }} else {{
-                for (let os of listaOS) {{
-                    const baixa = {{ 
-                        os_id: os.os_id, ativo_id: os.ativo_id, lat: lat, lon: lon, 
-                        data_hora: dataHora, foto: os.fotoBlob, usuario: USUARIO,
-                        acompanhante: acomp, horario_inicio: os.horario_inicio, horario_fim: os.horario_fim
-                    }};
-                    filaMemoria.push(baixa);
-                    osConcluidasSessao.add(os.os_id);
-                    totalSalvas++;
-                }}
-                finalizarProcesso();
-            }}
-        }}"""
-#endregion 3.12
-
-#region 3.13: Gerador Offline - Lógica JS de Sincronização e Fetch
-    js_sync = f"""
-        async function enviarLote(baixas) {{
-            if (baixas.length === 0) return;
-            document.getElementById('btnSync').disabled = true;
-            document.getElementById('btnSync').innerText = "Sincronizando... Aguarde!";
-
-            const tokenTeste = document.getElementById('debugToken').value;
-
-            for (let baixa of baixas) {{
-                let fd = new FormData();
-                fd.append("os_id", baixa.os_id); fd.append("ativo_id", baixa.ativo_id); fd.append("usuario", baixa.usuario);
-                fd.append("lat_browser", baixa.lat); fd.append("lon_browser", baixa.lon); fd.append("data_hora_local", baixa.data_hora);
-                fd.append("acompanhante", baixa.acompanhante); 
-                fd.append("horario_inicio", baixa.horario_inicio); 
-                fd.append("horario_fim", baixa.horario_fim);
-                fd.append("foto", baixa.foto, "evidencia.jpg");
-                
-                if (tokenTeste) {{ fd.append("debug_token", tokenTeste); }}
-
-                try {{
-                    let res = await fetch(API_URL, {{ method: "POST", body: fd }});
-                    if (res.ok) {{
-                        if (db) {{
-                            const txDel = db.transaction("baixas", "readwrite");
-                            txDel.objectStore("baixas").delete(baixa.os_id);
-                        }} else {{
-                            filaMemoria = filaMemoria.filter(b => b.os_id !== baixa.os_id);
-                        }}
-                    }} else {{
-                        let erroServidor = await res.text();
-                        alert("❌ O Servidor recusou a OS " + baixa.os_id + ". Motivo: " + erroServidor);
-                    }}
-                }} catch (e) {{ 
-                    alert("⚠️ Erro de Rede ao sincronizar a OS " + baixa.os_id + "."); 
-                }}
-            }}
-            atualizarContador();
-            document.getElementById('btnSync').disabled = false;
-            document.getElementById('btnSync').innerText = "Enviar Dados Localizados";
-        }}
-
-        function sincronizarDados() {{
-            if (!navigator.onLine) return;
-            if (db) {{
-                try {{
-                    const tx = db.transaction("baixas", "readonly");
-                    const req = tx.objectStore("baixas").getAll();
-                    req.onsuccess = async () => {{ await enviarLote(req.result); }};
-                }} catch (e) {{ enviarLote(filaMemoria); }}
-            }} else {{ enviarLote(filaMemoria); }}
-        }}
-
-        function limparTudo() {{
-            if(confirm("Tem certeza que deseja apagar TODAS as baixas não sincronizadas? Esta ação não pode ser desfeita.")) {{
-                if (db) {{
-                    const tx = db.transaction("baixas", "readwrite");
-                    tx.objectStore("baixas").clear();
-                    tx.oncomplete = () => {{
-                        filaMemoria = [];
-                        alert("✅ Fila limpa com sucesso!");
-                        atualizarContador();
-                        renderizarOS();
-                    }};
-                }} else {{
-                    filaMemoria = [];
-                    alert("✅ Fila limpa com sucesso!");
-                    atualizarContador();
-                    renderizarOS();
-                }}
-            }}
-        }}
-
-        function atualizarContador() {{
-            if (db) {{
-                try {{
-                    const tx = db.transaction("baixas", "readonly");
-                    const req = tx.objectStore("baixas").count();
-                    req.onsuccess = () => {{ document.getElementById('contadorFila').innerText = req.result; }};
-                }} catch (e) {{ document.getElementById('contadorFila').innerText = filaMemoria.length; }}
-            }} else {{ document.getElementById('contadorFila').innerText = filaMemoria.length; }}
-        }}
-    </script>
-</body>
-</html>"""
-
-    # Concatenação final de todas as partes modulares criadas acima
     html_final = html_head + html_body + js_core + js_lote + js_sync
     return html_final.encode("utf-8")
 #endregion 3.13
