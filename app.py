@@ -15,7 +15,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import folium
-from PIL import Image
+from PIL import Image, ImageOps
 from streamlit_folium import st_folium
 from geopy.geocoders import Nominatim
 from streamlit_js_eval import get_geolocation
@@ -425,14 +425,18 @@ def carregar_baixas_df() -> pd.DataFrame:
 
 #region 3.3: Supabase Storage (Evidências Fotográficas com Compressão)
 def upload_foto_supabase(arquivo_bytes: bytes, nome_arquivo: str) -> str:
-    """Faz compressão com PIL antes de enviar ao Supabase."""
+    """Faz compressão com PIL antes de enviar ao Supabase e corrige a orientação (EXIF)."""
     url_base = st.secrets["SUPABASE_URL"]
     chave = st.secrets["SUPABASE_KEY"]
     upload_url = f"{url_base}/storage/v1/object/evidencias/{nome_arquivo}"
     
-    # Compressão Inteligente da Imagem
+    # Compressão Inteligente da Imagem e Correção de Orientação
     try:
         img = Image.open(io.BytesIO(arquivo_bytes))
+        
+        # CORREÇÃO: Lê o EXIF da câmera e gira a imagem para a posição original (retrato)
+        img = ImageOps.exif_transpose(img)
+        
         if img.mode != 'RGB': img = img.convert('RGB')
         img.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
         out = io.BytesIO()
