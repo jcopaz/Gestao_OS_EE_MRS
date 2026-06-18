@@ -1057,9 +1057,24 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     if "Descrição Longa" in df_pendentes.columns:
         colunas_export.append("Descrição Longa")
         
-    # O .fillna("") previne erros de JS caso alguma OS venha com dados vazios do SAP
     df_export = df_pendentes.head(50)[colunas_export].fillna("")
     os_json = df_export.to_json(orient="records", force_ascii=False)
+    
+    # Busca os usuários diretamente do banco Neon para criar a lista suspensa
+    opcoes_usuarios = '<option value="">Sozinho (Nenhum)</option>'
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT username FROM usuarios")
+        for row in cur.fetchall():
+            # Adiciona todos os usuários na lista, exceto o usuário que está logado
+            if row[0] != usuario:
+                opcoes_usuarios += f'<option value="{row[0]}">{row[0]}</option>'
+        cur.close()
+    except Exception as e:
+        print(f"Aviso ao buscar usuários: {e}")
+    finally:
+        release_connection(conn)
     
     html = f"""<!DOCTYPE html>
 <html lang="pt-BR">
@@ -1078,7 +1093,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         .offline {{ background-color: #FEE2E2; color: #991B1B; border: 1px solid #FF4B4B; }}
         .input-group {{ background-color: #F1F5F9; padding: 10px; border-radius: 8px; margin-bottom: 10px; }}
         .input-group label {{ font-size: 13px; font-weight: bold; color: #475569; display: block; margin-bottom: 4px; }}
-        .input-group input {{ width: 100%; padding: 8px; border: 1px solid #CBD5E1; border-radius: 4px; box-sizing: border-box; margin-bottom: 8px; }}
+        .input-group input, .input-group select {{ width: 100%; padding: 8px; border: 1px solid #CBD5E1; border-radius: 4px; box-sizing: border-box; margin-bottom: 8px; font-size: 14px; background-color: white; }}
     </style>
 </head>
 <body>
@@ -1093,18 +1108,16 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     <div id="listaOS"></div>
 
     <script>
-        // COLOQUE AQUI A SUA URL DA API NO RENDER!
-        const API_URL = "https://api-sgo-mrs.onrender.com/sincronizar_baixa_offline"; 
+        // Lembre-se de verificar se essa URL é exatamente a do seu Render!
+        const API_URL = "https://api-sgo-mrs.onrender.com"; 
         const OS_DADOS = {os_json};
         const USUARIO = "{usuario}";
         
         let db = null;
-        let filaMemoria = []; // Redundância para celulares que bloqueiam banco offline
+        let filaMemoria = []; 
 
-        // 1. FORÇA A RENDERIZAÇÃO IMEDIATA DAS OS (Ignorando se o DB vai abrir ou não)
         renderizarOS();
 
-        // 2. TENTA ABRIR O BANCO EM SEGUNDO PLANO
         try {{
             const request = indexedDB.open("SGO_Offline_DB", 3);
             request.onupgradeneeded = (e) => {{
@@ -1113,12 +1126,9 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                     db.createObjectStore("baixas", {{ keyPath: "os_id" }});
                 }}
             }};
-            request.onsuccess = (e) => {{ 
-                db = e.target.result; 
-                atualizarContador(); 
-            }};
-            request.onerror = (e) => {{ console.warn("Navegador bloqueou DB. Ativando Modo Memória."); }};
-        }} catch (err) {{ console.warn("Erro ao iniciar banco local", err); }}
+            request.onsuccess = (e) => {{ db = e.target.result; atualizarContador(); }};
+            request.onerror = (e) => {{ console.warn("Navegador bloqueou DB."); }};
+        }} catch (err) {{ console.warn("Erro BD local", err); }}
 
         function updateNetworkStatus() {{
             const statusDiv = document.getElementById('networkStatus');
@@ -1148,10 +1158,14 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                         </p>
                         
                         <div class="input-group">
-                            <label>Acompanhante (Matrícula/Nome):</label>
-                            <input type="text" id="acomp_${{os['Ordem servico']}}" placeholder="Sozinho">
+                            <label>Acompanhante:</label>
+                            <select id="acomp_${{os['Ordem servico']}}">
+                                {opcoes_usuarios}
+                            </select>
+                            
                             <label>Início (Obrigatório):</label>
                             <input type="time" id="hora_ini_${{os['Ordem servico']}}">
+                            
                             <label>Fim (Obrigatório):</label>
                             <input type="time" id="hora_fim_${{os['Ordem servico']}}">
                         </div>
@@ -1194,7 +1208,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                         if(navigator.onLine) sincronizarDados();
                     }};
                 }} else {{
-                    // Fallback para celulares bloqueados
                     filaMemoria.push(baixa);
                     alert("⚠️ Baixa salva temporariamente! Como seu navegador bloqueou o salvamento local, NÃO FECHE esta tela até chegar em área com internet e clicar em 'Enviar Dados'.");
                     document.getElementById(`card_${{os_id}}`).style.display = 'none';
@@ -1213,7 +1226,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         async function enviarLote(baixas) {{
             if (baixas.length === 0) return;
             document.getElementById('btnSync').disabled = true;
-            document.getElementById('btnSync').innerText = "Sincronizando...";
+            document.getElementById('btnSync').innerText = "Sincronizando... Aguarde!";
 
             for (let baixa of baixas) {{
                 let fd = new FormData();
@@ -1233,8 +1246,15 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                         }} else {{
                             filaMemoria = filaMemoria.filter(b => b.os_id !== baixa.os_id);
                         }}
+                    }} else {{
+                        // ALERTA DE ERRO NO SERVIDOR!
+                        let erroServidor = await res.text();
+                        alert("❌ O Servidor (Render/API) recusou a OS " + baixa.os_id + ". Motivo: " + erroServidor);
                     }}
-                }} catch (e) {{ console.error("Falha ao enviar", e); }}
+                }} catch (e) {{ 
+                    // ALERTA DE ERRO DE REDE/CONEXÃO!
+                    alert("⚠️ Erro de Rede: Não foi possível alcançar o servidor. O Render pode estar dormindo (leva 1 minuto para acordar) ou você está sem internet. Tente novamente em alguns segundos! Detalhe: " + e.message); 
+                }}
             }}
             atualizarContador();
             document.getElementById('btnSync').disabled = false;
