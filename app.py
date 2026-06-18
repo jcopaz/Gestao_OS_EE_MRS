@@ -2571,7 +2571,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             st.error("Tempo do GPS esgotado. Tente novamente ou use a Minha Base.")
 
                 st.markdown("---")
-                raio_busca_km = st.slider("📏 Raio de Atuação Visual (km):", 0, 50, 10, 5, key="slider_raio_atuacao")
+                raio_busca_km = st.slider("📏 Raio de Atuação Visual (km):", 0, 50, 10, 1, key="slider_raio_atuacao")
                 origem_label = "📍 GPS" if st.session_state.get("origem_tipo") == "GPS" else "🏠 Base"
                 st.caption(f"{origem_label}: **{st.session_state['local_nome']}**")
 
@@ -2621,9 +2621,9 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         os_selecionadas = st.multiselect("1. Selecione as OSs que deseja baixar:", opcoes_os)
 
                         if os_selecionadas:
-                            os_distantes = [os_id for os_id in os_selecionadas if df_recomendado.loc[df_recomendado["Ordem servico"].astype(str) == str(os_id), "Distancia_km"].iloc[0] > 5.0]
+                            os_distantes = [os_id for os_id in os_selecionadas if df_recomendado.loc[df_recomendado["Ordem servico"].astype(str) == str(os_id), "Distancia_km"].iloc[0] > 2.0]
                             if os_distantes:
-                                st.error(f"🛑 **Bloqueio Geográfico:** O sistema exige estar em um raio máximo de **5 km** do local.")
+                                st.error(f"🛑 **Bloqueio Geográfico:** O sistema exige estar em um raio máximo de **2 km** do local.")
                                 st.warning(f"Você está muito longe das OSs: **{', '.join(os_distantes)}**.")
                                 st.info("💡 Aproxime-se do pátio e atualize sua posição em '📍 Minha Localização'.")
                                 return

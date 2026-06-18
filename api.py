@@ -213,10 +213,10 @@ async def sincronizar_baixa_offline(
         dist_km = haversine_vectorized(lat_final, lon_final, pd.Series([lat_ativo]), pd.Series([lon_ativo]))[0]
 
     # 🔒 BLOQUEIO GEOGRÁFICO ESTRITO (Para qualquer dispositivo)
-    if dist_km > 5.0:
+    if dist_km > 2.0:
         raise HTTPException(
             status_code=403,
-            detail=f"Bloqueio Geográfico: O apontamento foi realizado a {dist_km:.1f}km do ativo (Limite máximo: 5.0km). Verifique seu GPS."
+            detail=f"Bloqueio Geográfico: O apontamento foi realizado a {dist_km:.1f}km do ativo (Limite máximo: 2.0km). Verifique seu GPS."
         )
     
     hora_envio = datetime.now(timezone(timedelta(hours=-3)))
