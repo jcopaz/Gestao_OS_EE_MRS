@@ -13,3 +13,7 @@ streamlit-calendar
 geopandas
 shapely
 psycopg2-binary
+fastapi
+uvicorn
+python-multipart
+Pillow
