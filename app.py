@@ -1093,7 +1093,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         .card {{ background: white; padding: 15px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 15px; border-left: 4px solid #3B82F6; transition: 0.3s; }}
         button {{ background-color: #3B82F6; color: white; border: none; padding: 12px; border-radius: 8px; width: 100%; font-size: 16px; cursor: pointer; font-weight: bold; margin-top: 10px; }}
         button.sync {{ background-color: #10B981; }}
-        button:disabled {{ background-color: #94A3B8; cursor: not-allowed; }}
+        button:disabled {{ background-color: #94A3B8 !important; cursor: not-allowed; }}
         .status-bar {{ text-align: center; padding: 10px; border-radius: 6px; margin-bottom: 20px; font-weight: bold; }}
         .online {{ background-color: #D1FAE5; color: #065F46; border: 1px solid #10B981; }}
         .offline {{ background-color: #FEE2E2; color: #991B1B; border: 1px solid #FF4B4B; }}
@@ -1103,8 +1103,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         .badge-crit {{ background-color: #FEF2F2; color: #991B1B; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; border: 1px solid #FF4B4B; display: inline-block; margin-bottom: 5px;}}
         .alerta-foco {{ background-color: #FEF3C7; color: #92400E; padding: 10px; border-radius: 8px; font-size: 14px; margin-bottom: 15px; border: 1px solid #F59E0B; display: none; }}
         
-        /* Classe CSS para OS Bloqueada */
-        .card-bloqueado {{ opacity: 0.6; border-left: 4px solid #94A3B8; background-color: #F8FAFC; }}
+        /* Classe CSS para OS Bloqueada (Cinza e Transparente) */
+        .card-bloqueado {{ opacity: 0.55; border-left: 4px solid #94A3B8 !important; background-color: #F8FAFC; }}
     </style>
 </head>
 <body>
@@ -1128,6 +1128,11 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         <label>🔍 Filtrar por Ativo:</label>
         <select id="filtroAtivo" onchange="renderizarOS()">
             <option value="TODOS">Todos os Ativos na Rota</option>
+        </select>
+        
+        <label style="margin-top: 10px;">👥 Acompanhante / Equipe (Aplica a todas as OS):</label>
+        <select id="acompGlobal">
+            {opcoes_usuarios}
         </select>
     </div>
 
@@ -1192,7 +1197,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             alerta.style.display = temMuitoAlta ? "block" : "none";
 
             osFiltradas.forEach(os => {{
-                // LÓGICA DE BLOQUEIO VISUAL
+                // LÓGICA DE BLOQUEIO VISUAL (Sem esconder a OS)
                 const isBloqueada = temMuitoAlta && os.Criticidade !== "Muito Alta";
                 const classeCard = isBloqueada ? "card card-bloqueado" : "card";
                 const msgBloqueio = isBloqueada ? `<div style="color:#EF4444; font-weight:bold; font-size:12px; margin-bottom:8px;">🔒 Conclua a OS Prioritária para liberar.</div>` : ``;
@@ -1216,11 +1221,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                         </p>
                         
                         <div class="input-group">
-                            <label>Acompanhante:</label>
-                            <select id="acomp_${{os['Ordem servico']}}" ${{btnInputsDisabled}}>
-                                {opcoes_usuarios}
-                            </select>
-                            
                             <label>Início (Obrigatório):</label>
                             <input type="time" id="hora_ini_${{os['Ordem servico']}}" ${{btnInputsDisabled}}>
                             <label>Fim (Obrigatório):</label>
@@ -1238,7 +1238,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             const ativo_id = osObj ? osObj.Ativo : 'DESCONHECIDO';
             
             const fotoInput = document.getElementById(`foto_${{os_id}}`);
-            const acomp = document.getElementById(`acomp_${{os_id}}`).value;
+            // CAPTURA O ACOMPANHANTE GLOBAL
+            const acomp = document.getElementById(`acompGlobal`).value;
             const horaIni = document.getElementById(`hora_ini_${{os_id}}`).value;
             const horaFim = document.getElementById(`hora_fim_${{os_id}}`).value;
 
