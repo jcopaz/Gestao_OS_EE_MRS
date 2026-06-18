@@ -1060,28 +1060,25 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     if df_pendentes.empty:
         return b""
         
-    colunas_export = ["Ordem servico", "Ativo", "Atividade ativo", "Patio"]
+    # Adicionamos a Criticidade para a regra de negócio funcionar no JS
+    colunas_export = ["Ordem servico", "Ativo", "Atividade ativo", "Patio", "Criticidade"]
     if "Descrição Longa" in df_pendentes.columns:
         colunas_export.append("Descrição Longa")
         
-    df_export = df_pendentes.head(50)[colunas_export].fillna("")
+    df_export = df_pendentes.head(100)[colunas_export].fillna("")
     os_json = df_export.to_json(orient="records", force_ascii=False)
     
-    # Busca os usuários diretamente do banco Neon para criar a lista suspensa
     opcoes_usuarios = '<option value="">Sozinho (Nenhum)</option>'
     conn = get_connection()
     try:
         cur = conn.cursor()
         cur.execute("SELECT username FROM usuarios")
         for row in cur.fetchall():
-            # Adiciona todos os usuários na lista, exceto o usuário que está logado
             if row[0] != usuario:
                 opcoes_usuarios += f'<option value="{row[0]}">{row[0]}</option>'
         cur.close()
-    except Exception as e:
-        print(f"Aviso ao buscar usuários: {e}")
-    finally:
-        release_connection(conn)
+    except Exception: pass
+    finally: release_connection(conn)
     
     html = f"""<!DOCTYPE html>
 <html lang="pt-BR">
@@ -1101,6 +1098,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         .input-group {{ background-color: #F1F5F9; padding: 10px; border-radius: 8px; margin-bottom: 10px; }}
         .input-group label {{ font-size: 13px; font-weight: bold; color: #475569; display: block; margin-bottom: 4px; }}
         .input-group input, .input-group select {{ width: 100%; padding: 8px; border: 1px solid #CBD5E1; border-radius: 4px; box-sizing: border-box; margin-bottom: 8px; font-size: 14px; background-color: white; }}
+        .badge-crit {{ background-color: #FEF2F2; color: #991B1B; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; border: 1px solid #FF4B4B; display: inline-block; margin-bottom: 5px;}}
+        .alerta-foco {{ background-color: #FEF3C7; color: #92400E; padding: 10px; border-radius: 8px; font-size: 14px; margin-bottom: 15px; border: 1px solid #F59E0B; display: none; }}
     </style>
 </head>
 <body>
@@ -1112,18 +1111,35 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     </div>
     
     <h3 style="color: #475569;">Sua Rota Offline</h3>
+    
+    <div class="input-group">
+        <label>🔍 Filtrar por Ativo:</label>
+        <select id="filtroAtivo" onchange="renderizarOS()">
+            <option value="TODOS">Todos os Ativos na Rota</option>
+        </select>
+    </div>
+
+    <div id="alertaFoco" class="alerta-foco">
+        ⚠️ <b>Foco Operacional:</b> Exibindo apenas OS Críticas (Muito Alta). Conclua estas para liberar as demais.
+    </div>
+
     <div id="listaOS"></div>
 
     <script>
-        // Lembre-se de verificar se essa URL é exatamente a do seu Render!
         const API_URL = "https://api-sgo-mrs.onrender.com/sincronizar_baixa_offline";
         const OS_DADOS = {os_json};
         const USUARIO = "{usuario}";
         
         let db = null;
         let filaMemoria = []; 
+        let osConcluidasSessao = new Set();
 
-        renderizarOS();
+        // Popula o Filtro de Ativos
+        const ativosUnicos = [...new Set(OS_DADOS.map(os => os.Ativo))].sort();
+        const selectAtivo = document.getElementById("filtroAtivo");
+        ativosUnicos.forEach(ativo => {{
+            selectAtivo.innerHTML += `<option value="${{ativo}}">${{ativo}}</option>`;
+        }});
 
         try {{
             const request = indexedDB.open("SGO_Offline_DB", 3);
@@ -1133,9 +1149,9 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                     db.createObjectStore("baixas", {{ keyPath: "os_id" }});
                 }}
             }};
-            request.onsuccess = (e) => {{ db = e.target.result; atualizarContador(); }};
-            request.onerror = (e) => {{ console.warn("Navegador bloqueou DB."); }};
-        }} catch (err) {{ console.warn("Erro BD local", err); }}
+            request.onsuccess = (e) => {{ db = e.target.result; atualizarContador(); renderizarOS(); }};
+            request.onerror = (e) => {{ console.warn("Navegador bloqueou DB."); renderizarOS(); }};
+        }} catch (err) {{ console.warn("Erro BD local", err); renderizarOS(); }}
 
         function updateNetworkStatus() {{
             const statusDiv = document.getElementById('networkStatus');
@@ -1151,12 +1167,31 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 
         function renderizarOS() {{
             const container = document.getElementById("listaOS");
+            const ativoSel = document.getElementById("filtroAtivo").value;
+            const alerta = document.getElementById("alertaFoco");
             container.innerHTML = "";
-            OS_DADOS.forEach(os => {{
+
+            // Remove as que já foram feitas nesta sessão
+            let osFiltradas = OS_DADOS.filter(os => !osConcluidasSessao.has(os['Ordem servico']));
+            
+            // Applica o filtro de Ativo
+            if (ativoSel !== "TODOS") {{
+                osFiltradas = osFiltradas.filter(os => os.Ativo === ativoSel);
+            }}
+
+            // Regra de Negócio: Trava de Prioridade
+            const temMuitoAlta = osFiltradas.some(os => os.Criticidade === "Muito Alta");
+            alerta.style.display = temMuitoAlta ? "block" : "none";
+
+            osFiltradas.forEach(os => {{
+                if (temMuitoAlta && os.Criticidade !== "Muito Alta") return; // Esconde as menos críticas
+
                 const descLonga = os['Descrição Longa'] ? os['Descrição Longa'] : 'N/A';
+                const badgeCrit = os.Criticidade === "Muito Alta" ? `<div class="badge-crit">⚠️ ${{os.Criticidade}}</div>` : '';
                 
                 container.innerHTML += `
                     <div class="card" id="card_${{os['Ordem servico']}}">
+                        ${{badgeCrit}}
                         <h4 style="margin:0 0 5px 0;">📍 ${{os.Patio}} | OS: ${{os['Ordem servico']}}</h4>
                         <p style="margin:0 0 10px 0; font-size:14px; line-height: 1.4;">
                             <b>Ativo:</b> ${{os.Ativo}}<br>
@@ -1172,7 +1207,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                             
                             <label>Início (Obrigatório):</label>
                             <input type="time" id="hora_ini_${{os['Ordem servico']}}">
-                            
                             <label>Fim (Obrigatório):</label>
                             <input type="time" id="hora_fim_${{os['Ordem servico']}}">
                         </div>
@@ -1210,14 +1244,16 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                     tx.objectStore("baixas").put(baixa);
                     tx.oncomplete = () => {{
                         alert("✅ Salvo com segurança no celular!");
-                        document.getElementById(`card_${{os_id}}`).style.display = 'none';
+                        osConcluidasSessao.add(os_id); // Marca como feita
+                        renderizarOS(); // Reavalia as prioridades e recarrega a tela!
                         atualizarContador();
                         if(navigator.onLine) sincronizarDados();
                     }};
                 }} else {{
                     filaMemoria.push(baixa);
-                    alert("⚠️ Baixa salva temporariamente! Como seu navegador bloqueou o salvamento local, NÃO FECHE esta tela até chegar em área com internet e clicar em 'Enviar Dados'.");
-                    document.getElementById(`card_${{os_id}}`).style.display = 'none';
+                    alert("⚠️ Baixa salva temporariamente na memória!");
+                    osConcluidasSessao.add(os_id);
+                    renderizarOS();
                     atualizarContador();
                     if(navigator.onLine) sincronizarDados();
                 }}
@@ -1254,13 +1290,11 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                             filaMemoria = filaMemoria.filter(b => b.os_id !== baixa.os_id);
                         }}
                     }} else {{
-                        // ALERTA DE ERRO NO SERVIDOR!
                         let erroServidor = await res.text();
                         alert("❌ O Servidor (Render/API) recusou a OS " + baixa.os_id + ". Motivo: " + erroServidor);
                     }}
                 }} catch (e) {{ 
-                    // ALERTA DE ERRO DE REDE/CONEXÃO!
-                    alert("⚠️ Erro de Rede: Não foi possível alcançar o servidor. O Render pode estar dormindo (leva 1 minuto para acordar) ou você está sem internet. Tente novamente em alguns segundos! Detalhe: " + e.message); 
+                    alert("⚠️ Erro de Rede. Tentaremos na próxima!"); 
                 }}
             }}
             atualizarContador();
@@ -1273,13 +1307,10 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             if (db) {{
                 try {{
                     const tx = db.transaction("baixas", "readonly");
-                    const store = tx.objectStore("baixas");
-                    const req = store.getAll();
+                    const req = tx.objectStore("baixas").getAll();
                     req.onsuccess = async () => {{ await enviarLote(req.result); }};
                 }} catch (e) {{ enviarLote(filaMemoria); }}
-            }} else {{
-                enviarLote(filaMemoria);
-            }}
+            }} else {{ enviarLote(filaMemoria); }}
         }}
 
         function atualizarContador() {{
@@ -1289,12 +1320,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                     const req = tx.objectStore("baixas").count();
                     req.onsuccess = () => {{ document.getElementById('contadorFila').innerText = req.result; }};
                 }} catch (e) {{ document.getElementById('contadorFila').innerText = filaMemoria.length; }}
-            }} else {{
-                document.getElementById('contadorFila').innerText = filaMemoria.length;
-            }}
+            }} else {{ document.getElementById('contadorFila').innerText = filaMemoria.length; }}
         }}
-        
-        updateNetworkStatus();
     </script>
 </body>
 </html>"""
@@ -2306,17 +2333,18 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 
 #region 10.2.4: Lista Detalhada de OS (com Evidências)
                 st.subheader("📋 Lista Detalhada de OS")
+                
+                # --- NOVIDADE: BARRA DE PESQUISA ---
+                col_busca, _ = st.columns([4, 6])
+                with col_busca:
+                    busca_os = st.text_input("🔍 Pesquisar por N° da OS, Pátio ou Ativo:")
+
                 df_lista = df_visao_base.copy().rename(columns={"Ordem servico": "OS"})
                 try:
                     df_evidencias = carregar_evidencias_df()
-                    
-                    # --- A GRANDE CORREÇÃO: CRUZAMENTO PELO NÚMERO DA OS ---
                     if not df_evidencias.empty and "OS" in df_lista.columns:
-                        # Forçamos as duas colunas a serem textos limpos para o "Procv" não falhar
                         df_lista["OS_match"] = df_lista["OS"].astype(str).str.strip()
                         df_evidencias["os_ref_match"] = df_evidencias["os_referencia"].astype(str).str.strip()
-                        
-                        # Mescla usando apenas o Número da OS
                         df_lista = df_lista.merge(df_evidencias[["os_ref_match", "foto_url"]], left_on="OS_match", right_on="os_ref_match", how="left")
                     else: 
                         df_lista["foto_url"] = None
@@ -2325,12 +2353,8 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         if "foto_url" in row and pd.notna(row["foto_url"]) and str(row["foto_url"]).startswith("http"):
                             return str(row["foto_url"])
                         return None
-
                     df_lista["Evidência"] = df_lista.apply(obter_link, axis=1)
-                    
-                    # Limpa as colunas auxiliares
                     df_lista.drop(columns=["OS_match", "os_ref_match", "foto_url", "ativo", "atividade"], inplace=True, errors="ignore")
-                    
                 except Exception: 
                     df_lista["Evidência"] = None
 
@@ -2341,14 +2365,20 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                 for c in colunas_ordem:
                     if c not in df_lista.columns: df_lista[c] = ""
 
+                # --- APLICA O FILTRO DA PESQUISA ---
+                if busca_os:
+                    b_up = busca_os.upper()
+                    mask = (df_lista["OS"].astype(str).str.upper().str.contains(b_up)) | (df_lista["Patio"].astype(str).str.upper().str.contains(b_up)) | (df_lista["Ativo"].astype(str).str.upper().str.contains(b_up))
+                    df_lista = df_lista[mask]
+
                 if not df_lista.empty:
                     st.dataframe(
                         df_lista[colunas_ordem].style.set_properties(**{'text-align': 'center'}).set_table_styles([{'selector': 'th', 'props': [('text-align', 'center')]}]), 
-                        use_container_width=True, 
-                        height=400, 
-                        hide_index=True, 
+                        use_container_width=True, height=400, hide_index=True, 
                         column_config={"Evidência": st.column_config.LinkColumn("📷 Evidência", display_text="🔗 Abrir Foto")}
                     )
+                else:
+                    st.info("Nenhuma OS encontrada para a pesquisa.")
 #endregion 10.2.4
 
 #region 10.3: ABA 2 — Roteirização e Mapa de Campo
@@ -2478,20 +2508,6 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         st.session_state.update({"lat_partida": lat_base, "lon_partida": lon_base, "local_nome": nome_base, "origem_tipo": "BASE", "gps_pending": False, "gps_trials": 0})
                         st.rerun()
 
-                # Injeção do Botão Offline (Área de Sombra)
-                st.markdown("<br>", unsafe_allow_html=True)
-                if not df_pendentes_f.empty:
-                    pacote_html_bytes = gerar_html_offline(df_pendentes_f, st.session_state.get("username", "tecnico"))
-                    st.download_button(
-                        label="📴 Baixar Pacote de OS para Área de Sombra",
-                        data=pacote_html_bytes,
-                        file_name=f"Rota_Offline_{datetime.now().strftime('%Y%m%d')}.html",
-                        mime="text/html",
-                        use_container_width=True,
-                        type="primary",
-                        help="Baixe este arquivo no seu celular. Ele funcionará como um aplicativo sem internet usando o GPS do aparelho."
-                    )
-
                 if st.session_state.get("gps_pending"):
                     st.info("Aguardando autorização do navegador e captura do GPS...")
                     loc = get_geolocation()
@@ -2518,6 +2534,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 
                 lat_origem, lon_origem = float(st.session_state["lat_partida"]), float(st.session_state["lon_partida"])
 
+                # CÁLCULO DO RAIO (Acontece antes agora)
                 if not df_pendentes_f.empty:
                     df_calc = df_pendentes_f.copy()
                     df_calc["lat_patio"] = df_calc["Patio"].map(lambda p: COORDENADAS_FIXAS.get(str(p).strip().upper(), [np.nan, np.nan])[0])
@@ -2531,7 +2548,15 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         df_recomendado = com_coord[com_coord["Distancia_km"] <= raio_busca_km].sort_values(by=["Ordem_Prazo", "Criticidade_rank", "Distancia_km"])
 
                 st.info(f"**{len(df_recomendado)} OS pendentes** encontradas no raio de {raio_busca_km} km.")
+                
+                # --- BOTÃO OFFLINE AGORA USA O DF_RECOMENDADO (Raio já aplicado!) ---
                 if not df_recomendado.empty:
+                    pacote_html_bytes = gerar_html_offline(df_recomendado, st.session_state.get("username", "tecnico"))
+                    st.download_button(
+                        label="📴 Baixar Pacote de OS para Área de Sombra",
+                        data=pacote_html_bytes, file_name=f"Rota_Offline_{datetime.now().strftime('%Y%m%d')}.html",
+                        mime="text/html", use_container_width=True, type="primary"
+                    )
 #endregion 10.3.2
 
  #region 10.3.3: Formulário de Baixa de OS + Evidências (fragment)
@@ -2654,7 +2679,17 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 
 #region 10.3.5: Cronograma de Execução de Campo (Tabela/PDF)
             if not df_recomendado.empty:
-                df_tabela_campo = df_recomendado.copy().rename(columns={"Ordem servico": "OS", "Classificacao": "Classificação"})
+                df_tabela_campo = df_recomendado.copy()
+                
+                # --- TRAVA DE PRIORIDADE ONLINE (Backlog Muito Alta + Hoje Muito Alta) ---
+                hoje_atual = datetime.now().date()
+                mask_muito_alta = (df_tabela_campo["Criticidade_rank"] == 1) & (df_tabela_campo["dt_prog_filtro"].dt.date <= hoje_atual)
+                
+                if mask_muito_alta.any():
+                    df_tabela_campo = df_tabela_campo[mask_muito_alta]
+                    st.warning("⚠️ **Foco Operacional:** Existem OS Críticas (Muito Alta) pendentes neste raio. As demais OS foram ocultadas até que estas sejam concluídas.")
+                
+                df_tabela_campo = df_tabela_campo.rename(columns={"Ordem servico": "OS", "Classificacao": "Classificação"})
                 df_tabela_campo["Data da Programação"] = df_tabela_campo["dt_prog_filtro"].dt.strftime("%d/%m/%Y")
                 colunas_exibir = ["OS", "Data da Programação", "Patio", "Ativo", "Criticidade", "Classificação", "Descrição Longa"]
 

@@ -124,7 +124,7 @@ def upsert_evidencia(ativo: str, atividade: str, foto_url: str, os_referencia: s
         conn.commit()
         cur.close()
     finally: release_connection(conn)
-    
+
 def upsert_baixa(os_id, status, realizado_em_str, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim, foto_b64):
     conn = get_connection()
     try:
@@ -201,21 +201,23 @@ async def sincronizar_baixa_offline(
             lat_final, lon_final = lat_exif, lon_exif
             fonte_gps = "Foto (EXIF)"
 
-    # Validação Antifraude (Distância)
+# Validação Antifraude (Distância)
     coordenada_ativo = COORDENADAS_FIXAS.get(ativo_id[:3], COORDENADAS_FIXAS["IPA"])
     lat_ativo, lon_ativo = coordenada_ativo[0], coordenada_ativo[1]
     
-    # Se ainda for 0.0 (Sem permissão e foto sem EXIF), a distância será alta e o auditor saberá.
     dist_km = haversine_vectorized(lat_final, lon_final, pd.Series([lat_ativo]), pd.Series([lon_ativo]))[0]
     
-    # Validação Antifraude (Tempo)
+# 🔒 BLOQUEIO GEOGRÁFICO ESTRITO (Para qualquer dispositivo)
+    if dist_km > 5.0:
+        raise HTTPException(
+            status_code=403, 
+            detail=f"Bloqueio Geográfico: O apontamento foi realizado a {dist_km:.1f}km do ativo (Limite máximo: 5.0km). Verifique seu GPS."
+        )
+    
     hora_envio = datetime.now(timezone(timedelta(hours=-3)))
     hora_apontamento = datetime.fromisoformat(data_hora_local.replace("Z", "+00:00")).astimezone(timezone(timedelta(hours=-3)))
     delta_minutos = (hora_envio - hora_apontamento).total_seconds() / 60.0
-    
-    if delta_minutos < 10 and dist_km > 5.0 and fonte_gps != "Navegador":
-        raise HTTPException(status_code=403, detail="Fraude detectada: Deslocamento impossível no tempo informado.")
-    
+
     equipe_formatada = acompanhante if acompanhante.strip() else "Sozinho"
 
     await foto.seek(0)
