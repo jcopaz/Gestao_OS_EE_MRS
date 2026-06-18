@@ -184,10 +184,12 @@ async def sincronizar_baixa_offline(
         hora_fim=horario_fim
     )
 
+    dist_km_float = float(dist_km)  
+
     return {
         "status": "sucesso", 
         "os_id": os_id, 
-        "dist_km": round(dist_km, 2), 
+        "dist_km": round(dist_km_float, 2), # <-- Usa a variável convertida aqui!
         "fonte_gps": fonte_gps, 
         "auditoria": "OK"
     }
