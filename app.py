@@ -2309,15 +2309,18 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                 df_lista = df_visao_base.copy().rename(columns={"Ordem servico": "OS"})
                 try:
                     df_evidencias = carregar_evidencias_df()
-                    col_atividade_lista = "Atividade ativo" if "Atividade ativo" in df_lista.columns else None
                     
-                    # Faz o cruzamento para pegar as fotos do modo Online/Offline (Supabase)
-                    if not df_evidencias.empty and "Ativo" in df_lista.columns and col_atividade_lista:
-                        df_lista = df_lista.merge(df_evidencias[["ativo", "atividade", "foto_url"]], left_on=["Ativo", col_atividade_lista], right_on=["ativo", "atividade"], how="left")
+                    # --- A GRANDE CORREÇÃO: CRUZAMENTO PELO NÚMERO DA OS ---
+                    if not df_evidencias.empty and "OS" in df_lista.columns:
+                        # Forçamos as duas colunas a serem textos limpos para o "Procv" não falhar
+                        df_lista["OS_match"] = df_lista["OS"].astype(str).str.strip()
+                        df_evidencias["os_ref_match"] = df_evidencias["os_referencia"].astype(str).str.strip()
+                        
+                        # Mescla usando apenas o Número da OS
+                        df_lista = df_lista.merge(df_evidencias[["os_ref_match", "foto_url"]], left_on="OS_match", right_on="os_ref_match", how="left")
                     else: 
                         df_lista["foto_url"] = None
 
-                    # Filtra para exibir na tabela APENAS se for um link HTTP da nuvem (Evita pesar a tela com Base64)
                     def obter_link(row):
                         if "foto_url" in row and pd.notna(row["foto_url"]) and str(row["foto_url"]).startswith("http"):
                             return str(row["foto_url"])
@@ -2326,7 +2329,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     df_lista["Evidência"] = df_lista.apply(obter_link, axis=1)
                     
                     # Limpa as colunas auxiliares
-                    df_lista.drop(columns=["ativo", "atividade", "foto_url"], inplace=True, errors="ignore")
+                    df_lista.drop(columns=["OS_match", "os_ref_match", "foto_url", "ativo", "atividade"], inplace=True, errors="ignore")
                     
                 except Exception: 
                     df_lista["Evidência"] = None
@@ -2344,7 +2347,6 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         use_container_width=True, 
                         height=400, 
                         hide_index=True, 
-                        # Retornando para a coluna de Link Leve!
                         column_config={"Evidência": st.column_config.LinkColumn("📷 Evidência", display_text="🔗 Abrir Foto")}
                     )
 #endregion 10.2.4
