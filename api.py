@@ -117,7 +117,13 @@ COORDENADAS_FIXAS = {
 }
 
 app_api = FastAPI(title="SGO MRS - Motor Antifraude")
-app_api.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app_api.add_middleware(
+    CORSMiddleware, 
+    allow_origins=["*"],  # O "*" significa "Aceitar de qualquer origem, inclusive arquivos locais do celular"
+    allow_credentials=True, 
+    allow_methods=["*"],  # Aceitar métodos POST, GET, etc.
+    allow_headers=["*"]   # Aceitar o cabeçalho FormData que usamos para mandar a foto
+)
 
 @app_api.post("/sincronizar_baixa_offline")
 async def sincronizar_baixa_offline(
