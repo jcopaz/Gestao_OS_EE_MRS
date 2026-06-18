@@ -1057,7 +1057,7 @@ def render_tela_admin():
     #endregion 3.8.5
 #endregion 3.8
 
-#region 3.9: Gerador Offline - Extração de Dados e Cabeçalho
+#region 3.9: Gerador Offline - Produção (HTML/JS completo)
 def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     if df_pendentes.empty:
         return b""
@@ -1086,6 +1086,12 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 
     usuarios_json = json.dumps(usuarios_equipe, ensure_ascii=False)
 
+    api_url_fixa = st.secrets.get(
+        "OFFLINE_API_URL",
+        "https://SEU-ENDPOINT.onrender.com/sincronizar_baixa_offline"
+    )
+    api_key_fixa = st.secrets.get("OFFLINE_API_KEY", "")
+
     html_head = f"""<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -1093,9 +1099,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SGO MRS - Modo Offline ({usuario})</title>
     <style>
-        * {{
-            box-sizing: border-box;
-        }}
+        * {{ box-sizing: border-box; }}
         body {{
             margin: 0;
             padding: 0;
@@ -1103,11 +1107,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             background: #F8FAFC;
             color: #0F172A;
         }}
-        .container {{
-            max-width: 1100px;
-            margin: 0 auto;
-            padding: 16px;
-        }}
+        .container {{ max-width: 1100px; margin: 0 auto; padding: 16px; }}
         .topbar {{
             display: flex;
             justify-content: space-between;
@@ -1119,17 +1119,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             background: #FFFFFF;
             box-shadow: 0 2px 10px rgba(15, 23, 42, 0.08);
         }}
-        .title {{
-            margin: 0;
-            font-size: 22px;
-            font-weight: 700;
-            color: #1E3A8A;
-        }}
-        .subtitle {{
-            margin: 4px 0 0 0;
-            font-size: 14px;
-            color: #475569;
-        }}
+        .title {{ margin: 0; font-size: 22px; font-weight: 700; color: #1E3A8A; }}
+        .subtitle {{ margin: 4px 0 0 0; font-size: 14px; color: #475569; }}
         .status-badge {{
             padding: 8px 12px;
             border-radius: 999px;
@@ -1139,53 +1130,21 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             background: #64748B;
             white-space: nowrap;
         }}
-        .status-online {{
-            background: #16A34A;
-        }}
-        .status-offline {{
-            background: #DC2626;
-        }}
-        .grid {{
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 16px;
-        }}
+        .status-online {{ background: #16A34A; }}
+        .status-offline {{ background: #DC2626; }}
+        .grid {{ display: grid; grid-template-columns: 1fr; gap: 16px; }}
         .card {{
             background: #FFFFFF;
             border-radius: 12px;
             padding: 16px;
             box-shadow: 0 2px 10px rgba(15, 23, 42, 0.08);
         }}
-        .card h2 {{
-            margin-top: 0;
-            margin-bottom: 10px;
-            font-size: 18px;
-            color: #1E293B;
-        }}
-        .toolbar {{
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 12px;
-        }}
-        .toolbar-3 {{
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 12px;
-        }}
-        .field {{
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-            margin-bottom: 12px;
-        }}
-        .field label {{
-            font-size: 13px;
-            color: #334155;
-            font-weight: 600;
-        }}
-        .field input,
-        .field select,
-        .field textarea {{
+        .card h2 {{ margin-top: 0; margin-bottom: 10px; font-size: 18px; color: #1E293B; }}
+        .toolbar {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
+        .toolbar-3 {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }}
+        .field {{ display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }}
+        .field label {{ font-size: 13px; color: #334155; font-weight: 600; }}
+        .field input, .field select {{
             width: 100%;
             padding: 10px 12px;
             border: 1px solid #CBD5E1;
@@ -1193,6 +1152,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             font-size: 14px;
             background: #FFFFFF;
         }}
+        .field input[readonly] {{ background: #E2E8F0; color: #475569; }}
         .btn {{
             width: 100%;
             border: none;
@@ -1202,129 +1162,30 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             font-size: 14px;
             font-weight: 700;
         }}
-        .btn-primary {{
-            background: #1D4ED8;
-            color: #FFFFFF;
-        }}
-        .btn-success {{
-            background: #059669;
-            color: #FFFFFF;
-        }}
-        .btn-danger {{
-            background: #DC2626;
-            color: #FFFFFF;
-        }}
-        .btn-secondary {{
-            background: #E2E8F0;
-            color: #0F172A;
-        }}
-        .btn:disabled {{
-            opacity: 0.55;
-            cursor: not-allowed;
-        }}
-        .info-box {{
-            padding: 12px;
-            border-radius: 10px;
-            margin-bottom: 12px;
-            font-size: 14px;
-        }}
-        .info-blue {{
-            background: #EFF6FF;
-            color: #1D4ED8;
-            border: 1px solid #BFDBFE;
-        }}
-        .info-yellow {{
-            background: #FEF3C7;
-            color: #92400E;
-            border: 1px solid #FCD34D;
-        }}
-        .info-red {{
-            background: #FEF2F2;
-            color: #991B1B;
-            border: 1px solid #FECACA;
-        }}
-        .queue-counter {{
-            font-size: 28px;
-            font-weight: 800;
-            color: #0F172A;
-            margin: 0;
-        }}
-        .os-list {{
-            display: grid;
-            gap: 12px;
-        }}
-        .os-item {{
-            border: 1px solid #E2E8F0;
-            border-radius: 12px;
-            padding: 14px;
-            background: #FFFFFF;
-        }}
-        .os-item.locked {{
-            background: #F8FAFC;
-            color: #94A3B8;
-            border-color: #E2E8F0;
-            opacity: 0.75;
-        }}
-        .os-header {{
-            display: flex;
-            justify-content: space-between;
-            gap: 12px;
-            align-items: center;
-            margin-bottom: 10px;
-        }}
-        .os-title {{
-            font-size: 16px;
-            font-weight: 800;
-            color: #0F172A;
-        }}
-        .chip {{
-            display: inline-block;
-            padding: 4px 8px;
-            border-radius: 999px;
-            font-size: 12px;
-            font-weight: 700;
-            background: #E2E8F0;
-            color: #334155;
-        }}
-        .chip-critical {{
-            background: #FEE2E2;
-            color: #991B1B;
-        }}
-        .os-grid {{
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 12px;
-        }}
-        .os-meta {{
-            font-size: 13px;
-            color: #475569;
-            margin: 4px 0;
-        }}
-        .desc-box {{
-            padding: 10px;
-            background: #F8FAFC;
-            border-radius: 10px;
-            border: 1px solid #E2E8F0;
-            font-size: 13px;
-            color: #334155;
-        }}
-        .small {{
-            font-size: 12px;
-            color: #64748B;
-        }}
-        .footer-space {{
-            height: 24px;
-        }}
+        .btn-primary {{ background: #1D4ED8; color: #FFFFFF; }}
+        .btn-success {{ background: #059669; color: #FFFFFF; }}
+        .btn-danger {{ background: #DC2626; color: #FFFFFF; }}
+        .btn-secondary {{ background: #E2E8F0; color: #0F172A; }}
+        .info-box {{ padding: 12px; border-radius: 10px; margin-bottom: 12px; font-size: 14px; }}
+        .info-blue {{ background: #EFF6FF; color: #1D4ED8; border: 1px solid #BFDBFE; }}
+        .info-yellow {{ background: #FEF3C7; color: #92400E; border: 1px solid #FCD34D; }}
+        .info-red {{ background: #FEF2F2; color: #991B1B; border: 1px solid #FECACA; }}
+        .queue-counter {{ font-size: 28px; font-weight: 800; color: #0F172A; margin: 0; }}
+        .os-list {{ display: grid; gap: 12px; }}
+        .os-item {{ border: 1px solid #E2E8F0; border-radius: 12px; padding: 14px; background: #FFFFFF; }}
+        .os-item.locked {{ background: #F8FAFC; color: #94A3B8; border-color: #E2E8F0; opacity: 0.75; }}
+        .os-header {{ display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 10px; }}
+        .os-title {{ font-size: 16px; font-weight: 800; color: #0F172A; }}
+        .chip {{ display: inline-block; padding: 4px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #E2E8F0; color: #334155; }}
+        .chip-critical {{ background: #FEE2E2; color: #991B1B; }}
+        .os-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
+        .os-meta {{ font-size: 13px; color: #475569; margin: 4px 0; }}
+        .desc-box {{ padding: 10px; background: #F8FAFC; border-radius: 10px; border: 1px solid #E2E8F0; font-size: 13px; color: #334155; }}
+        .small {{ font-size: 12px; color: #64748B; }}
+        .footer-space {{ height: 24px; }}
         @media (max-width: 768px) {{
-            .toolbar,
-            .toolbar-3,
-            .os-grid {{
-                grid-template-columns: 1fr;
-            }}
-            .os-header {{
-                flex-direction: column;
-                align-items: flex-start;
-            }}
+            .toolbar, .toolbar-3, .os-grid {{ grid-template-columns: 1fr; }}
+            .os-header {{ flex-direction: column; align-items: flex-start; }}
         }}
     </style>
 </head>
@@ -1353,11 +1214,12 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                     </div>
                     <div class="field">
                         <label for="apiUrl">API Produção</label>
-                        <input id="apiUrl" type="text" value="https://SEU-ENDPOINT.onrender.com/sincronizar_baixa_offline">
+                        <input id="apiUrl" type="text" value="{api_url_fixa}" readonly>
                     </div>
                     <div class="field">
-                        <label for="apiKey">X-API-Key</label>
-                        <input id="apiKey" type="password" value="">
+                        <label>X-API-Key</label>
+                        <input type="password" value="••••••••••••••••" readonly>
+                        <input id="apiKeyHidden" type="hidden" value="{api_key_fixa}">
                     </div>
                 </div>
 
@@ -1373,7 +1235,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 
             <div class="card">
                 <h2>🧭 Dados Operacionais</h2>
-
                 <div class="toolbar">
                     <div class="field">
                         <label for="filtroAtivo">🔍 Filtrar por Ativo</label>
@@ -1417,6 +1278,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     const OS_DATA = {os_json};
     const USUARIOS_EQUIPE = {usuarios_json};
     const USUARIO_LOGADO = {json.dumps(usuario, ensure_ascii=False)};
+    const API_URL_FIXA = {json.dumps(api_url_fixa, ensure_ascii=False)};
+    const API_KEY_FIXA = {json.dumps(api_key_fixa, ensure_ascii=False)};
 
     const DB_NAME = "sgo_mrs_offline_prod";
     const STORE_NAME = "apontamentos";
@@ -1426,7 +1289,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     function abrirDB() {{
         return new Promise((resolve, reject) => {{
             const req = indexedDB.open(DB_NAME, 1);
-
             req.onupgradeneeded = (event) => {{
                 const database = event.target.result;
                 if (!database.objectStoreNames.contains(STORE_NAME)) {{
@@ -1435,12 +1297,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                     store.createIndex("status_sync", "status_sync", {{ unique: false }});
                 }}
             }};
-
-            req.onsuccess = () => {{
-                db = req.result;
-                resolve(db);
-            }};
-
+            req.onsuccess = () => {{ db = req.result; resolve(db); }};
             req.onerror = () => reject(req.error);
         }});
     }}
@@ -1487,15 +1344,11 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     function popularListaAtivos() {{
         const datalist = document.getElementById("listaAtivos");
         if (!datalist) return;
-
         const ativosUnicos = [...new Set(
-            OS_DATA
-                .map(item => String(item.Ativo || "").trim())
-                .filter(v => v)
+            OS_DATA.map(item => String(item.Ativo || "").trim()).filter(v => v)
         )].sort((a, b) => a.localeCompare(b, "pt-BR"));
 
         datalist.innerHTML = "";
-
         ativosUnicos.forEach((ativo) => {{
             const option = document.createElement("option");
             option.value = ativo;
@@ -1547,7 +1400,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 <div class="os-meta"><strong>Ativo:</strong> ${{ativo}}</div>
                 <div class="os-meta"><strong>Atividade:</strong> ${{atividade}}</div>
                 <div class="os-meta"><strong>Pátio:</strong> ${{patio}}</div>
-
                 ${{desc ? `<div class="desc-box" style="margin: 10px 0;"><strong>Descrição:</strong><br>${{desc}}</div>` : ""}}
 
                 <div class="os-grid" style="margin-top: 10px;">
@@ -1576,7 +1428,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 setGpsInfo("Este navegador não suporta geolocalização.", "red");
                 return resolve(null);
             }}
-
             navigator.geolocation.getCurrentPosition(
                 (pos) => {{
                     gpsAtual = {{
@@ -1592,11 +1443,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                     setGpsInfo(`Falha ao capturar GPS: ${{err.message}}`, "red");
                     resolve(null);
                 }},
-                {{
-                    enableHighAccuracy: true,
-                    timeout: 15000,
-                    maximumAge: 0
-                }}
+                {{ enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }}
             );
         }});
     }}
@@ -1608,17 +1455,11 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 <script>
     function calcularDuracaoHoras(inicio, fim) {{
         if (!inicio || !fim) return null;
-
         const [hi, mi] = inicio.split(":").map(Number);
         const [hf, mf] = fim.split(":").map(Number);
-
         let minsIni = hi * 60 + mi;
         let minsFim = hf * 60 + mf;
-
-        if (minsFim < minsIni) {{
-            minsFim += 24 * 60;
-        }}
-
+        if (minsFim < minsIni) minsFim += 24 * 60;
         return (minsFim - minsIni) / 60.0;
     }}
 
@@ -1633,20 +1474,15 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             const foto = fileInput?.files?.[0] || null;
             const osItem = OS_DATA[i];
 
-            const preenchida = Boolean(inicio && fim && foto);
-            if (!preenchida) continue;
+            if (!(inicio && fim && foto)) continue;
 
             const duracaoHoras = calcularDuracaoHoras(inicio, fim);
             if (duracaoHoras !== null && duracaoHoras > 12) {{
-                const ok = confirm(
-                    `A duração calculada da OS ${{osItem["Ordem servico"]}} é de ${{duracaoHoras.toFixed(1)}}h. Confirma gravar mesmo assim?`
-                );
-                if (!ok) {{
-                    return;
-                }}
+                const ok = confirm(`A duração calculada da OS ${{osItem["Ordem servico"]}} é de ${{duracaoHoras.toFixed(1)}}h. Confirma gravar mesmo assim?`);
+                if (!ok) return;
             }}
 
-            const payload = {{
+            selecionadas.push({{
                 os_id: String(osItem["Ordem servico"] || "").trim(),
                 ativo_id: String(osItem["Ativo"] || "").trim(),
                 usuario: USUARIO_LOGADO,
@@ -1660,9 +1496,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 status_sync: "pendente",
                 foto_blob: foto,
                 criado_em: new Date().toISOString()
-            }};
-
-            selecionadas.push(payload);
+            }});
         }}
 
         if (!selecionadas.length) {{
@@ -1716,15 +1550,15 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     js_sync = f"""
 <script>
     async function sincronizarFila() {{
-        const apiUrl = document.getElementById("apiUrl").value.trim();
-        const apiKey = document.getElementById("apiKey").value.trim();
+        const apiUrl = API_URL_FIXA;
+        const apiKey = API_KEY_FIXA;
 
         if (!apiUrl) {{
-            alert("Preencha a URL da API de Produção.");
+            alert("URL da API offline não configurada no pacote.");
             return;
         }}
         if (!apiKey) {{
-            alert("Preencha o X-API-Key para sincronização.");
+            alert("API Key offline não configurada no pacote.");
             return;
         }}
         if (!navigator.onLine) {{
@@ -1764,9 +1598,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 
                 const resp = await fetch(apiUrl, {{
                     method: "POST",
-                    headers: {{
-                        "x-api-key": apiKey
-                    }},
+                    headers: {{ "x-api-key": apiKey }},
                     body: formData
                 }});
 
@@ -1794,7 +1626,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         }}
 
         await atualizarFila();
-
         if (falha === 0) {{
             setSyncMsg(`Sincronização concluída com sucesso. ${{sucesso}} OS enviada(s).`, "blue");
         }} else {{
@@ -1811,12 +1642,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         renderListaOS();
         await atualizarFila();
 
-        window.addEventListener("online", () => {{
-            setStatusOnline();
-        }});
-        window.addEventListener("offline", () => {{
-            setStatusOnline();
-        }});
+        window.addEventListener("online", setStatusOnline);
+        window.addEventListener("offline", setStatusOnline);
 
         document.getElementById("filtroAtivo").addEventListener("input", renderListaOS);
         document.getElementById("btnCapturarGps").addEventListener("click", capturarGPS);
@@ -1837,7 +1664,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     html_final = html_head + html_body + js_core + js_lote + js_sync
     return html_final.encode("utf-8")
 #endregion 3.13
-#endregion
 
 #region SESSÃO 4: Banco de Coordenadas Fixo
 
