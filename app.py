@@ -1258,7 +1258,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                     osIncompletas.push(os_id);
                 }} else if (isCompleta) {{
                     
-                    // --- VALIDAÇÃO INTELIGENTE (CONFIRMAÇÃO EM VEZ DE BLOQUEIO) ---
                     let [hI, mI] = horaIni.value.split(':').map(Number);
                     let [hF, mF] = horaFim.value.split(':').map(Number);
                     let minIni = hI * 60 + mI;
@@ -1267,7 +1266,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                     let duracaoMin = minFim < minIni ? (24 * 60 - minIni) + minFim : minFim - minIni;
 
                     if (duracaoMin > 12 * 60) {{
-                        let resposta = confirm(`⚠️ Atenção na OS ${{os_id}}:\\n\\nA duração calculada é de ${(duracaoMin/60).toFixed(1)} horas. Está correto?\\n\\n(Se o serviço terminou à tarde, lembre-se de usar 13:00 em vez de 01:00). Clique em OK para confirmar e salvar.`);
+                        // CORREÇÃO AQUI: Chaves duplas {{ }} em volta da matemática do JS
+                        let resposta = confirm(`⚠️ Atenção na OS ${{os_id}}:\\n\\nA duração calculada é de ${{(duracaoMin/60).toFixed(1)}} horas. Está correto?\\n\\n(Se o serviço terminou à tarde, lembre-se de usar 13:00 em vez de 01:00). Clique em OK para confirmar e salvar.`);
                         if (!resposta) {{
                             return; 
                         }}
@@ -1926,41 +1926,43 @@ def _sanear_lista_filtro(chave: str, opcoes: list[str], padrao: list[str]):
     st.session_state[chave] = atuais
     return atuais
 
-@st.fragment
+#region 7.3: Função de Renderização dos Filtros na Sidebar
 @st.fragment
 def fragmento_filtros_sidebar_seguro():
+    # --- OCULTA TUDO PARA O TÉCNICO (Inclusive o título e o botão) ---
+    if st.session_state.get("perfil") == "Técnico":
+        return # Interrompe a função aqui, não desenha nada na sidebar!
+
     st.markdown("### 📊 Filtros")
     
-    # Criamos o formulário para o usuário aplicar tudo de uma vez
     with st.form("form_filtros"):
-        if st.session_state["perfil"] != "Técnico":
-            # Datas
-            start_padrao = st.session_state.get("filtro_start_date", min_date)
-            end_padrao = st.session_state.get("filtro_end_date", max_date)
-            data_selecionada = st.date_input("Período de Programação", value=(start_padrao, end_padrao), format="DD/MM/YYYY")
-            
-            # Pátios, Classificação, Turno
-            patios_default = _sanear_lista_filtro("filtro_patios", lista_patios, lista_patios)
-            st.multiselect("Pátio", lista_patios, default=patios_default, key="filtro_patios")
-            
-            classif_default = _sanear_lista_filtro("filtro_classificacoes", lista_classificacoes, lista_classificacoes)
-            st.multiselect("Classificação", lista_classificacoes, default=classif_default, key="filtro_classificacoes")
-            
-            turnos_default = _sanear_lista_filtro("filtro_turnos", lista_turnos, lista_turnos)
-            st.multiselect("Turno", lista_turnos, default=turnos_default, key="filtro_turnos")
-
-            # Intervalo e Status
-            st.selectbox("Tipo de Intervalo", ["Todas", "Com Intervalo", "Sem Intervalo"], key="filtro_intervalo_sel")
-            st.selectbox("Status da OS", status_opcoes, key="filtro_status_sel")
+        # Datas
+        start_padrao = st.session_state.get("filtro_start_date", min_date)
+        end_padrao = st.session_state.get("filtro_end_date", max_date)
+        data_selecionada = st.date_input("Período de Programação", value=(start_padrao, end_padrao), format="DD/MM/YYYY")
         
-        # O botão que aplica a lógica
+        # Pátios, Classificação, Turno
+        patios_default = _sanear_lista_filtro("filtro_patios", lista_patios, lista_patios)
+        st.multiselect("Pátio", lista_patios, default=patios_default, key="filtro_patios")
+        
+        classif_default = _sanear_lista_filtro("filtro_classificacoes", lista_classificacoes, lista_classificacoes)
+        st.multiselect("Classificação", lista_classificacoes, default=classif_default, key="filtro_classificacoes")
+        
+        turnos_default = _sanear_lista_filtro("filtro_turnos", lista_turnos, lista_turnos)
+        st.multiselect("Turno", lista_turnos, default=turnos_default, key="filtro_turnos")
+
+        # Intervalo e Status
+        st.selectbox("Tipo de Intervalo", ["Todas", "Com Intervalo", "Sem Intervalo"], key="filtro_intervalo_sel")
+        st.selectbox("Status da OS", status_opcoes, key="filtro_status_sel")
+    
+        # O botão fica DENTRO do form e SÓ para quem não é técnico
         submit_filtros = st.form_submit_button("✅ Aplicar Filtros", use_container_width=True, type="primary")
 
-    # Tratamento das datas se o usuário escolheu um range
-    if submit_filtros and st.session_state["perfil"] != "Técnico":
+    if submit_filtros:
         if isinstance(data_selecionada, tuple) and len(data_selecionada) == 2:
             st.session_state["filtro_start_date"], st.session_state["filtro_end_date"] = data_selecionada
-        st.rerun() # Força o re-run apenas quando clicar em Aplicar
+        st.rerun()
+#endregion 7.3
 
 with st.sidebar: fragmento_filtros_sidebar_seguro()
 
