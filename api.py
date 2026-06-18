@@ -1,4 +1,5 @@
 import io
+import os
 import time
 import numpy as np
 import pandas as pd
@@ -14,12 +15,16 @@ from PIL.ExifTags import TAGS, GPSTAGS
 # Lógica de Retry para lidar com o "Cold Start" (Banco dormindo) do Neon PostgreSQL
 pool_conexoes = None
 
+# Lógica de Retry para lidar com o "Cold Start" (Banco dormindo) do Neon PostgreSQL
+pool_conexoes = None
+
 def get_connection():
     global pool_conexoes
     if pool_conexoes is None:
         for tentativa in range(3):
             try:
-                pool_conexoes = psycopg2.pool.SimpleConnectionPool(1, 20, st.secrets["NEON_POSTGRES_URL"])
+                db_url = os.environ.get("NEON_POSTGRES_URL") 
+                pool_conexoes = psycopg2.pool.SimpleConnectionPool(1, 20, db_url)
                 break
             except psycopg2.OperationalError as e:
                 if tentativa == 2: 
