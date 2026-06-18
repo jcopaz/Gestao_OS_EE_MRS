@@ -447,8 +447,15 @@ def upsert_baixa(os_id: str, status: str, realizado_em_str: str, coordenacao: st
 
 def carregar_baixas_df() -> pd.DataFrame:
     conn = get_connection()
-    try: df = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa FROM baixas", conn)
-    finally: release_connection(conn)
+    try: 
+        # CORREÇÃO: Adicionamos a foto_evidencia na leitura do Neon!
+        df = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, foto_evidencia FROM baixas", conn)
+    except Exception:
+        # Fallback caso a coluna ainda não exista em algum ambiente
+        df = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa FROM baixas", conn)
+    finally: 
+        release_connection(conn)
+        
     if not df.empty: df["os"] = df["os"].astype(str)
     return df
 #endregion
@@ -1542,10 +1549,21 @@ def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, bai
         "realizado_em": "Data/Hora Realizado", "concluido_por": "Concluído por", "geolocalizacao_baixa": "Geolocalização de Baixa"
     })
 
-    df_base = df_base.merge(df_baixas[["Ordem servico"] + colunas_overlay], on="Ordem servico", how="left", suffixes=("", "_baixado"))
+    # CORREÇÃO: Adiciona a foto_evidencia na lista de coisas que serão mescladas
+    cols_merge = ["Ordem servico"] + colunas_overlay
+    if "foto_evidencia" in df_baixas.columns:
+        cols_merge.append("foto_evidencia")
+
+    df_base = df_base.merge(df_baixas[cols_merge], on="Ordem servico", how="left", suffixes=("", "_baixado"))
+    
     for col in colunas_overlay:
         df_base[col] = np.where(df_base[f"{col}_baixado"].notna() & (df_base[f"{col}_baixado"] != ""), df_base[f"{col}_baixado"], df_base[col])
         df_base.drop(columns=[f"{col}_baixado"], inplace=True)
+        
+    # Salva a foto na base final limpa
+    if "foto_evidencia_baixado" in df_base.columns:
+        df_base["foto_evidencia"] = df_base["foto_evidencia_baixado"]
+        df_base.drop(columns=["foto_evidencia_baixado"], inplace=True)
 
     return df_base
 #endregion 5.4
