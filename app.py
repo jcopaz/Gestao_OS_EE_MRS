@@ -1063,7 +1063,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     if df_pendentes.empty:
         return b""
         
-    # Adicionamos a Criticidade para a regra de negócio funcionar no JS
     colunas_export = ["Ordem servico", "Ativo", "Atividade ativo", "Patio", "Criticidade"]
     if "Descrição Longa" in df_pendentes.columns:
         colunas_export.append("Descrição Longa")
@@ -1091,10 +1090,10 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     <title>SGO MRS - Modo Offline ({usuario})</title>
     <style>
         body {{ font-family: 'Segoe UI', Tahoma, sans-serif; padding: 15px; background-color: #F8FAFC; color: #1E293B; }}
-        .card {{ background: white; padding: 15px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 15px; border-left: 4px solid #3B82F6; }}
+        .card {{ background: white; padding: 15px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 15px; border-left: 4px solid #3B82F6; transition: 0.3s; }}
         button {{ background-color: #3B82F6; color: white; border: none; padding: 12px; border-radius: 8px; width: 100%; font-size: 16px; cursor: pointer; font-weight: bold; margin-top: 10px; }}
         button.sync {{ background-color: #10B981; }}
-        button:disabled {{ background-color: #94A3B8; }}
+        button:disabled {{ background-color: #94A3B8; cursor: not-allowed; }}
         .status-bar {{ text-align: center; padding: 10px; border-radius: 6px; margin-bottom: 20px; font-weight: bold; }}
         .online {{ background-color: #D1FAE5; color: #065F46; border: 1px solid #10B981; }}
         .offline {{ background-color: #FEE2E2; color: #991B1B; border: 1px solid #FF4B4B; }}
@@ -1103,6 +1102,9 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         .input-group input, .input-group select {{ width: 100%; padding: 8px; border: 1px solid #CBD5E1; border-radius: 4px; box-sizing: border-box; margin-bottom: 8px; font-size: 14px; background-color: white; }}
         .badge-crit {{ background-color: #FEF2F2; color: #991B1B; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; border: 1px solid #FF4B4B; display: inline-block; margin-bottom: 5px;}}
         .alerta-foco {{ background-color: #FEF3C7; color: #92400E; padding: 10px; border-radius: 8px; font-size: 14px; margin-bottom: 15px; border: 1px solid #F59E0B; display: none; }}
+        
+        /* Classe CSS para OS Bloqueada */
+        .card-bloqueado {{ opacity: 0.6; border-left: 4px solid #94A3B8; background-color: #F8FAFC; }}
     </style>
 </head>
 <body>
@@ -1119,7 +1121,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         <button id="btnSync" class="sync" onclick="sincronizarDados()">Enviar Dados Localizados</button>
         <button id="btnLimpar" style="background-color: #EF4444;" onclick="limparTudo()">🗑️ Limpar Filas e Reiniciar</button>
     </div>
-
+    
     <h3 style="color: #475569;">Sua Rota Offline</h3>
     
     <div class="input-group">
@@ -1130,7 +1132,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     </div>
 
     <div id="alertaFoco" class="alerta-foco">
-        ⚠️ <b>Foco Operacional:</b> Exibindo apenas OS Críticas (Muito Alta). Conclua estas para liberar as demais.
+        ⚠️ <b>Foco Operacional:</b> Existem OS Críticas (Muito Alta). As demais estão bloqueadas até que estas sejam concluídas.
     </div>
 
     <div id="listaOS"></div>
@@ -1144,7 +1146,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         let filaMemoria = []; 
         let osConcluidasSessao = new Set();
 
-        // Popula o Filtro de Ativos
         const ativosUnicos = [...new Set(OS_DADOS.map(os => os.Ativo))].sort();
         const selectAtivo = document.getElementById("filtroAtivo");
         ativosUnicos.forEach(ativo => {{
@@ -1181,26 +1182,31 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             const alerta = document.getElementById("alertaFoco");
             container.innerHTML = "";
 
-            // Remove as que já foram feitas nesta sessão
             let osFiltradas = OS_DADOS.filter(os => !osConcluidasSessao.has(os['Ordem servico']));
             
-            // Applica o filtro de Ativo
             if (ativoSel !== "TODOS") {{
                 osFiltradas = osFiltradas.filter(os => os.Ativo === ativoSel);
             }}
 
-            // Regra de Negócio: Trava de Prioridade
             const temMuitoAlta = osFiltradas.some(os => os.Criticidade === "Muito Alta");
             alerta.style.display = temMuitoAlta ? "block" : "none";
 
             osFiltradas.forEach(os => {{
-                if (temMuitoAlta && os.Criticidade !== "Muito Alta") return; // Esconde as menos críticas
+                // LÓGICA DE BLOQUEIO VISUAL
+                const isBloqueada = temMuitoAlta && os.Criticidade !== "Muito Alta";
+                const classeCard = isBloqueada ? "card card-bloqueado" : "card";
+                const msgBloqueio = isBloqueada ? `<div style="color:#EF4444; font-weight:bold; font-size:12px; margin-bottom:8px;">🔒 Conclua a OS Prioritária para liberar.</div>` : ``;
+                const btnInputsDisabled = isBloqueada ? "disabled" : "";
+                const btnHTML = isBloqueada 
+                    ? `<button disabled>🔒 OS Bloqueada</button>`
+                    : `<button onclick="registrarBaixa('${{os['Ordem servico']}}')">✅ Dar Baixa Offline</button>`;
 
                 const descLonga = os['Descrição Longa'] ? os['Descrição Longa'] : 'N/A';
-                const badgeCrit = os.Criticidade === "Muito Alta" ? `<div class="badge-crit">⚠️ ${{os.Criticidade}}</div>` : '';
+                const badgeCrit = os.Criticidade === "Muito Alta" ? `<div class="badge-crit">⚠️ ${{os.Criticidade}}</div>` : `<div style="font-size:12px; color:#64748B; margin-bottom:5px;">${{os.Criticidade}}</div>`;
                 
                 container.innerHTML += `
-                    <div class="card" id="card_${{os['Ordem servico']}}">
+                    <div class="${{classeCard}}" id="card_${{os['Ordem servico']}}">
+                        ${{msgBloqueio}}
                         ${{badgeCrit}}
                         <h4 style="margin:0 0 5px 0;">📍 ${{os.Patio}} | OS: ${{os['Ordem servico']}}</h4>
                         <p style="margin:0 0 10px 0; font-size:14px; line-height: 1.4;">
@@ -1211,18 +1217,18 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                         
                         <div class="input-group">
                             <label>Acompanhante:</label>
-                            <select id="acomp_${{os['Ordem servico']}}">
+                            <select id="acomp_${{os['Ordem servico']}}" ${{btnInputsDisabled}}>
                                 {opcoes_usuarios}
                             </select>
                             
                             <label>Início (Obrigatório):</label>
-                            <input type="time" id="hora_ini_${{os['Ordem servico']}}">
+                            <input type="time" id="hora_ini_${{os['Ordem servico']}}" ${{btnInputsDisabled}}>
                             <label>Fim (Obrigatório):</label>
-                            <input type="time" id="hora_fim_${{os['Ordem servico']}}">
+                            <input type="time" id="hora_fim_${{os['Ordem servico']}}" ${{btnInputsDisabled}}>
                         </div>
 
-                        <input type="file" id="foto_${{os['Ordem servico']}}" accept="image/*" capture="environment" style="width: 100%; margin-bottom: 10px;">
-                        <button onclick="registrarBaixa('${{os['Ordem servico']}}')">✅ Dar Baixa Offline</button>
+                        <input type="file" id="foto_${{os['Ordem servico']}}" accept="image/*" capture="environment" style="width: 100%; margin-bottom: 10px;" ${{btnInputsDisabled}}>
+                        ${{btnHTML}}
                     </div>`;
             }});
         }}
@@ -1254,8 +1260,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                     tx.objectStore("baixas").put(baixa);
                     tx.oncomplete = () => {{
                         alert("✅ Salvo com segurança no celular!");
-                        osConcluidasSessao.add(os_id); // Marca como feita
-                        renderizarOS(); // Reavalia as prioridades e recarrega a tela!
+                        osConcluidasSessao.add(os_id); 
+                        renderizarOS(); 
                         atualizarContador();
                         if(navigator.onLine) sincronizarDados();
                     }};
@@ -1280,25 +1286,19 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             if (baixas.length === 0) return;
             document.getElementById('btnSync').disabled = true;
             document.getElementById('btnSync').innerText = "Sincronizando... Aguarde!";
+
             const tokenTeste = document.getElementById('debugToken').value;
 
             for (let baixa of baixas) {{
                 let fd = new FormData();
-                fd.append("os_id", baixa.os_id); 
-                fd.append("ativo_id", baixa.ativo_id); 
-                fd.append("usuario", baixa.usuario);
-                fd.append("lat_browser", baixa.lat); 
-                fd.append("lon_browser", baixa.lon); 
-                fd.append("data_hora_local", baixa.data_hora);
+                fd.append("os_id", baixa.os_id); fd.append("ativo_id", baixa.ativo_id); fd.append("usuario", baixa.usuario);
+                fd.append("lat_browser", baixa.lat); fd.append("lon_browser", baixa.lon); fd.append("data_hora_local", baixa.data_hora);
                 fd.append("acompanhante", baixa.acompanhante); 
                 fd.append("horario_inicio", baixa.horario_inicio); 
                 fd.append("horario_fim", baixa.horario_fim);
                 fd.append("foto", baixa.foto, "evidencia.jpg");
                 
-                // SE O CAMPO NÃO ESTIVER VAZIO, ENVIA PARA A API
-                if (tokenTeste) {{
-                    fd.append("debug_token", tokenTeste);
-                }}
+                if (tokenTeste) {{ fd.append("debug_token", tokenTeste); }}
 
                 try {{
                     let res = await fetch(API_URL, {{ method: "POST", body: fd }});
@@ -1333,16 +1333,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             }} else {{ enviarLote(filaMemoria); }}
         }}
 
-        function atualizarContador() {{
-            if (db) {{
-                try {{
-                    const tx = db.transaction("baixas", "readonly");
-                    const req = tx.objectStore("baixas").count();
-                    req.onsuccess = () => {{ document.getElementById('contadorFila').innerText = req.result; }};
-                }} catch (e) {{ document.getElementById('contadorFila').innerText = filaMemoria.length; }}
-            }} else {{ document.getElementById('contadorFila').innerText = filaMemoria.length; }}
-        }}
-
         function limparTudo() {{
             if(confirm("Tem certeza que deseja apagar TODAS as baixas não sincronizadas? Esta ação não pode ser desfeita.")) {{
                 if (db) {{
@@ -1361,6 +1351,16 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                     renderizarOS();
                 }}
             }}
+        }}
+
+        function atualizarContador() {{
+            if (db) {{
+                try {{
+                    const tx = db.transaction("baixas", "readonly");
+                    const req = tx.objectStore("baixas").count();
+                    req.onsuccess = () => {{ document.getElementById('contadorFila').innerText = req.result; }};
+                }} catch (e) {{ document.getElementById('contadorFila').innerText = filaMemoria.length; }}
+            }} else {{ document.getElementById('contadorFila').innerText = filaMemoria.length; }}
         }}
     </script>
 </body>
@@ -2606,7 +2606,18 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     def renderizar_bloco_apontamento():
                         st.markdown("---")
                         st.markdown("#### ✅ Apontamento e Conclusão de OS")
-                        os_selecionadas = st.multiselect("1. Selecione as OSs que deseja baixar:", df_recomendado["Ordem servico"].astype(str).unique().tolist())
+                        
+                        # --- TRAVA DE PRIORIDADE NO SELECT DO DESKTOP ---
+                        hoje_atual = datetime.now().date()
+                        mask_critica = (df_recomendado["Criticidade_rank"] == 1) & (df_recomendado["dt_prog_filtro"].dt.date <= hoje_atual)
+                        
+                        if mask_critica.any():
+                            st.warning("⚠️ **Foco Operacional Ativo:** Conclua as OS Críticas (Muito Alta) para liberar as demais.")
+                            opcoes_os = df_recomendado[mask_critica]["Ordem servico"].astype(str).unique().tolist()
+                        else:
+                            opcoes_os = df_recomendado["Ordem servico"].astype(str).unique().tolist()
+
+                        os_selecionadas = st.multiselect("1. Selecione as OSs que deseja baixar:", opcoes_os)
 
                         if os_selecionadas:
                             os_distantes = [os_id for os_id in os_selecionadas if df_recomendado.loc[df_recomendado["Ordem servico"].astype(str) == str(os_id), "Distancia_km"].iloc[0] > 5.0]
@@ -2723,14 +2734,6 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
             if not df_recomendado.empty:
                 df_tabela_campo = df_recomendado.copy()
                 
-                # --- TRAVA DE PRIORIDADE ONLINE (Backlog Muito Alta + Hoje Muito Alta) ---
-                hoje_atual = datetime.now().date()
-                mask_muito_alta = (df_tabela_campo["Criticidade_rank"] == 1) & (df_tabela_campo["dt_prog_filtro"].dt.date <= hoje_atual)
-                
-                if mask_muito_alta.any():
-                    df_tabela_campo = df_tabela_campo[mask_muito_alta]
-                    st.warning("⚠️ **Foco Operacional:** Existem OS Críticas (Muito Alta) pendentes neste raio. As demais OS foram ocultadas até que estas sejam concluídas.")
-                
                 df_tabela_campo = df_tabela_campo.rename(columns={"Ordem servico": "OS", "Classificacao": "Classificação"})
                 df_tabela_campo["Data da Programação"] = df_tabela_campo["dt_prog_filtro"].dt.strftime("%d/%m/%Y")
                 colunas_exibir = ["OS", "Data da Programação", "Patio", "Ativo", "Criticidade", "Classificação", "Descrição Longa"]
@@ -2757,15 +2760,31 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         st.download_button("🖨️ Gerar Impressão PDF", data=gerar_pdf_cronograma(df_tabela_campo, colunas_exibir), file_name=f"Crono_Campo_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf", mime="application/pdf", use_container_width=True)
                     except ImportError: st.warning("⚠️ 'reportlab' não instalada.")
                 
-                with col_tit_crono: st.markdown("#### 📋 Cronograma de Execução de Campo\n<small>OS Pendentes recomendadas no raio de atuação visual por prioridade</small>", unsafe_allow_html=True)
-                def aplicar_cor_prazo(row):
+                with col_tit_crono: 
+                    st.markdown("#### 📋 Cronograma de Execução de Campo\n<small>OS Pendentes recomendadas no raio de atuação visual por prioridade</small>", unsafe_allow_html=True)
+                
+                # --- ESTILIZAÇÃO INTELIGENTE (CADEADO VISUAL DA TABELA) ---
+                def aplicar_cor_foco(row):
+                    hoje_atual = datetime.now().date()
+                    # Verifica se no dataframe inteiro existe alguma OS Muito Alta
+                    tem_critica_no_raio = (df_recomendado["Criticidade_rank"] == 1) & (df_recomendado["dt_prog_filtro"].dt.date <= hoje_atual)
+                    
+                    if tem_critica_no_raio.any():
+                        if row["Criticidade"] == "Muito Alta":
+                            return ["background-color: #FEF2F2; color: #991B1B; font-weight: bold;"] * len(row)
+                        else:
+                            return ["background-color: #F8FAFC; color: #94A3B8;"] * len(row) # Fica cinza (bloqueada)
+                    
+                    # Se não tiver crítica, aplica a regra normal de atraso
                     dt = row["dt_prog_filtro"]
                     if pd.isna(dt): return [""] * len(row)
-                    if dt.date() < datetime.now().date(): return ["background-color: #FEE2E2; color: #7F1D1D; font-weight: 500;"] * len(row)
-                    elif dt.date() == datetime.now().date(): return ["background-color: #FEF3C7; color: #78350F; font-weight: 500;"] * len(row)
+                    if dt.date() < hoje_atual: return ["background-color: #FEE2E2; color: #7F1D1D; font-weight: 500;"] * len(row)
+                    elif dt.date() == hoje_atual: return ["background-color: #FEF3C7; color: #78350F; font-weight: 500;"] * len(row)
                     return [""] * len(row)
-                st.dataframe(df_tabela_campo.style.apply(aplicar_cor_prazo, axis=1), use_container_width=True, height=350, hide_index=True, column_order=colunas_exibir)
-            else: st.info("Nenhuma OS pendente localizada dentro do raio de atuação selecionado.")
+                
+                st.dataframe(df_tabela_campo.style.apply(aplicar_cor_foco, axis=1), use_container_width=True, height=350, hide_index=True, column_order=colunas_exibir)
+            else: 
+                st.info("Nenhuma OS pendente localizada dentro do raio de atuação selecionado.")
             #endregion 10.3.5
 #endregion 10.3
 #endregion SESSÃO 10
