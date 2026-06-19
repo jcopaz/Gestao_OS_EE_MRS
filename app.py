@@ -4181,15 +4181,100 @@ if st.session_state.get("tela_atual") == "governanca":
         st.markdown("---")
         st.markdown("#### 📍 Tabela de Auditoria de Apontamentos (GPS)")
 
+        # Mapa de exibição de colaboradores:
+        # username/matrícula -> Nome (matrícula)
+        # Mantém os dados originais preservados em concluido_por/equipe.
+        try:
+            conn = get_connection()
+            df_users_auditoria = pd.read_sql_query(
+                "SELECT username, nome FROM usuarios",
+                conn
+            )
+        finally:
+            release_connection(conn)
+
+        if not df_users_auditoria.empty:
+            df_users_auditoria["username_key"] = (
+                df_users_auditoria["username"]
+                .astype(str)
+                .str.strip()
+            )
+
+            df_users_auditoria["nome_clean"] = (
+                df_users_auditoria["nome"]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+            )
+
+            mapa_nome_usuario_auditoria = dict(
+                zip(
+                    df_users_auditoria["username_key"],
+                    df_users_auditoria["nome_clean"]
+                )
+            )
+        else:
+            mapa_nome_usuario_auditoria = {}
+
+        def label_apontador_principal(valor):
+            matricula = str(valor).strip()
+
+            if not matricula or matricula.lower() in ("nan", "none", "null"):
+                return "Não informado"
+
+            nome = str(mapa_nome_usuario_auditoria.get(matricula, "")).strip()
+
+            if nome:
+                return f"{nome} ({matricula})"
+
+            # Fallback: mantém o valor original caso não exista cadastro
+            # ou caso a origem já tenha enviado nome em vez de matrícula.
+            return matricula
+
+        def label_equipe_coexecutantes(valor):
+            texto = str(valor).strip()
+
+            if not texto or texto.lower() in ("nan", "none", "null", "sozinho"):
+                return "Sozinho"
+
+            partes = [
+                p.strip()
+                for p in texto.split(",")
+                if p.strip()
+            ]
+
+            nomes_formatados = []
+
+            for item in partes:
+                nome = str(mapa_nome_usuario_auditoria.get(item, "")).strip()
+
+                if nome:
+                    nomes_formatados.append(f"{nome} ({item})")
+                else:
+                    # Fallback: mantém matrícula/texto original.
+                    nomes_formatados.append(item)
+
+            return ", ".join(nomes_formatados) if nomes_formatados else "Sozinho"
+
+        # Cria colunas apenas de exibição para a tabela.
+        # Não altera concluido_por/equipe originais.
+        df_gov_f["Colaborador"] = df_gov_f["concluido_por"].apply(
+            label_apontador_principal
+        )
+
+        df_gov_f["Equipe_Nomes"] = df_gov_f["equipe"].apply(
+            label_equipe_coexecutantes
+        )
+
         df_auditoria = (
             df_gov_f[
                 [
                     "Ordem servico",
-                    "concluido_por",
+                    "Colaborador",
                     "data_inicio",
                     "hora_fim",
                     "geolocalizacao_baixa",
-                    "equipe",
+                    "Equipe_Nomes",
                     "Tempo_Minutos"
                 ]
             ]
@@ -4200,11 +4285,11 @@ if st.session_state.get("tela_atual") == "governanca":
             )
             .rename(columns={
                 "Ordem servico": "OS",
-                "concluido_por": "Apontador Principal",
+                "Colaborador": "Apontador Principal",
                 "data_inicio": "Data",
                 "hora_fim": "Hora Apontada",
                 "geolocalizacao_baixa": "Localização do Celular",
-                "equipe": "Co-Executantes",
+                "Equipe_Nomes": "Co-Executantes",
                 "Tempo_Minutos": "Tempo Gasto (min)"
             })
         )
@@ -4221,20 +4306,125 @@ if st.session_state.get("tela_atual") == "governanca":
                 return (
                     "background-color: #FEE2E2; "
                     "color: #991B1B; "
-                    "font-weight: bold;"
+                    "font-weight: bold; "
+                    "border-bottom: 1px solid #FECACA;"
                 )
 
-            return "color: #065F46;"
+            return "color: #065F46; border-bottom: 1px solid #E2E8F0;"
 
-        st.dataframe(
-            df_auditoria.style.map(
-                estilo_gps,
-                subset=["Localização do Celular"]
-            ),
-            use_container_width=True,
-            height=300,
-            hide_index=True
+        df_estilizado = (
+            df_auditoria
+            .style
+            .map(estilo_gps, subset=["Localização do Celular"])
+            .hide(axis="index")
         )
+
+        tabela_html = df_estilizado.to_html(escape=False)
+
+        html_code = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <style>
+        body {{
+            margin: 0;
+            font-family: "Source Sans Pro", sans-serif;
+            background-color: #FFFFFF;
+        }}
+
+        .tabela-gov {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            color: #0F172A;
+        }}
+
+        .tabela-gov th {{
+            background-color: #1E293B;
+            color: #F8FAFC;
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            padding: 10px;
+            text-align: left;
+            border-bottom: 2px solid #3B82F6;
+            white-space: nowrap;
+            cursor: pointer;
+            user-select: none;
+            transition: background-color 0.2s;
+        }}
+
+        .tabela-gov th:hover {{
+            background-color: #333D4E;
+        }}
+
+        .tabela-gov th::after {{
+            content: ' ↕';
+            font-size: 11px;
+            color: #94A3B8;
+            padding-left: 5px;
+        }}
+
+        .tabela-gov td {{
+            padding: 8px 10px;
+            vertical-align: middle;
+            white-space: nowrap;
+            border-bottom: 1px solid #E2E8F0;
+        }}
+
+        .tabela-gov td:nth-child(2) {{
+            min-width: 260px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }}
+
+        .tabela-gov td:nth-child(5) {{
+            min-width: 400px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }}
+
+        .tabela-gov td:nth-child(6) {{
+            min-width: 260px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }}
+        </style>
+        </head>
+        <body>
+        {tabela_html.replace("<table", "<table class='tabela-gov'")}
+
+        <script>
+        const getCellValue = (tr, idx) =>
+            tr.children[idx].innerText || tr.children[idx].textContent;
+
+        const comparer = (idx, asc) => (a, b) => ((v1, v2) =>
+            v1 !== '' && v2 !== '' && !isNaN(v1) && !isNaN(v2)
+                ? v1 - v2
+                : v1.toString().localeCompare(v2)
+        )(getCellValue(asc ? a : b, idx), getCellValue(asc ? b : a, idx));
+
+        document.querySelectorAll('th').forEach(th =>
+            th.addEventListener('click', function() {{
+                const table = th.closest('table');
+                const tbody = table.querySelector('tbody');
+
+                Array.from(tbody.querySelectorAll('tr'))
+                    .sort(
+                        comparer(
+                            Array.from(th.parentNode.children).indexOf(th),
+                            this.asc = !this.asc
+                        )
+                    )
+                    .forEach(tr => tbody.appendChild(tr));
+            }})
+        );
+        </script>
+        </body>
+        </html>
+        """
+        import streamlit.components.v1 as components
+        components.html(html_code, height=400, scrolling=True)
 #endregion 11.7
     fragmento_governanca()
     st.stop()
