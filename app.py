@@ -27,48 +27,57 @@ from psycopg2.extras import execute_values
 from psycopg2 import pool
 #endregion 1.1
 
-#region 1.2: Configurações Globais e Tela Inicial de Login
+#region 1.2: Configurações Globais e Estilo Corporativo (Com Imagem)
 st.set_page_config(page_title="Painel de OS Eletroeletrônica", layout="wide", initial_sidebar_state="collapsed")
 
 if not st.session_state.get("logged_in", False):
     st.markdown("""
         <style>
-        /* Imagem de Fundo (Altere o caminho abaixo para o seu arquivo) */
-        .stApp {
-            background: linear-gradient(rgba(15, 23, 42, 0.85), rgba(15, 23, 42, 0.85)), 
-                        url("fundo1.jpg"); 
-            background-size: cover;
-            background-position: center;
+        /* Imagem de Fundo com filtro de escurecimento ajustado para legibilidade */
+        [data-testid="stAppViewContainer"] {
+            background: linear-gradient(rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0.7)), 
+                        url("fundo.png") !important;
+            background-size: cover !important;
+            background-position: center !important;
+            background-repeat: no-repeat !important;
         }
         
-        /* Ajuste do Formulário de Login */
+        /* Título com sombra para destacar sobre a imagem */
+        .titulo-login {
+            text-align: center; 
+            color: #FFFFFF !important; 
+            text-shadow: 2px 2px 8px rgba(0,0,0,0.8);
+            font-size: 3rem !important;
+            font-weight: 800 !important;
+        }
+        
+        /* Card de Login translúcido (Vidro) */
         .stForm {
-            background-color: rgba(255, 255, 255, 0.1) !important;
-            border: 1px solid rgba(255, 255, 255, 0.2) !important;
-            border-radius: 15px !important;
-            padding: 20px !important;
+            background-color: rgba(0, 0, 0, 0.5) !important;
+            border: 1px solid rgba(255, 255, 255, 0.1) !important;
+            border-radius: 16px !important;
+            padding: 40px !important;
+            backdrop-filter: blur(8px); /* Efeito Glassmorphism */
         }
         
-        /* Botão Entrar Gradiente */
+        /* Labels e Inputs brancos e legíveis */
+        label { color: #FFFFFF !important; font-weight: 600 !important; text-shadow: 1px 1px 2px rgba(0,0,0,0.5); }
+        
+        /* Botão Gradiente MRS */
         div.stButton > button {
             background: linear-gradient(135deg, #1E3A8A 0%, #3B82F6 100%) !important;
             color: #FFFFFF !important;
             border: none !important;
             border-radius: 8px !important;
             font-weight: 700 !important;
-            transition: all 0.3s ease !important;
-        }
-        div.stButton > button:hover {
-            background: linear-gradient(135deg, #2563EB 0%, #60A5FA 100%) !important;
-            transform: translateY(-2px) !important;
-            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4) !important;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.3) !important;
         }
         </style>
     """, unsafe_allow_html=True)
 
     col_vazia1, col_centro, col_vazia2 = st.columns([1, 1, 1])
     with col_centro:
-        st.markdown("<h1 style='text-align: center; color: white;'>⚡ SGO MRS</h1>", unsafe_allow_html=True)
+        st.markdown("<h1 class='titulo-login'>⚡SGO Eletroeletrônica MRS</h1>", unsafe_allow_html=True)
 #endregion 1.2
 
 #region 1.3: Conexão com Banco de Dados e Constantes de Status
