@@ -27,21 +27,21 @@ from psycopg2.extras import execute_values
 from psycopg2 import pool
 #endregion 1.1
 
-#region 1.2: Configurações Globais e Tela Inicial de Login
+# --- Seção 1.2: Configurações e Estilo de Login ---
 st.set_page_config(page_title="Painel de OS Eletroeletrônica", layout="wide", initial_sidebar_state="collapsed")
 
 if not st.session_state.get("logged_in", False):
+    # O bloco CSS vai aqui!
     st.markdown("""
         <style>
-        /* Imagem de Fundo (Altere o caminho abaixo para o seu arquivo) */
-        .stApp {
+        [data-testid="stAppViewContainer"] {
             background: linear-gradient(rgba(15, 23, 42, 0.85), rgba(15, 23, 42, 0.85)), 
-                        url("https://www.google.com/images/branding/googlelogo/1x/googlelogo_color_272x92dp.png"); 
-            background-size: cover;
-            background-position: center;
+                        url("fundo.png") !important;
+            background-size: cover !important;
+            background-position: center !important;
+            background-repeat: no-repeat !important;
         }
         
-        /* Ajuste do Formulário de Login */
         .stForm {
             background-color: rgba(255, 255, 255, 0.1) !important;
             border: 1px solid rgba(255, 255, 255, 0.2) !important;
@@ -49,19 +49,11 @@ if not st.session_state.get("logged_in", False):
             padding: 20px !important;
         }
         
-        /* Botão Entrar Gradiente */
         div.stButton > button {
             background: linear-gradient(135deg, #1E3A8A 0%, #3B82F6 100%) !important;
             color: #FFFFFF !important;
             border: none !important;
             border-radius: 8px !important;
-            font-weight: 700 !important;
-            transition: all 0.3s ease !important;
-        }
-        div.stButton > button:hover {
-            background: linear-gradient(135deg, #2563EB 0%, #60A5FA 100%) !important;
-            transform: translateY(-2px) !important;
-            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4) !important;
         }
         </style>
     """, unsafe_allow_html=True)
