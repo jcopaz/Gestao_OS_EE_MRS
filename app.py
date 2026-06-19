@@ -2538,16 +2538,31 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     df_lista = df_lista[mask]
 
                 if not df_lista.empty:
-                    st.dataframe(
-                        df_lista[colunas_ordem].style.set_properties(**{'text-align': 'center'}).set_table_styles([{'selector': 'th', 'props': [('text-align', 'center')]}]), 
-                        use_container_width=True, height=400, hide_index=True, 
-                        column_config={
-                            "Evidência": st.column_config.LinkColumn("📷 Evidência", display_text="🔗 Abrir Foto"),
-                            # Força a largura grande e ativa o scroll horizontal
-                            "Descrição Longa": st.column_config.TextColumn("Descrição Longa", width="large"),
-                            "Geolocalização de Baixa": st.column_config.TextColumn("Geolocalização de Baixa", width="medium")
-                        }
-                    )
+                    # 1. Formatar a coluna de link para HTML nativo
+                    def formatar_link(url):
+                        if pd.notna(url) and str(url).startswith("http"):
+                            return f'<a href="{url}" target="_blank" style="color: #3B82F6; font-weight: bold; text-decoration: none;">🔗 Abrir Foto</a>'
+                        return ""
+                    df_lista["Evidência"] = df_lista["Evidência"].apply(formatar_link)
+                    
+                    # 2. Gerar HTML com Pandas Styler
+                    df_html = df_lista[colunas_ordem].copy()
+                    tabela_html = df_html.style.hide(axis="index").set_properties(**{'text-align': 'center'}).to_html(escape=False, index=False)
+                    
+                    # 3. Injetar a tabela com CSS de Rolagem e Quebra de Linha
+                    st.markdown(f"""
+                        <style>
+                        .scroll-dash {{ width: 100%; max-height: 450px; overflow: auto; border: 1px solid #E2E8F0; border-radius: 8px; }}
+                        .tabela-dash {{ width: 100%; border-collapse: collapse; font-family: "Source Sans Pro", sans-serif; font-size: 13px; background-color: #FFFFFF; color: #0F172A; }}
+                        .tabela-dash th {{ background-color: #1E293B; color: #F8FAFC; position: sticky; top: 0; z-index: 1; padding: 10px; text-align: center; border-bottom: 2px solid #3B82F6; white-space: nowrap; }}
+                        .tabela-dash td {{ padding: 8px 10px; border-bottom: 1px solid #E2E8F0; text-align: center; vertical-align: middle; white-space: nowrap; }}
+                        .tabela-dash td:nth-child(6) {{ text-align: left; min-width: 500px; white-space: pre-wrap; word-wrap: break-word; }} /* Quebra a linha da Descrição Longa */
+                        .tabela-dash td:nth-child(11) {{ text-align: left; min-width: 300px; white-space: pre-wrap; word-wrap: break-word; }} /* Quebra a linha do GPS */
+                        </style>
+                        <div class="scroll-dash">
+                            {tabela_html.replace('<table', '<table class="tabela-dash"')}
+                        </div>
+                    """, unsafe_allow_html=True)
                 else:
                     st.info("Nenhuma OS encontrada para a pesquisa.")
 #endregion 10.2.4
@@ -2920,8 +2935,80 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             styles, elementos = getSampleStyleSheet(), [Paragraph("📋 Cronograma de Execução de Campo", getSampleStyleSheet()["Title"]), Paragraph(f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')} | Origem: {st.session_state.get('local_nome', 'N/A')} | Raio: {raio_busca_km} km", getSampleStyleSheet()["Normal"]), Spacer(1, 6*mm)]
                             data_rows = [[str(c) for c in colunas]]
                             style_cell = styles["Normal"]; style_cell.fontSize, style_cell.leading = 7, 9
-                            # REMOVIDO o limite [:80]. Agora o texto da Descrição Longa vai inteiro!
-                            for _, row in df_pdf[colunas].iterrows(): data_rows.append([Paragraph(str(v), style_cell) for v in row.values])
+                            for _, row in df_pdf[colunas].iterrows(): 
+                                data_rows.append([Paragraph(str(v).replace('\n', '<br/>').replace('\r', ''), style_cell) for v in row.values])
+                            col_widths = [45, 45, 35, 90, 45, 70, landscape(A4)[0] - 20*mm - 330]
+                            tabela = Table(data_rows, colWidths=col_widths, repeatRows=1)
+                            tabela.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E3A8A")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("FONTSIZE", (0, 0), (-1, 0), 8), ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("ALIGN", (0, 0), (-1, -1), "CENTER"), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")), ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]), ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]))
+                            elementos.append(tabela); doc.build(elementos); buf.seek(0)
+                            return buf.getvalue()
+
+                        st.download_button("🖨️ Gerar Impressão PDF", data=gerar_pdf_cronograma(df_tabela_campo, colunas_exibir), file_name=f"Crono_Campo_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf", mime="application/pdf", use_container_width=True)
+                    except ImportError: st.warning("⚠️ 'reportlab' não instalada.")
+                
+                with col_tit_crono: 
+                    st.markdown("#### 📋 Cronograma de Execução de Campo\n<small>OS Pendentes recomendadas no raio de atuação visual por prioridade</small>", unsafe_allow_html=True)
+                
+                # Regras de Cor para a Tabela HTML
+                def aplicar_cor_foco(row):
+                    hoje_atual = datetime.now().date()
+                    tem_critica_no_raio = (df_recomendado["Criticidade_rank"] == 1) & (df_recomendado["dt_prog_filtro"].dt.date <= hoje_atual)
+                    
+                    if tem_critica_no_raio.any():
+                        if row["Criticidade"] == "Muito Alta":
+                            return ["background-color: #FEF2F2; color: #991B1B; font-weight: bold; border-bottom: 1px solid #FECACA;"] * len(row)
+                        else:
+                            return ["background-color: #F8FAFC; color: #94A3B8; border-bottom: 1px solid #E2E8F0;"] * len(row) 
+                    
+                    dt = row["dt_prog_filtro"]
+                    if pd.isna(dt): return ["border-bottom: 1px solid #E2E8F0;"] * len(row)
+                    if dt.date() < hoje_atual: return ["background-color: #FEE2E2; color: #7F1D1D; font-weight: 500; border-bottom: 1px solid #FECACA;"] * len(row)
+                    elif dt.date() == hoje_atual: return ["background-color: #FEF3C7; color: #78350F; font-weight: 500; border-bottom: 1px solid #FDE68A;"] * len(row)
+                    return ["border-bottom: 1px solid #E2E8F0;"] * len(row)
+                
+                # Construção da Tabela HTML
+                df_estilizado = df_tabela_campo[colunas_exibir].style.apply(aplicar_cor_foco, axis=1).hide(axis="index")
+                tabela_html = df_estilizado.to_html(escape=False, index=False)
+                
+                st.markdown(f"""
+                    <style>
+                    .scroll-rota {{ width: 100%; max-height: 400px; overflow: auto; border: 1px solid #E2E8F0; border-radius: 8px; }}
+                    .tabela-rota {{ width: 100%; border-collapse: collapse; font-family: "Source Sans Pro", sans-serif; font-size: 13px; background-color: #FFFFFF; color: #0F172A; }}
+                    .tabela-rota th {{ background-color: #1E293B; color: #F8FAFC; position: sticky; top: 0; z-index: 1; padding: 10px; text-align: left; border-bottom: 2px solid #3B82F6; white-space: nowrap; }}
+                    .tabela-rota td {{ padding: 8px 10px; vertical-align: middle; white-space: nowrap; }}
+                    .tabela-rota td:nth-child(7) {{ min-width: 500px; white-space: pre-wrap; word-wrap: break-word; }} /* Força Quebra na Descrição Longa */
+                    </style>
+                    <div class="scroll-rota">
+                        {tabela_html.replace('<table', '<table class="tabela-rota"')}
+                    </div>
+                """, unsafe_allow_html=True)
+            else: 
+                st.info("Nenhuma OS pendente localizada dentro do raio de atuação selecionado.")
+            #endregion 10.3.5
+            if not df_recomendado.empty:
+                df_tabela_campo = df_recomendado.copy()
+                
+                df_tabela_campo = df_tabela_campo.rename(columns={"Ordem servico": "OS", "Classificacao": "Classificação"})
+                df_tabela_campo["Data da Programação"] = df_tabela_campo["dt_prog_filtro"].dt.strftime("%d/%m/%Y")
+                colunas_exibir = ["OS", "Data da Programação", "Patio", "Ativo", "Criticidade", "Classificação", "Descrição Longa"]
+
+                col_tit_crono, col_btn_crono = st.columns([7.5, 2.5])
+                with col_btn_crono:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    try:
+                        from reportlab.lib.pagesizes import A4, landscape; from reportlab.lib import colors; from reportlab.lib.units import mm
+                        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer; from reportlab.lib.styles import getSampleStyleSheet
+                        def gerar_pdf_cronograma(df_pdf, colunas):
+                            buf = io.BytesIO()
+                            doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=10*mm, rightMargin=10*mm, topMargin=15*mm, bottomMargin=15*mm)
+                            styles, elementos = getSampleStyleSheet(), [Paragraph("📋 Cronograma de Execução de Campo", getSampleStyleSheet()["Title"]), Paragraph(f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')} | Origem: {st.session_state.get('local_nome', 'N/A')} | Raio: {raio_busca_km} km", getSampleStyleSheet()["Normal"]), Spacer(1, 6*mm)]
+                            data_rows = [[str(c) for c in colunas]]
+                            style_cell = styles["Normal"]; style_cell.fontSize, style_cell.leading = 7, 9
+                            
+                            # 🔥 CORREÇÃO DO PDF: Substitui "Enters" (\n) do SAP por tags HTML que o PDF entende
+                            for _, row in df_pdf[colunas].iterrows(): 
+                                data_rows.append([Paragraph(str(v).replace('\n', '<br/>').replace('\r', ''), style_cell) for v in row.values])
+                                
                             col_widths = [45, 45, 35, 90, 45, 70, landscape(A4)[0] - 20*mm - 330]
                             tabela = Table(data_rows, colWidths=col_widths, repeatRows=1)
                             tabela.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E3A8A")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("FONTSIZE", (0, 0), (-1, 0), 8), ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("ALIGN", (0, 0), (-1, -1), "CENTER"), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")), ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]), ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]))
@@ -2952,10 +3039,19 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                 
                 st.dataframe(
                     df_tabela_campo.style.apply(aplicar_cor_foco, axis=1), 
-                    use_container_width=True, height=350, hide_index=True, column_order=colunas_exibir,
+                    use_container_width=False, # 🔥 ATIVA A BARRA HORIZONTAL
+                    width=2000, 
+                    height=350, 
+                    hide_index=True, 
+                    column_order=colunas_exibir,
                     column_config={
-                        # Força a largura grande e ativa o scroll horizontal
-                        "Descrição Longa": st.column_config.TextColumn("Descrição Longa", width="large")
+                        "OS": st.column_config.TextColumn("OS", width=90),
+                        "Data da Programação": st.column_config.TextColumn("Data Prog.", width=100),
+                        "Patio": st.column_config.TextColumn("Pátio", width=80),
+                        "Ativo": st.column_config.TextColumn("Ativo", width=130),
+                        "Criticidade": st.column_config.TextColumn("Criticidade", width=100),
+                        "Classificação": st.column_config.TextColumn("Classificação", width=180),
+                        "Descrição Longa": st.column_config.TextColumn("Descrição Longa", width=900) # 🔥 ESPAÇO GIGANTE PARA O TEXTO
                     }
                 )
             else: 
@@ -3141,15 +3237,28 @@ if st.session_state.get("tela_atual") == "governanca":
         df_auditoria = df_gov_f[["Ordem servico", "concluido_por", "data_inicio", "hora_fim", "geolocalizacao_baixa", "equipe", "Tempo_Minutos"]].copy().sort_values(by=["data_inicio", "hora_fim"], ascending=[False, False]).rename(columns={"Ordem servico": "OS", "concluido_por": "Apontador Principal", "data_inicio": "Data", "hora_fim": "Hora Apontada", "geolocalizacao_baixa": "Localização do Celular", "equipe": "Co-Executantes", "Tempo_Minutos": "Tempo Gasto (min)"})
         df_auditoria["Tempo Gasto (min)"] = df_auditoria["Tempo Gasto (min)"].fillna(0).round(0).astype(int)
         
-        st.dataframe(
-            df_auditoria.style.map(lambda v: 'background-color: #FEE2E2; color: #991B1B; font-weight: bold;' if pd.notna(v) and ('Base' in str(v) or 'Sede' in str(v)) else 'color: #065F46;', subset=["Localização do Celular"]), 
-            use_container_width=True, height=300, hide_index=True,
-            column_config={
-                # Força larguras específicas ativando o scroll horizontal
-                "Localização do Celular": st.column_config.TextColumn("Localização do Celular", width="large"),
-                "Co-Executantes": st.column_config.TextColumn("Co-Executantes", width="medium")
-            }
-        )
+        # Regra de Cor (Mapeia a fraude de GPS)
+        def estilo_gps(v):
+            if pd.notna(v) and ('Base' in str(v) or 'Sede' in str(v)):
+                return 'background-color: #FEE2E2; color: #991B1B; font-weight: bold; border-bottom: 1px solid #FECACA;'
+            return 'color: #065F46; border-bottom: 1px solid #E2E8F0;'
+            
+        df_estilizado = df_auditoria.style.map(estilo_gps, subset=["Localização do Celular"]).hide(axis="index")
+        tabela_html = df_estilizado.to_html(escape=False, index=False)
+        
+        st.markdown(f"""
+            <style>
+            .scroll-gov {{ width: 100%; max-height: 400px; overflow: auto; border: 1px solid #E2E8F0; border-radius: 8px; }}
+            .tabela-gov {{ width: 100%; border-collapse: collapse; font-family: "Source Sans Pro", sans-serif; font-size: 13px; background-color: #FFFFFF; color: #0F172A; }}
+            .tabela-gov th {{ background-color: #1E293B; color: #F8FAFC; position: sticky; top: 0; z-index: 1; padding: 10px; text-align: left; border-bottom: 2px solid #3B82F6; white-space: nowrap; }}
+            .tabela-gov td {{ padding: 8px 10px; vertical-align: middle; white-space: nowrap; border-bottom: 1px solid #E2E8F0; }}
+            .tabela-gov td:nth-child(5) {{ min-width: 400px; white-space: pre-wrap; word-wrap: break-word; }} /* Localização Celular Flexível */
+            .tabela-gov td:nth-child(6) {{ min-width: 200px; white-space: pre-wrap; word-wrap: break-word; }} /* Equipe Flexível */
+            </style>
+            <div class="scroll-gov">
+                {tabela_html.replace('<table', '<table class="tabela-gov"')}
+            </div>
+        """, unsafe_allow_html=True)
 #endregion 11.7
         
     fragmento_governanca()
