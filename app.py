@@ -1068,7 +1068,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 
     df_export = df_pendentes.head(100)[colunas_export].fillna("")
     
-    # Sanitização crítica para evitar que o JS quebre caso haja a palavra </script> dentro da descrição de uma OS
+    # Sanitização crítica para evitar que o JS quebre
     os_json = df_export.to_json(orient="records", force_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
 
     usuarios_equipe = ["Sozinho (Nenhum)"]
@@ -1225,6 +1225,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 #endregion 3.10
 
 #region 3.11: Gerador Offline - Lógica JS Core (Banco Local e Renderização)
+    # ATENÇÃO: A tag <script> abre aqui e SÓ vai fechar no final do js_sync
     js_core = f"""
 <script>
     const OS_DATA = {os_json};
@@ -1415,8 +1416,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 #endregion 3.11
 
 #region 3.12: Gerador Offline - Lógica JS de Lote / Persistência
+    # REMOVIDO a tag <script> daqui, ele continua a execução do js_core diretamente
     js_lote = f"""
-<script>
     function calcularDuracaoHoras(inicio, fim) {{
         if (!inicio || !fim) return null;
 
@@ -1521,6 +1522,125 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 #endregion 3.12
 
 #region 3.13: Gerador Offline - Lógica JS de Sincronização e Fechamento
+    js_sync = f"""
+    async function sincronizarFila() {{
+        const apiUrl = API_URL_FIXA;
+        const apiKey = API_KEY_FIXA;
+
+        if (!apiUrl) {{
+            alert("URL da API offline não configurada no pacote.");
+            return;
+        }}
+        if (!apiKey) {{
+            alert("API Key offline não configurada no pacote.");
+            return;
+        }}
+        if (!navigator.onLine) {{
+            alert("Sem internet. Conecte-se antes de sincronizar.");
+            return;
+        }}
+
+        const registros = await new Promise((resolve, reject) => {{
+            const req = txStore("readonly").getAll();
+            req.onsuccess = () => resolve(req.result || []);
+            req.onerror = () => reject(req.error);
+        }});
+
+        const pendentes = registros.filter((r) => r.status_sync === "pendente");
+        if (!pendentes.length) {{
+            setSyncMsg("Nenhuma OS pendente para sincronizar.", "yellow");
+            return;
+        }}
+
+        let sucesso = 0;
+        let falha = 0;
+        const detalhesFalha = [];
+
+        for (const item of pendentes) {{
+            try {{
+                const formData = new FormData();
+                formData.append("os_id", item.os_id);
+                formData.append("ativo_id", item.ativo_id);
+                formData.append("usuario", item.usuario);
+                formData.append("lat_browser", String(item.lat_browser || 0.0));
+                formData.append("lon_browser", String(item.lon_browser || 0.0));
+                formData.append("data_hora_local", item.data_hora_local);
+                formData.append("acompanhante", item.acompanhante || "");
+                formData.append("horario_inicio", item.horario_inicio);
+                formData.append("horario_fim", item.horario_fim);
+                formData.append("foto", item.foto_blob, `${{item.ativo_id}}_${{item.os_id}}.jpg`);
+
+                const resp = await fetch(apiUrl, {{
+                    method: "POST",
+                    headers: {{
+                        "x-api-key": apiKey
+                    }},
+                    body: formData
+                }});
+
+                if (!resp.ok) {{
+                    const textoErro = await resp.text();
+                    throw new Error(`HTTP ${{resp.status}}: ${{textoErro || "Falha na API"}}`);
+                }}
+
+                await new Promise((resolve, reject) => {{
+                    const reqUpdate = txStore("readwrite").put({{
+                        ...item,
+                        status_sync: "sincronizado",
+                        sincronizado_em: new Date().toISOString()
+                    }});
+                    reqUpdate.onsuccess = () => resolve(true);
+                    reqUpdate.onerror = () => reject(reqUpdate.error);
+                }});
+
+                sucesso += 1;
+            }} catch (e) {{
+                console.error("Falha na sincronização da OS", item.os_id, e);
+                falha += 1;
+                detalhesFalha.push(`OS ${{item.os_id}}: ${{e.message || e}}`);
+            }}
+        }}
+
+        await atualizarFila();
+
+        if (falha === 0) {{
+            setSyncMsg(`Sincronização concluída com sucesso. ${{sucesso}} OS enviada(s).`, "blue");
+        }} else {{
+            const detalhe = detalhesFalha.length ? ` Primeira falha: ${{detalhesFalha[0]}}` : "";
+            setSyncMsg(`Sincronização parcial. ${{sucesso}} enviada(s) e ${{falha}} falha(s).${{detalhe}}`, "yellow");
+        }}
+    }}
+
+    async function bootstrap() {{
+        await abrirDB();
+        setStatusOnline();
+        popularEquipe();
+        popularListaAtivos();
+        renderListaOS();
+        await atualizarFila();
+
+        window.addEventListener("online", setStatusOnline);
+        window.addEventListener("offline", setStatusOnline);
+
+        document.getElementById("filtroAtivo").addEventListener("input", renderListaOS);
+        document.getElementById("btnCapturarGps").addEventListener("click", capturarGPS);
+        document.getElementById("btnSalvarLote").addEventListener("click", salvarSelecionadasNoLote);
+        document.getElementById("btnSync").addEventListener("click", sincronizarFila);
+        document.getElementById("btnClear").addEventListener("click", limparFila);
+    }}
+
+    bootstrap().catch((err) => {{
+        console.error(err);
+        alert("Falha ao inicializar o pacote offline.");
+    }});
+</script>
+</body>
+</html>
+"""
+
+    html_final = html_head + html_body + js_core + js_lote + js_sync
+    return html_final.encode("utf-8")
+#endregion 3.13
     js_sync = f"""
 <script>
     async function sincronizarFila() {{
