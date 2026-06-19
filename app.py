@@ -3289,20 +3289,31 @@ if st.session_state.get("tela_atual") == "governanca":
     @st.fragment
     def fragmento_governanca():
         col_f1, col_f2, col_f3 = st.columns(3)
-        with col_f1: tecnicos_disp = sorted(df_gov["concluido_por"].dropna().unique().tolist()); tec_selecionado = st.multiselect("👤 Filtrar Colaborador(es):", tecnicos_disp, default=tecnicos_disp)
-        with col_f2: patios_gov = sorted(df_gov["Patio"].dropna().unique().tolist()); patio_selecionado = st.multiselect("📍 Filtrar Pátio(s):", patios_gov, default=patios_gov)
+        with col_f1: 
+            tecnicos_disp = sorted(df_gov["concluido_por"].dropna().unique().tolist())
+            tec_selecionado = st.multiselect("👤 Filtrar Colaborador(es):", tecnicos_disp, default=tecnicos_disp)
+        with col_f2: 
+            patios_gov = sorted(df_gov["Patio"].dropna().unique().tolist())
+            patio_selecionado = st.multiselect("📍 Filtrar Pátio(s):", patios_gov, default=patios_gov)
         with col_f3:
-            min_d, max_d = df_gov["Data_Real"].min(), df_gov["Data_Real"].max()
-            if pd.isna(min_d): min_d = max_d = datetime.now().date()
+            # --- CORREÇÃO AQUI: Remove os campos vazios antes de calcular min e max ---
+            datas_validas = df_gov["Data_Real"].dropna()
+            
+            if not datas_validas.empty:
+                min_d, max_d = datas_validas.min(), datas_validas.max()
+            else:
+                min_d = max_d = datetime.now().date()
+                
             data_gov = st.date_input("📅 Período de Execução:", value=(min_d, max_d), min_value=min_d, max_value=max_d, format="DD/MM/YYYY")
 
         d_inicio, d_fim = data_gov if isinstance(data_gov, tuple) and len(data_gov) == 2 else (data_gov[0] if isinstance(data_gov, tuple) else data_gov, data_gov[0] if isinstance(data_gov, tuple) else data_gov)
         df_gov_f = df_gov[(df_gov["concluido_por"].isin(tec_selecionado)) & (df_gov["Patio"].isin(patio_selecionado)) & (df_gov["Data_Real"] >= d_inicio) & (df_gov["Data_Real"] <= d_fim)].copy()
 
-        if df_gov_f.empty: st.info("Nenhuma execução encontrada para os filtros selecionados."); return
+        if df_gov_f.empty: 
+            st.info("Nenhuma execução encontrada para os filtros selecionados.")
+            return
 
         total_os_gov = len(df_gov_f)
-        # FIX: Evitando o NaN na divisão de minutos da Governança
         tme_minutos = df_gov_f["Tempo_Minutos"].fillna(0).mean() 
         taxa_gps = (df_gov_f["Via_GPS"].sum() / total_os_gov) * 100 if total_os_gov > 0 else 0
         taxa_prio = (df_gov_f["Alta_Prioridade"].sum() / total_os_gov) * 100 if total_os_gov > 0 else 0
