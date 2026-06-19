@@ -1096,9 +1096,19 @@ def render_tela_admin():
     arquivo_iw47 = st.file_uploader("Selecione a planilha IW47 exportada do SAP", type=["xlsx", "csv"], key="upload_iw47")
 
     if arquivo_iw47 and st.button("🚀 Processar Baixas em Massa", type="primary", key="btn_proc_iw47"):
-        with st.spinner("Processando e cruzando dados de usuários..."):
+        with st.spinner("Processando e cruzando dados de usuários (Alta Performance)..."):
             try:
-                df_iw = pd.read_csv(arquivo_iw47, sep=None, engine="python", encoding="utf-8-sig") if arquivo_iw47.name.lower().endswith(".csv") else pd.read_excel(arquivo_iw47)
+                # Leitura mais rápida da planilha
+                if arquivo_iw47.name.lower().endswith(".csv"):
+                    # Força separador comum do SAP para evitar lentidão do engine python
+                    try:
+                        df_iw = pd.read_csv(arquivo_iw47, sep=";", encoding="utf-8-sig")
+                    except:
+                        arquivo_iw47.seek(0)
+                        df_iw = pd.read_csv(arquivo_iw47, sep=None, engine="python", encoding="utf-8-sig")
+                else:
+                    df_iw = pd.read_excel(arquivo_iw47)
+                    
                 df_iw.columns = [str(c).strip().replace('\n', ' ') for c in df_iw.columns]
 
                 # Função auxiliar de caça às colunas
@@ -1108,7 +1118,6 @@ def render_tela_admin():
                             if str(c).upper() in str(df_c).upper(): return df_c
                     return None
 
-                # Mapeamento dinâmico (incluindo o Nº pessoal)
                 col_os = find_col(df_iw, ["Ordem", "OS", "Ordem servico"])
                 col_mat = find_col(df_iw, ["Nº pessoal", "N° pessoal", "No pessoal", "Matrícula", "Matricula", "Nome", "Técnico"])
                 col_dt_fim = find_col(df_iw, ["Data real do fim", "Data fim"])
@@ -1118,16 +1127,14 @@ def render_tela_admin():
                 col_centro = find_col(df_iw, ["Centro de Trabalho", "Centro", "Coordenação", "Local"])
 
                 if not col_os or not col_dt_fim or not col_hr_fim:
-                    st.error("❌ Colunas obrigatórias não encontradas na planilha IW47. Verifique se a planilha possui 'Ordem', 'Data real do fim' e 'Hora real do fim'.")
+                    st.error("❌ Colunas obrigatórias não encontradas na planilha IW47.")
                     st.stop()
 
                 # Funções de higienização de datas/horas
                 def formatar_data(val):
                     if pd.isna(val) or str(val).strip() == "": return ""
-                    try: 
-                        return pd.to_datetime(val, format="%d/%m/%Y", errors="raise").strftime("%d/%m/%Y")
-                    except:
-                        return pd.to_datetime(val, errors="coerce").strftime("%d/%m/%Y")
+                    try: return pd.to_datetime(val, format="%d/%m/%Y", errors="raise").strftime("%d/%m/%Y")
+                    except: return pd.to_datetime(val, errors="coerce").strftime("%d/%m/%Y")
 
                 def formatar_hora(val):
                     if pd.isna(val) or str(val).strip() == "": return "00:00:00"
@@ -1151,7 +1158,6 @@ def render_tela_admin():
                     cur.execute("SELECT username, nome FROM usuarios")
                     for row in cur.fetchall():
                         username_str = str(row[0]).strip()
-                        # Se não tiver 'nome', usa o próprio username
                         nome_str = str(row[1]).strip() if pd.notna(row[1]) and row[1] else username_str
                         mapa_usuarios[username_str] = nome_str
                     cur.close()
@@ -1161,55 +1167,62 @@ def render_tela_admin():
                     release_connection(conn)
                 # === FIM DO CRUZAMENTO ===
 
-                # LÓGICA DE INJEÇÃO E OVERLAY
-                registros_processados = 0
+                # === PREPARAÇÃO DO LOTE NA MEMÓRIA (Alta Performance) ===
+                registros_lote = []
                 for _, row in df_iw.iterrows():
-                    # 1. Trata OS
                     os_val = str(row[col_os]).strip()
-                    if os_val.endswith('.0'): os_val = os_val[:-2] # Evita 123456.0
+                    if os_val.endswith('.0'): os_val = os_val[:-2] 
                     if not os_val or os_val == "nan": continue
                     
-                    # 2. Concatena Datas e Horas (Colunas H + I)
                     dt_fim_val = formatar_data(row[col_dt_fim])
                     hr_fim_val = formatar_hora(row[col_hr_fim])
                     if not dt_fim_val: continue
-                    realizado_em_str = f"{dt_fim_val} {hr_fim_val}" # O segredo está aqui!
+                    realizado_em_str = f"{dt_fim_val} {hr_fim_val}"
                     
-                    # Datas de Início (se houver, senão copia do Fim)
                     dt_ini_val = formatar_data(row[col_dt_ini]) if col_dt_ini else dt_fim_val
                     hr_ini_val = formatar_hora(row[col_hr_ini]) if col_hr_ini else "00:00:00"
                     
-                    # 3. Cruzamento do 'Nº pessoal' com a base de Usuários (Nome)
                     matricula_crua = str(row[col_mat]).strip() if col_mat else ""
                     if matricula_crua.endswith('.0'): matricula_crua = matricula_crua[:-2]
                     
                     if matricula_crua and matricula_crua != "nan":
-                        # O get busca a chave. Se não achar, usa a própria matrícula como default
                         concluido_por_val = mapa_usuarios.get(matricula_crua, matricula_crua)
                     else:
                         concluido_por_val = "SAP (Massa)"
                     
-                    # 4. Trata Centro de Trabalho
                     coord_val = str(row[col_centro]).strip() if col_centro else coord_baixa
                     if coord_val == "nan" or not coord_val: coord_val = coord_baixa
                     
-                    # Executa a gravação no banco
-                    upsert_baixa(
-                        os_id=os_val,
-                        status="Realizado", 
-                        realizado_em_str=realizado_em_str, 
-                        coordenacao=coord_val,
-                        concluido_por=concluido_por_val,
-                        geolocalizacao_baixa="Baixa SAP IW47",
-                        equipe="Sozinho", 
-                        data_inicio=dt_ini_val,
-                        hora_inicio=hr_ini_val,
-                        data_fim=dt_fim_val,
-                        hora_fim=hr_fim_val
-                    )
-                    registros_processados += 1
-                
-                st.success(f"✅ Sucesso! {registros_processados} baixas processadas, cruzadas e importadas.")
+                    # Adiciona à lista de memória em vez de enviar pro banco
+                    registros_lote.append((
+                        os_val, "Realizado", realizado_em_str, coord_val, concluido_por_val,
+                        "Baixa SAP IW47", "Sozinho", dt_ini_val, hr_ini_val, dt_fim_val, hr_fim_val
+                    ))
+
+                # === INSERÇÃO EM MASSA (Bulk Insert) ===
+                if registros_lote:
+                    from psycopg2.extras import execute_values
+                    conn = get_connection()
+                    try:
+                        cur = conn.cursor()
+                        query = """
+                            INSERT INTO baixas (os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim)
+                            VALUES %s
+                            ON CONFLICT (os) DO UPDATE SET
+                                status = EXCLUDED.status, realizado_em = EXCLUDED.realizado_em, concluido_por = EXCLUDED.concluido_por,
+                                geolocalizacao_baixa = EXCLUDED.geolocalizacao_baixa, equipe = EXCLUDED.equipe, data_inicio = EXCLUDED.data_inicio,
+                                hora_inicio = EXCLUDED.hora_inicio, data_fim = EXCLUDED.data_fim, hora_fim = EXCLUDED.hora_fim;
+                        """
+                        # Envia de 500 em 500 pacotes para o PostgreSQL
+                        for i in range(0, len(registros_lote), 500):
+                            execute_values(cur, query, registros_lote[i:i + 500], page_size=500)
+                        
+                        conn.commit()
+                        cur.close()
+                    finally:
+                        release_connection(conn)
+
+                st.success(f"✅ Sucesso! {len(registros_lote)} baixas processadas, cruzadas e importadas em lote.")
                 time.sleep(2)
                 st.rerun()
 
