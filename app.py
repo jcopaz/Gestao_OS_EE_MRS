@@ -1086,56 +1086,60 @@ def render_tela_admin():
     if arquivo_iw47 and st.button("🚀 Processar Baixas em Massa", type="primary"):
         with st.spinner("Processando..."):
             try:
-                # Leitura
+                # 1. Leitura Dinâmica
                 if arquivo_iw47.name.lower().endswith(".csv"):
                     df_iw = pd.read_csv(arquivo_iw47, sep=";", encoding="utf-8-sig", dtype=str)
                 else: 
                     df_iw = pd.read_excel(arquivo_iw47, dtype=str)
-                    
-                df_iw.columns = [str(c).strip().replace('\n', ' ') for c in df_iw.columns]
+                
+                df_iw.columns = [str(c).strip() for c in df_iw.columns]
 
-                # Correção: Função de carga de usuários segura
+                # 2. Caçador de colunas (NÃO ALTERE OS NOMES AQUI, O CÓDIGO PROCURA POR PARTES DO NOME)
+                def find_col(candidatos):
+                    for c in candidatos:
+                        for df_c in df_iw.columns:
+                            if str(c).upper() in str(df_c).upper(): return df_c
+                    return None
+
+                c_os = find_col(["Ordem", "OS"])
+                c_mat = find_col(["Nº pessoal", "Matrícula", "Nome"])
+                c_dt_fim = find_col(["Data real do fim", "Data real de fim"])
+                c_hr_fim = find_col(["Hora real do fim", "Hora real de fim"])
+                c_centro = find_col(["Centro trab", "Centro"])
+
+                # 3. Processamento Blindado
                 conn = get_connection()
-                mapa_usuarios = {}
-                try:
-                    cur = conn.cursor()
-                    cur.execute("SELECT username, nome FROM usuarios")
-                    resultados = cur.fetchall()
-                    for row in resultados:
-                        mapa_usuarios[str(row[0]).strip()] = str(row[1] if row[1] else row[0]).strip()
-                    cur.close()
-                finally: release_connection(conn)
+                cur = conn.cursor()
+                cur.execute("SELECT username, nome FROM usuarios")
+                mapa_usuarios = {str(row[0]).strip(): str(row[1] if row[1] else row[0]).strip() for row in cur.fetchall()}
+                cur.close(); release_connection(conn)
 
                 registros_lote = []
-                
                 for _, row in df_iw.iterrows():
-                    # Higienização de OS: Remove qualquer coisa que não seja dígito (mantém zeros à esquerda)
-                    os_bruto = str(row['Ordem']).strip()
-                    os_val = "".join(filter(str.isdigit, os_bruto))
-                    
+                    # Extração segura com tratamento de nulos
+                    os_val = "".join(filter(str.isdigit, str(row[c_os]))) if pd.notna(row.get(c_os)) else ""
                     if not os_val: continue
                     
-                    # Datas e Horas (Tratando o formato numérico do Excel/SAP)
-                    dt_fim_raw = row['Data real do fim de execução']
-                    hr_fim_raw = row['Hora real do fim de execução']
+                    # Converte data/hora serial do Excel (46143...)
+                    val_dt = float(row[c_dt_fim]) if pd.notna(row.get(c_dt_fim)) else 0
+                    val_hr = float(row[c_hr_fim]) if pd.notna(row.get(c_hr_fim)) else 0
                     
-                    # Conversão serial Excel/SAP
-                    data_fim = (pd.to_datetime('1899-12-30') + pd.to_timedelta(float(dt_fim_raw), unit='D')).strftime("%d/%m/%Y")
-                    hora_fim = (pd.to_timedelta(float(hr_fim_raw), unit='D'))
-                    hora_fim_str = f"{hora_fim.components.hours:02d}:{hora_fim.components.minutes:02d}:00"
+                    data_obj = pd.to_datetime('1899-12-30') + pd.to_timedelta(val_dt, unit='D')
+                    hora_obj = pd.to_timedelta(val_hr, unit='D')
                     
-                    realizado_em = f"{data_fim} {hora_fim_str}"
+                    dt_str = data_obj.strftime("%d/%m/%Y")
+                    hr_str = f"{hora_obj.components.hours:02d}:{hora_obj.components.minutes:02d}:00"
                     
-                    # Nome do Técnico
-                    mat_crua = "".join(filter(str.isdigit, str(row['Nº pessoal'])))
-                    tecnico = mapa_usuarios.get(mat_crua, mat_crua)
+                    # Técnico
+                    mat_crua = "".join(filter(str.isdigit, str(row.get(c_mat, ""))))
+                    tecnico = mapa_usuarios.get(mat_crua, "SAP (Massa)")
                     
                     registros_lote.append((
-                        os_val, "Realizado", realizado_em, str(row['Centro trab.(real)']), 
-                        tecnico, "Baixa SAP", "Sozinho", data_fim, "00:00:00", data_fim, hora_fim_str
+                        os_val, "Realizado", f"{dt_str} {hr_str}", str(row.get(c_centro, coord_baixa)), 
+                        tecnico, "Baixa SAP", "Sozinho", dt_str, "00:00:00", dt_str, hr_str
                     ))
 
-                # Gravação
+                # 4. Gravação
                 if registros_lote:
                     conn = get_connection()
                     cur = conn.cursor()
@@ -1148,12 +1152,10 @@ def render_tela_admin():
                         data_fim = EXCLUDED.data_fim, hora_fim = EXCLUDED.hora_fim;
                     """, registros_lote, page_size=500)
                     conn.commit(); cur.close(); release_connection(conn)
-                    
-                    st.success(f"✅ Processadas {len(registros_lote)} OSs.")
-                    st.write(f"Exemplo processado: OS {registros_lote[0][0]} | Técnico {registros_lote[0][4]} | Data {registros_lote[0][2]}")
-                    time.sleep(2); st.rerun()
+                    st.success(f"✅ Processadas {len(registros_lote)} OSs."); st.rerun()
             except Exception as e:
                 st.error(f"Erro ao processar: {e}")
+#endregion
 #endregion
 #endregion 3.8
 
