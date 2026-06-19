@@ -4191,22 +4191,50 @@ if st.session_state.get("tela_atual") == "governanca":
                 return diff + (24 * 60) if diff < 0 else diff
             except: return 0.0
 
-        # --- PARSER UNIVERSAL BR DE DATAS ---
+        # --- PARSER UNIVERSAL ROBUSTO (Blindagem ISO vs BR) ---
         def parse_data_br_gov(valor):
+            import re
             if pd.isna(valor): return pd.NaT
-            if isinstance(valor, (pd.Timestamp, datetime)): return pd.to_datetime(valor, errors="coerce")
-            texto = str(valor).split(" ")[0].strip().replace(".", "/").replace("-", "/")
-            dt = pd.to_datetime(texto, format="%d/%m/%Y", errors="coerce")
-            if pd.notna(dt): return dt
+            if isinstance(valor, (pd.Timestamp, datetime)): return pd.to_datetime(valor)
+            texto = str(valor).split(" ")[0].strip()
+            
+            # 1. Se for formato ISO nativo do Banco (YYYY-MM-DD)
+            if re.match(r"^\d{4}-\d{2}-\d{2}$", texto):
+                return pd.to_datetime(texto, format="%Y-%m-%d", errors="coerce")
+            
+            # 2. Se for formato BR da Planilha
+            texto_br = texto.replace(".", "/").replace("-", "/")
+            if re.match(r"^\d{1,2}/\d{1,2}/\d{4}$", texto_br):
+                return pd.to_datetime(texto_br, format="%d/%m/%Y", errors="coerce")
+                
             return pd.to_datetime(texto, dayfirst=True, errors="coerce")
 
         df_gov["Tempo_Minutos"] = df_gov.apply(calc_duracao, axis=1)
-        
-        # CORREÇÃO APLICADA AQUI
-        df_gov["Data_Real"] = df_gov["data_inicio"].apply(parse_data_br_gov).dt.date
-        
+        df_gov["Data_Real_DT"] = df_gov["data_inicio"].apply(parse_data_br_gov)
+        df_gov["Data_Real"] = df_gov["Data_Real_DT"].dt.date
         df_gov["Via_GPS"] = df_gov["geolocalizacao_baixa"].apply(lambda x: 0 if "Base" in str(x) or "Sede" in str(x) else 1)
         df_gov["Alta_Prioridade"] = df_gov["Criticidade_rank"].apply(lambda x: 1 if x in [1, 2] else 0)
+
+        # --- RESTAURAÇÃO: Mapeamento do Nome do Colaborador ---
+        try:
+            conn = get_connection()
+            df_users_gov = pd.read_sql_query("SELECT username, nome FROM usuarios", conn)
+        finally:
+            release_connection(conn)
+
+        mapa_nome_usuario_gov = {}
+        if not df_users_gov.empty:
+            df_users_gov["username_key"] = df_users_gov["username"].astype(str).str.strip()
+            df_users_gov["nome_clean"] = df_users_gov["nome"].fillna("").astype(str).str.strip()
+            mapa_nome_usuario_gov = dict(zip(df_users_gov["username_key"], df_users_gov["nome_clean"]))
+
+        def label_colaborador_gov(valor):
+            matricula = str(valor).strip()
+            if not matricula or matricula.lower() in ("nan", "none", "null"): return "Não informado"
+            nome = str(mapa_nome_usuario_gov.get(matricula, "")).strip()
+            return f"{nome} ({matricula})" if nome else matricula
+
+        df_gov["Colaborador"] = df_gov["concluido_por"].apply(label_colaborador_gov)
 #endregion 11.2
 
 #region 11.3: Fragmento de Governança (@st.fragment)
@@ -4215,45 +4243,14 @@ if st.session_state.get("tela_atual") == "governanca":
     def fragmento_governanca():
         #region 11.3.0: Parser BR exclusivo da Governança
         def parse_data_br_gov(valor):
-            """
-            Parser único da Governança.
-            Garante padrão brasileiro DD/MM/AAAA e evita inversão 01/05 -> 05/01.
-            Aceita também Timestamp/date já convertidos.
-            """
-            if pd.isna(valor):
-                return pd.NaT
-
-            # Se já vier como Timestamp/datetime/date, tenta converter direto sem inverter.
-            if isinstance(valor, (pd.Timestamp, datetime)):
-                return pd.to_datetime(valor, errors="coerce")
-
-            texto = str(valor).strip()
-
-            if not texto or texto.lower() in ("nan", "none", "null"):
-                return pd.NaT
-
-            # Se vier com hora junto, mantém só a data.
-            texto = texto.split(" ")[0].strip()
-
-            # Normaliza separadores comuns.
-            texto = texto.replace(".", "/").replace("-", "/")
-
-            # Primeiro tenta o formato brasileiro explícito.
-            dt = pd.to_datetime(
-                texto,
-                format="%d/%m/%Y",
-                errors="coerce"
-            )
-
-            if pd.notna(dt):
-                return dt
-
-            # Fallback para variações.
-            return pd.to_datetime(
-                texto,
-                dayfirst=True,
-                errors="coerce"
-            )
+            import re
+            if pd.isna(valor): return pd.NaT
+            if isinstance(valor, (pd.Timestamp, datetime)): return pd.to_datetime(valor)
+            texto = str(valor).split(" ")[0].strip()
+            if re.match(r"^\d{4}-\d{2}-\d{2}$", texto): return pd.to_datetime(texto, format="%Y-%m-%d", errors="coerce")
+            texto_br = texto.replace(".", "/").replace("-", "/")
+            if re.match(r"^\d{1,2}/\d{1,2}/\d{4}$", texto_br): return pd.to_datetime(texto_br, format="%d/%m/%Y", errors="coerce")
+            return pd.to_datetime(texto, dayfirst=True, errors="coerce")
         #endregion 11.3.0
 
         # Base local da Governança com data corrigida em padrão BR.
@@ -4758,13 +4755,25 @@ if st.session_state.get("tela_atual") == "governanca":
 
         with col_l3_c1:
             st.markdown("#### 🕒 Aderência: Login vs. Apontamento")
-            
-            # CORREÇÃO APLICADA: dayfirst=True explícito
-            df_logs["Data_Real_Pure"] = pd.to_datetime(df_logs["data_hora_login"], dayfirst=True, errors="coerce").dt.date
-            df_gov_f["dt_baixa_calc"] = pd.to_datetime(df_gov_f["data_fim"] + " " + df_gov_f["hora_fim"], dayfirst=True, errors="coerce")
-            
-            df_primeira_baixa = df_gov_f.groupby(["concluido_por", "Data_Real"])["dt_baixa_calc"].min().reset_index(name="dt_baixa_1os")
-            df_aderencia = df_logs.merge(df_primeira_baixa, left_on=["username", "Data_Real_Pure"], right_on=["concluido_por", "Data_Real"])
+
+            df_logs_local = df_logs.copy()
+            df_logs_local["Data_Real_Pure"] = pd.to_datetime(df_logs_local["data_hora_login"], errors="coerce").dt.date
+
+            # Junta Data e Hora com segurança absoluta usando o Parser
+            def parse_dt_aderencia(d, h):
+                dt_base = parse_data_br_gov(d)
+                if pd.isna(dt_base): return pd.NaT
+                try: return pd.to_datetime(f"{dt_base.strftime('%Y-%m-%d')} {str(h).strip()}")
+                except: return dt_base
+
+            df_gov_f["dt_baixa_calc"] = df_gov_f.apply(lambda r: parse_dt_aderencia(r["data_fim"], r["hora_fim"]), axis=1)
+
+            df_primeira_baixa = (
+                df_gov_f
+                .groupby(["concluido_por", "Data_Real"])["dt_baixa_calc"]
+                .min()
+                .reset_index(name="dt_baixa_1os")
+            )
 
             if not df_aderencia.empty:
                 # CORREÇÃO APLICADA: dayfirst=True
@@ -5103,16 +5112,32 @@ if st.session_state.get("tela_atual") == "governanca":
             .apply(label_equipe_coexecutantes)
         )
 
-        df_auditoria = df_auditoria_base[[
-            "Ordem servico", "Apontador Principal", "data_inicio", 
-            "hora_fim", "geolocalizacao_baixa", "Co-Executantes", "Tempo_Minutos"
-        ]].copy()
+        df_auditoria = (
+            df_auditoria_base[
+                [
+                    "Ordem servico",
+                    "Apontador Principal",
+                    "data_inicio",
+                    "hora_fim",
+                    "geolocalizacao_baixa",
+                    "Co-Executantes",
+                    "Tempo_Minutos"
+                ]
+            ]
+            .copy()
+        )
+
+        # 1. Cria a coluna de ordenação cronológica real com o parser robusto
+        df_auditoria["Data_Sort"] = df_auditoria["data_inicio"].apply(parse_data_br_gov)
         
-        # CORREÇÃO APLICADA: Ordenação cronológica real em vez de alfabética
-        df_auditoria["Data_Sort"] = pd.to_datetime(df_auditoria["data_inicio"], dayfirst=True, errors="coerce")
+        # 2. Para exibição, garante o formato visual BR estrito (DD/MM/YYYY)
+        df_auditoria["data_inicio"] = df_auditoria["Data_Sort"].dt.strftime("%d/%m/%Y").fillna("N/D")
 
         df_auditoria = (
-            df_auditoria.sort_values(by=["Data_Sort", "hora_fim"], ascending=[False, False])
+            df_auditoria.sort_values(
+                by=["Data_Sort", "hora_fim"],
+                ascending=[False, False]
+            )
             .drop(columns=["Data_Sort"])
             .rename(columns={
                 "Ordem servico": "OS",
