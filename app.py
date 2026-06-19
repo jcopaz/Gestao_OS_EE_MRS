@@ -27,40 +27,52 @@ from psycopg2.extras import execute_values
 from psycopg2 import pool
 #endregion 1.1
 
-# --- Seção 1.2: Configurações e Estilo de Login ---
+#region 1.2: Configurações Globais e Estilo Minimalista (Fundo Preto)
 st.set_page_config(page_title="Painel de OS Eletroeletrônica", layout="wide", initial_sidebar_state="collapsed")
 
 if not st.session_state.get("logged_in", False):
-    # O bloco CSS vai aqui!
     st.markdown("""
         <style>
+        /* Fundo Preto Absoluto para leveza máxima */
         [data-testid="stAppViewContainer"] {
-            background: linear-gradient(rgba(15, 23, 42, 0.85), rgba(15, 23, 42, 0.85)), 
-                        url("fundo.png") !important;
-            background-size: cover !important;
-            background-position: center !important;
-            background-repeat: no-repeat !important;
+            background-color: #000000 !important;
         }
         
+        /* Ajuste de fontes e campos para alto contraste */
+        h1, label, p {
+            color: #FFFFFF !important;
+        }
+        
+        /* Estilo do container de Login (Card leve) */
         .stForm {
-            background-color: rgba(255, 255, 255, 0.1) !important;
-            border: 1px solid rgba(255, 255, 255, 0.2) !important;
-            border-radius: 15px !important;
-            padding: 20px !important;
+            background-color: #111111 !important;
+            border: 1px solid #333333 !important;
+            border-radius: 12px !important;
+            padding: 30px !important;
         }
         
+        /* Inputs de texto com texto branco */
+        input {
+            color: #FFFFFF !important;
+            background-color: #1A1A1A !important;
+        }
+        
+        /* Botão Gradiente MRS */
         div.stButton > button {
             background: linear-gradient(135deg, #1E3A8A 0%, #3B82F6 100%) !important;
             color: #FFFFFF !important;
             border: none !important;
             border-radius: 8px !important;
+            font-weight: 700 !important;
+            width: 100%;
         }
         </style>
     """, unsafe_allow_html=True)
 
-    col_vazia1, col_centro, col_vazia2 = st.columns([1, 1, 1])
+    col_vazia1, col_centro, col_vazia2 = st.columns([1.5, 1, 1.5])
     with col_centro:
-        st.markdown("<h1 style='text-align: center; color: white;'>⚡ SGO MRS</h1>", unsafe_allow_html=True)
+        st.markdown("<h1 style='text-align: center; color: white;'>Acesso Restrito</h1>", unsafe_allow_html=True)
+        # O formulário que segue abaixo aparecerá com as fontes brancas automaticamente
 #endregion 1.2
 
 #region 1.3: Conexão com Banco de Dados e Constantes de Status
