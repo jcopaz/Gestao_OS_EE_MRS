@@ -939,7 +939,7 @@ def render_tela_admin():
             st.info("Nenhum upload realizado até o momento.")
     #endregion 3.8.2
 
-#region 3.8.3: Upload de Mapeamento de Pátios
+    #region 3.8.3: Upload de Mapeamento de Pátios
     with st.expander("🗺️ Mapeamento de Ativos → Pátios", expanded=False):
         arquivo_mapa = st.file_uploader("Selecione a planilha de mapeamento", type=["xlsx"], key="upload_mapeamento_patios")
         if arquivo_mapa and st.button("🚀 Processar Mapeamento", use_container_width=True, type="primary"):
@@ -980,7 +980,7 @@ def render_tela_admin():
                 except Exception as e: st.error(f"❌ Erro: {e}")
     #endregion 3.8.3
 
-#region 3.8.4: Exportação SAP
+    #region 3.8.4: Exportação SAP
     if "Exportar SAP" in st.session_state.get("governanca", ""):
         st.markdown("---"); st.subheader("⬇️ Exportação SAP")
         if st.button("📦 Preparar Arquivo SAP (Massa)", use_container_width=False, type="primary"):
@@ -1003,7 +1003,7 @@ def render_tela_admin():
             st.download_button("⬇️ Baixar Arquivo SAP", data=st.session_state["sap_massa_bytes"], file_name=st.session_state["sap_massa_nome"], mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     #endregion 3.8.4
 
-#region 3.8.5: Importação de Baixas em Massa (IW47)
+    #region 3.8.5: Importação de Baixas em Massa (IW47)
     st.markdown("---"); st.subheader("📥 Importação de Baixas em Massa (IW47)")
     coord_baixa = st.selectbox("Coordenação", ["Paranapiacaba", "Piaçaguera"])
     arquivo_iw47 = st.file_uploader("Selecione a planilha IW47", type=["xlsx", "csv"])
@@ -1057,40 +1057,27 @@ def render_tela_admin():
     #endregion 3.8.5
 #endregion 3.8
 
-#region 3.9: Gerador Offline - Produção (HTML/JS completo)
+#region 3.9: Gerador Offline - Extração de Dados e CSS (Estilos)
 def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
-    if df_pendentes.empty:
-        return b""
-
+    if df_pendentes.empty: return b""
+        
     colunas_export = ["Ordem servico", "Ativo", "Atividade ativo", "Patio", "Criticidade"]
-    if "Descrição Longa" in df_pendentes.columns:
-        colunas_export.append("Descrição Longa")
-
+    if "Descrição Longa" in df_pendentes.columns: colunas_export.append("Descrição Longa")
+        
     df_export = df_pendentes.head(100)[colunas_export].fillna("")
+    os_json = df_export.to_json(orient="records", force_ascii=False)
     
-    # Sanitização crítica para evitar que o JS quebre
-    os_json = df_export.to_json(orient="records", force_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
-
-    usuarios_equipe = ["Sozinho (Nenhum)"]
+    opcoes_usuarios = '<option value="">Sozinho (Nenhum)</option>'
     conn = get_connection()
     try:
         cur = conn.cursor()
         cur.execute("SELECT username FROM usuarios")
         for row in cur.fetchall():
-            username = str(row[0]).strip()
-            if username and username != usuario:
-                usuarios_equipe.append(username)
+            if row[0] != usuario: opcoes_usuarios += f'<option value="{row[0]}">{row[0]}</option>'
         cur.close()
-    except Exception:
-        pass
-    finally:
-        release_connection(conn)
-
-    usuarios_json = json.dumps(usuarios_equipe, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
-
-    api_url_fixa = st.secrets.get("OFFLINE_API_URL", "https://gestao-os-ee-mrs-producao.onrender.com/sincronizar_baixa_offline")
-    api_key_fixa = st.secrets.get("OFFLINE_API_KEY", "")
-
+    except Exception: pass
+    finally: release_connection(conn)
+    
     html_head = f"""<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -1098,576 +1085,350 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SGO MRS - Modo Offline ({usuario})</title>
     <style>
-        * {{ box-sizing: border-box; }}
-        body {{ margin: 0; padding: 0; font-family: Arial, sans-serif; background: #F8FAFC; color: #0F172A; }}
-        .container {{ max-width: 1100px; margin: 0 auto; padding: 16px; }}
-        .topbar {{ display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; padding: 12px 16px; border-radius: 12px; background: #FFFFFF; box-shadow: 0 2px 10px rgba(15, 23, 42, 0.08); }}
-        .title {{ margin: 0; font-size: 22px; font-weight: 700; color: #1E3A8A; }}
-        .subtitle {{ margin: 4px 0 0 0; font-size: 14px; color: #475569; }}
-        .status-badge {{ padding: 8px 12px; border-radius: 999px; font-size: 13px; font-weight: 700; color: #FFFFFF; white-space: nowrap; }}
-        .status-online {{ background: #16A34A; }}
-        .status-offline {{ background: #DC2626; }}
-        .grid {{ display: grid; grid-template-columns: 1fr; gap: 16px; }}
-        .card {{ background: #FFFFFF; border-radius: 12px; padding: 16px; box-shadow: 0 2px 10px rgba(15, 23, 42, 0.08); }}
-        .card h2 {{ margin-top: 0; margin-bottom: 10px; font-size: 18px; color: #1E293B; }}
-        .toolbar {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
-        .toolbar-3 {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }}
-        .field {{ display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }}
-        .field label {{ font-size: 13px; color: #334155; font-weight: 600; }}
-        .field input, .field select {{ width: 100%; padding: 10px 12px; border: 1px solid #CBD5E1; border-radius: 10px; font-size: 14px; background: #FFFFFF; }}
-        .field input[readonly] {{ background: #E2E8F0; color: #475569; }}
-        .btn {{ width: 100%; border: none; border-radius: 10px; padding: 12px 14px; cursor: pointer; font-size: 14px; font-weight: 700; }}
-        .btn-primary {{ background: #1D4ED8; color: #FFFFFF; }}
-        .btn-success {{ background: #059669; color: #FFFFFF; }}
-        .btn-danger {{ background: #DC2626; color: #FFFFFF; }}
-        .btn-secondary {{ background: #E2E8F0; color: #0F172A; }}
-        .info-box {{ padding: 12px; border-radius: 10px; margin-bottom: 12px; font-size: 14px; }}
-        .info-blue {{ background: #EFF6FF; color: #1D4ED8; border: 1px solid #BFDBFE; }}
-        .info-yellow {{ background: #FEF3C7; color: #92400E; border: 1px solid #FCD34D; }}
-        .info-red {{ background: #FEF2F2; color: #991B1B; border: 1px solid #FECACA; }}
-        .queue-counter {{ font-size: 28px; font-weight: 800; color: #0F172A; margin: 0; }}
-        .os-list {{ display: grid; gap: 12px; }}
-        .os-item {{ border: 1px solid #E2E8F0; border-radius: 12px; padding: 14px; background: #FFFFFF; }}
-        .os-item.locked {{ background: #F8FAFC; color: #94A3B8; border-color: #E2E8F0; opacity: 0.75; }}
-        .os-header {{ display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 10px; }}
-        .os-title {{ font-size: 16px; font-weight: 800; color: #0F172A; }}
-        .chip {{ display: inline-block; padding: 4px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #E2E8F0; color: #334155; }}
-        .chip-critical {{ background: #FEE2E2; color: #991B1B; }}
-        .os-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
-        .os-meta {{ font-size: 13px; color: #475569; margin: 4px 0; }}
-        .desc-box {{ padding: 10px; background: #F8FAFC; border-radius: 10px; border: 1px solid #E2E8F0; font-size: 13px; color: #334155; }}
-        .small {{ font-size: 12px; color: #64748B; }}
-        .footer-space {{ height: 24px; }}
-        @media (max-width: 768px) {{ .toolbar, .toolbar-3, .os-grid {{ grid-template-columns: 1fr; }} .os-header {{ flex-direction: column; align-items: flex-start; }} }}
+        body {{ font-family: 'Segoe UI', Tahoma, sans-serif; padding: 15px; background-color: #F8FAFC; color: #1E293B; }}
+        .card {{ background: white; padding: 15px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 15px; border-left: 4px solid #3B82F6; transition: 0.3s; }}
+        button {{ background-color: #3B82F6; color: white; border: none; padding: 12px; border-radius: 8px; width: 100%; font-size: 16px; cursor: pointer; font-weight: bold; margin-top: 10px; }}
+        button.sync {{ background-color: #10B981; }}
+        button:disabled {{ background-color: #94A3B8 !important; cursor: not-allowed; }}
+        .status-bar {{ text-align: center; padding: 10px; border-radius: 6px; margin-bottom: 20px; font-weight: bold; }}
+        .online {{ background-color: #D1FAE5; color: #065F46; border: 1px solid #10B981; }}
+        .offline {{ background-color: #FEE2E2; color: #991B1B; border: 1px solid #FF4B4B; }}
+        .input-group {{ background-color: #F1F5F9; padding: 10px; border-radius: 8px; margin-bottom: 10px; }}
+        .input-group label {{ font-size: 13px; font-weight: bold; color: #475569; display: block; margin-bottom: 4px; }}
+        .input-group input, .input-group select {{ width: 100%; padding: 8px; border: 1px solid #CBD5E1; border-radius: 4px; box-sizing: border-box; margin-bottom: 8px; font-size: 14px; background-color: white; }}
+        .badge-crit {{ background-color: #FEF2F2; color: #991B1B; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; border: 1px solid #FF4B4B; display: inline-block; margin-bottom: 5px;}}
+        .alerta-foco {{ background-color: #FEF3C7; color: #92400E; padding: 10px; border-radius: 8px; font-size: 14px; margin-bottom: 15px; border: 1px solid #F59E0B; display: none; }}
+        .card-bloqueado {{ opacity: 0.55; border-left: 4px solid #94A3B8 !important; background-color: #F8FAFC; }}
     </style>
-</head>
-<body>
-"""
+</head>"""
 #endregion 3.9
 
 #region 3.10: Gerador Offline - Estrutura do Corpo (HTML)
     html_body = f"""
-    <div class="container">
-        <div class="topbar">
-            <div>
-                <h1 class="title">⚡ Sistema de Gestão de Ordens de Serviço</h1>
-                <p class="subtitle">Modo Offline de Produção • Operador: <strong>{usuario}</strong></p>
-            </div>
-            <div id="statusOnline" class="status-badge status-offline">📡 Offline</div>
+<body>
+    <div id="networkStatus" class="status-bar online">📡 Online</div>
+    <div class="card" style="border-left: 4px solid #10B981;">
+        <h3>🔄 Sincronização e Fila</h3>
+        <p>OS aguardando envio: <span id="contadorFila" style="font-weight:bold; font-size:18px;">0</span></p>
+        
+        <div class="input-group" style="margin-top: 10px; margin-bottom: 10px;">
+            <label>🛠️ Token de Debug (Para Testes):</label>
+            <input type="text" id="debugToken" placeholder="Digite o token (ex: mrs2026)">
         </div>
 
-        <div class="grid">
-            <div class="card">
-                <h2>🔄 Sincronização e Fila</h2>
-                <div class="toolbar-3">
-                    <div>
-                        <p class="small">OS aguardando envio</p>
-                        <p class="queue-counter" id="filaCount">0</p>
-                    </div>
-                    <div class="field">
-                        <label for="apiUrl">API Produção</label>
-                        <input id="apiUrl" type="text" value="{api_url_fixa}" readonly>
-                    </div>
-                    <div class="field">
-                        <label>X-API-Key</label>
-                        <input type="password" value="••••••••••••••••" readonly>
-                        <input id="apiKeyHidden" type="hidden" value="{api_key_fixa}">
-                    </div>
-                </div>
-
-                <div class="toolbar" style="margin-top: 12px;">
-                    <button id="btnSync" class="btn btn-success">Enviar Dados Localizados</button>
-                    <button id="btnClear" class="btn btn-danger">🗑️ Limpar Filas e Reiniciar</button>
-                </div>
-
-                <div id="syncMsg" class="info-box info-blue" style="margin-top: 12px;">
-                    O pacote salva as OS localmente e envia quando houver conexão disponível.
-                </div>
-            </div>
-
-            <div class="card">
-                <h2>🧭 Dados Operacionais</h2>
-                <div class="toolbar">
-                    <div class="field">
-                        <label for="filtroAtivo">🔍 Filtrar por Ativo</label>
-                        <input id="filtroAtivo" type="text" list="listaAtivos" placeholder="Todos os Ativos na Rota">
-                        <datalist id="listaAtivos"></datalist>
-                    </div>
-                    <div class="field">
-                        <label for="acompanhanteGlobal">👥 Acompanhante / Equipe (aplica a todas as OS)</label>
-                        <select id="acompanhanteGlobal"></select>
-                    </div>
-                </div>
-
-                <div id="criticaAlert" class="info-box info-yellow" style="display:none;">
-                    ⚠️ <strong>Foco Operacional:</strong> Existem OS Críticas (Muito Alta). As demais ficam bloqueadas até que estas sejam concluídas.
-                </div>
-
-                <div class="toolbar">
-                    <button id="btnSalvarLote" class="btn btn-primary">💾 Gravar OS(s) Preenchida(s)</button>
-                    <button id="btnCapturarGps" class="btn btn-secondary">📍 Atualizar GPS Atual</button>
-                </div>
-
-                <div id="gpsInfo" class="info-box info-blue" style="margin-top: 12px;">
-                    GPS ainda não capturado.
-                </div>
-            </div>
-
-            <div class="card">
-                <h2>📋 Sua Rota Offline</h2>
-                <div id="osList" class="os-list"></div>
-            </div>
-        </div>
-
-        <div class="footer-space"></div>
+        <button id="btnSync" class="sync" onclick="sincronizarDados()">Enviar Dados Localizados</button>
+        <button id="btnLimpar" style="background-color: #EF4444;" onclick="limparTudo()">🗑️ Limpar Filas e Reiniciar</button>
     </div>
-"""
+    
+    <h3 style="color: #475569;">Sua Rota Offline</h3>
+    
+    <div class="input-group">
+        <label>🔍 Filtrar por Ativo:</label>
+        <select id="filtroAtivo" onchange="renderizarOS()">
+            <option value="TODOS">Todos os Ativos na Rota</option>
+        </select>
+        
+        <label style="margin-top: 10px;">👥 Acompanhante / Equipe (Aplica a todas as OS):</label>
+        <select id="acompGlobal">
+            {opcoes_usuarios}
+        </select>
+    </div>
+
+    <div id="alertaFoco" class="alerta-foco">
+        ⚠️ <b>Foco Operacional:</b> Existem OS Críticas (Muito Alta). As demais estão bloqueadas até que estas sejam concluídas.
+    </div>
+
+    <button onclick="salvarLotePreenchido()" style="background-color: #F59E0B; font-size: 18px; margin-bottom: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">💾 Gravar OS(s) Preenchida(s)</button>
+
+    <div id="listaOS"></div>"""
 #endregion 3.10
 
 #region 3.11: Gerador Offline - Lógica JS Core (Banco Local e Renderização)
     js_core = f"""
-<script>
-    const OS_DATA = {os_json};
-    const USUARIOS_EQUIPE = {usuarios_json};
-    const USUARIO_LOGADO = {json.dumps(usuario, ensure_ascii=False)};
-    const API_URL_FIXA = {json.dumps(api_url_fixa, ensure_ascii=False)};
-    const API_KEY_FIXA = {json.dumps(api_key_fixa, ensure_ascii=False)};
+    <script>
+        const API_URL = "https://api-sgo-mrs.onrender.com/sincronizar_baixa_offline";
+        const OS_DADOS = {os_json};
+        const USUARIO = "{usuario}";
+        
+        let db = null;
+        let filaMemoria = []; 
+        let osConcluidasSessao = new Set();
 
-    const DB_NAME = "sgo_mrs_offline_prod";
-    const STORE_NAME = "apontamentos";
-    let db = null;
-    let gpsAtual = null;
+        const ativosUnicos = [...new Set(OS_DADOS.map(os => os.Ativo))].sort();
+        const selectAtivo = document.getElementById("filtroAtivo");
+        ativosUnicos.forEach(ativo => {{
+            selectAtivo.innerHTML += `<option value="${{ativo}}">${{ativo}}</option>`;
+        }});
 
-    function abrirDB() {{
-        return new Promise((resolve, reject) => {{
-            // Versão 2: Força o upgrade do banco para usar a OS como chave única
-            const req = indexedDB.open(DB_NAME, 2); 
-            req.onupgradeneeded = (event) => {{
-                const database = event.target.result;
-                if (database.objectStoreNames.contains(STORE_NAME)) {{
-                    database.deleteObjectStore(STORE_NAME);
+        try {{
+            const request = indexedDB.open("SGO_Offline_DB", 3);
+            request.onupgradeneeded = (e) => {{
+                db = e.target.result;
+                if (!db.objectStoreNames.contains("baixas")) {{
+                    db.createObjectStore("baixas", {{ keyPath: "os_id" }});
                 }}
-                // Transforma o os_id na chave primária (Impede duplicações na fila)
-                const store = database.createObjectStore(STORE_NAME, {{ keyPath: "os_id" }});
-                store.createIndex("status_sync", "status_sync", {{ unique: false }});
             }};
-            req.onsuccess = () => {{
-                db = req.result;
-                resolve(db);
-            }};
-            req.onerror = () => reject(req.error);
-        }});
-    }}
+            request.onsuccess = (e) => {{ db = e.target.result; atualizarContador(); renderizarOS(); }};
+            request.onerror = (e) => {{ console.warn("Navegador bloqueou DB."); renderizarOS(); }};
+        }} catch (err) {{ console.warn("Erro BD local", err); renderizarOS(); }}
 
-    function txStore(mode) {{
-        mode = mode || "readonly";
-        const tx = db.transaction(STORE_NAME, mode);
-        return tx.objectStore(STORE_NAME);
-    }}
-
-    function setStatusOnline() {{
-        const el = document.getElementById("statusOnline");
-        if (navigator.onLine) {{
-            el.textContent = "📡 Online";
-            el.className = "status-badge status-online";
-        }} else {{
-            el.textContent = "📡 Offline";
-            el.className = "status-badge status-offline";
+        function updateNetworkStatus() {{
+            const statusDiv = document.getElementById('networkStatus');
+            if (navigator.onLine) {{
+                statusDiv.className = 'status-bar online'; statusDiv.innerText = '📡 Conectado - Sincronização Ativa';
+                sincronizarDados();
+            }} else {{
+                statusDiv.className = 'status-bar offline'; statusDiv.innerText = '🚫 Área de Sombra (Modo Offline)';
+            }}
         }}
-    }}
+        window.addEventListener('online', updateNetworkStatus);
+        window.addEventListener('offline', updateNetworkStatus);
 
-    function setSyncMsg(texto, tipo) {{
-        tipo = tipo || "blue";
-        const el = document.getElementById("syncMsg");
-        el.textContent = texto;
-        el.className = "info-box " + (tipo === "red" ? "info-red" : tipo === "yellow" ? "info-yellow" : "info-blue");
-    }}
+        function renderizarOS() {{
+            const container = document.getElementById("listaOS");
+            const ativoSel = document.getElementById("filtroAtivo").value;
+            const alerta = document.getElementById("alertaFoco");
+            container.innerHTML = "";
 
-    function setGpsInfo(texto, tipo) {{
-        tipo = tipo || "blue";
-        const el = document.getElementById("gpsInfo");
-        el.textContent = texto;
-        el.className = "info-box " + (tipo === "red" ? "info-red" : tipo === "yellow" ? "info-yellow" : "info-blue");
-    }}
-
-    function popularEquipe() {{
-        const sel = document.getElementById("acompanhanteGlobal");
-        sel.innerHTML = "";
-        USUARIOS_EQUIPE.forEach((nome) => {{
-            const opt = document.createElement("option");
-            opt.value = nome;
-            opt.textContent = nome;
-            sel.appendChild(opt);
-        }});
-    }}
-
-    function popularListaAtivos() {{
-        const datalist = document.getElementById("listaAtivos");
-        if (!datalist) return;
-
-        const ativosUnicos = [...new Set(
-            OS_DATA.map(item => String(item.Ativo || "").trim()).filter(v => v)
-        )].sort((a, b) => a.localeCompare(b, "pt-BR"));
-
-        datalist.innerHTML = "";
-        ativosUnicos.forEach((ativo) => {{
-            const option = document.createElement("option");
-            option.value = ativo;
-            datalist.appendChild(option);
-        }});
-    }}
-
-    function haOSCriticaPendente(lista) {{
-        return lista.some((os) => String(os.Criticidade || "").trim().toUpperCase() === "MUITO ALTA");
-    }}
-
-    function renderListaOS() {{
-        const filtro = document.getElementById("filtroAtivo").value.trim().toUpperCase();
-        const osList = document.getElementById("osList");
-        osList.innerHTML = "";
-
-        const listaBase = OS_DATA
-            .map((item, originalIdx) => ({{ ...item, _origIdx: originalIdx }}))
-            .filter((item) => {{
-                const ativo = String(item.Ativo || "").toUpperCase();
-                const atividade = String(item["Atividade ativo"] || "").toUpperCase();
-                const osId = String(item["Ordem servico"] || "").toUpperCase();
-                return !filtro || ativo.includes(filtro) || atividade.includes(filtro) || osId.includes(filtro);
-            }});
-
-        const temCritica = haOSCriticaPendente(listaBase);
-        document.getElementById("criticaAlert").style.display = temCritica ? "block" : "none";
-
-        listaBase.forEach((item) => {{
-            const idx = item._origIdx;
-            const osId = String(item["Ordem servico"] || "").trim();
-            const ativo = String(item.Ativo || "").trim();
-            const atividade = String(item["Atividade ativo"] || "").trim();
-            const patio = String(item.Patio || "").trim();
-            const criticidade = String(item.Criticidade || "").trim();
-            const desc = String(item["Descrição Longa"] || "").trim();
-            const isCritica = criticidade.toUpperCase() === "MUITO ALTA";
-            const locked = temCritica && !isCritica;
-
-            const wrapper = document.createElement("div");
-            wrapper.className = "os-item" + (locked ? " locked" : "");
-            // Adicionando um ID para podermos manipular o card depois
-            wrapper.id = `card_os_${{idx}}`;
-
-            wrapper.innerHTML = `
-                <div class="os-header">
-                    <div class="os-title">OS ${{osId}}</div>
-                    <div class="chip ${{isCritica ? "chip-critical" : ""}}">${{criticidade || "Sem criticidade"}}</div>
-                </div>
-
-                <div class="os-meta"><strong>Ativo:</strong> ${{ativo}}</div>
-                <div class="os-meta"><strong>Atividade:</strong> ${{atividade}}</div>
-                <div class="os-meta"><strong>Pátio:</strong> ${{patio}}</div>
-                ${{desc ? `<div class="desc-box" style="margin: 10px 0;"><strong>Descrição:</strong><br>${{desc}}</div>` : ""}}
-
-                <div class="os-grid" style="margin-top: 10px;">
-                    <div class="field">
-                        <label for="ini_${{idx}}">Horário Início</label>
-                        <input id="ini_${{idx}}" type="time" ${{locked ? "disabled" : ""}}>
-                    </div>
-                    <div class="field">
-                        <label for="fim_${{idx}}">Horário Fim</label>
-                        <input id="fim_${{idx}}" type="time" ${{locked ? "disabled" : ""}}>
-                    </div>
-                </div>
-
-                <div class="field">
-                    <label for="foto_${{idx}}">📷 Evidência Fotográfica</label>
-                    <input id="foto_${{idx}}" type="file" accept=".jpg,.jpeg,.png,image/*" capture="environment" ${{locked ? "disabled" : ""}}>
-                </div>
-            `;
-            osList.appendChild(wrapper);
-        }});
-    }}
-
-    async function capturarGPS() {{
-        return new Promise((resolve) => {{
-            if (!navigator.geolocation) {{
-                setGpsInfo("Este navegador não suporta geolocalização.", "red");
-                return resolve(null);
+            let osFiltradas = OS_DADOS.filter(os => !osConcluidasSessao.has(os['Ordem servico']));
+            
+            if (ativoSel !== "TODOS") {{
+                osFiltradas = osFiltradas.filter(os => os.Ativo === ativoSel);
             }}
 
-            navigator.geolocation.getCurrentPosition(
-                (pos) => {{
-                    gpsAtual = {{
-                        lat: Number(pos.coords.latitude),
-                        lon: Number(pos.coords.longitude),
-                        accuracy: pos.coords.accuracy || null,
-                        timestamp: new Date().toISOString()
-                    }};
-                    setGpsInfo(`GPS capturado: Lat ${{gpsAtual.lat.toFixed(6)}}, Lon ${{gpsAtual.lon.toFixed(6)}}`, "blue");
-                    resolve(gpsAtual);
-                }},
-                (err) => {{
-                    setGpsInfo(`Falha ao capturar GPS: ${{err.message}}`, "red");
-                    resolve(null);
-                }},
-                {{
-                    enableHighAccuracy: true,
-                    timeout: 15000,
-                    maximumAge: 0
-                }}
-            );
-        }});
-    }}
-"""
+            const temMuitoAlta = osFiltradas.some(os => os.Criticidade === "Muito Alta");
+            alerta.style.display = temMuitoAlta ? "block" : "none";
+
+            osFiltradas.forEach(os => {{
+                const isBloqueada = temMuitoAlta && os.Criticidade !== "Muito Alta";
+                const classeCard = isBloqueada ? "card card-bloqueado" : "card";
+                const msgBloqueio = isBloqueada ? `<div style="color:#EF4444; font-weight:bold; font-size:12px; margin-bottom:8px;">🔒 Conclua a OS Prioritária para liberar.</div>` : ``;
+                const btnInputsDisabled = isBloqueada ? "disabled" : "";
+
+                const descLonga = os['Descrição Longa'] ? os['Descrição Longa'] : 'N/A';
+                const badgeCrit = os.Criticidade === "Muito Alta" ? `<div class="badge-crit">⚠️ ${{os.Criticidade}}</div>` : `<div style="font-size:12px; color:#64748B; margin-bottom:5px;">${{os.Criticidade}}</div>`;
+                
+                container.innerHTML += `
+                    <div class="${{classeCard}}" id="card_${{os['Ordem servico']}}">
+                        ${{msgBloqueio}}
+                        ${{badgeCrit}}
+                        <h4 style="margin:0 0 5px 0;">📍 ${{os.Patio}} | OS: ${{os['Ordem servico']}}</h4>
+                        <p style="margin:0 0 10px 0; font-size:14px; line-height: 1.4;">
+                            <b>Ativo:</b> ${{os.Ativo}}<br>
+                            <b>Descrição:</b> ${{descLonga}}<br>
+                            <b>Ação:</b> ${{os['Atividade ativo']}}
+                        </p>
+                        
+                        <div class="input-group">
+                            <label>Início (Obrigatório):</label>
+                            <input type="time" id="hora_ini_${{os['Ordem servico']}}" ${{btnInputsDisabled}}>
+                            <label>Fim (Obrigatório):</label>
+                            <input type="time" id="hora_fim_${{os['Ordem servico']}}" ${{btnInputsDisabled}}>
+                        </div>
+
+                        <input type="file" id="foto_${{os['Ordem servico']}}" accept="image/*" capture="environment" style="width: 100%; margin-bottom: 5px;" ${{btnInputsDisabled}}>
+                    </div>`;
+            }});
+        }}"""
 #endregion 3.11
 
-#region 3.12: Gerador Offline - Lógica JS de Lote / Persistência
-    # REMOVIDO a tag <script> daqui, ele continua a execução do js_core diretamente
+#region 3.12: Gerador Offline - Lógica JS de Lote e Confirmação de Tempo
     js_lote = f"""
-    function calcularDuracaoHoras(inicio, fim) {{
-        if (!inicio || !fim) return null;
-
-        const [hi, mi] = inicio.split(":").map(Number);
-        const [hf, mf] = fim.split(":").map(Number);
-
-        let minsIni = hi * 60 + mi;
-        let minsFim = hf * 60 + mf;
-
-        if (minsFim < minsIni) {{
-            minsFim += 24 * 60;
-        }}
-
-        return (minsFim - minsIni) / 60.0;
-    }}
-
-    async function salvarSelecionadasNoLote() {{
-        const acompanhanteGlobal = document.getElementById("acompanhanteGlobal").value || "Sozinho (Nenhum)";
-        const selecionadas = [];
-        const indicesParaLimpar = []; // Guarda quem devemos apagar da tela depois de salvar
-
-        for (let i = 0; i < OS_DATA.length; i += 1) {{
-            const elIni = document.getElementById(`ini_${{i}}`);
-            const elFim = document.getElementById(`fim_${{i}}`);
-            const inicio = elIni ? elIni.value : "";
-            const fim = elFim ? elFim.value : "";
-            const fileInput = document.getElementById(`foto_${{i}}`);
-            const foto = (fileInput && fileInput.files && fileInput.files.length > 0) ? fileInput.files[0] : null;
-            const osItem = OS_DATA[i];
-
-            if (!(inicio && fim && foto)) continue;
-
-            const duracaoHoras = calcularDuracaoHoras(inicio, fim);
-            if (duracaoHoras !== null && duracaoHoras > 12) {{
-                const ok = confirm(
-                    `A duração calculada da OS ${{osItem["Ordem servico"]}} é de ${{duracaoHoras.toFixed(1)}}h. Confirma gravar mesmo assim?`
-                );
-                if (!ok) return;
-            }}
-
-            selecionadas.push({{
-                os_id: String(osItem["Ordem servico"] || "").trim(),
-                ativo_id: String(osItem["Ativo"] || "").trim(),
-                usuario: USUARIO_LOGADO,
-                acompanhante: acompanhanteGlobal === "Sozinho (Nenhum)" ? "" : acompanhanteGlobal,
-                horario_inicio: inicio.length === 5 ? `${{inicio}}:00` : inicio,
-                horario_fim: fim.length === 5 ? `${{fim}}:00` : fim,
-                data_hora_local: new Date().toISOString(),
-                lat_browser: gpsAtual ? gpsAtual.lat : 0.0,
-                lon_browser: gpsAtual ? gpsAtual.lon : 0.0,
-                criticidade: String(osItem["Criticidade"] || "").trim(),
-                status_sync: "pendente",
-                foto_blob: foto,
-                criado_em: new Date().toISOString()
-            }});
+        async function salvarLotePreenchido() {{
+            let osParaSalvar = [];
+            let osIncompletas = [];
             
-            indicesParaLimpar.push(i);
-        }}
+            let temMuitoAlta = OS_DADOS.filter(os => !osConcluidasSessao.has(os['Ordem servico'])).some(os => os.Criticidade === "Muito Alta");
 
-        if (!selecionadas.length) {{
-            alert("Nenhuma OS preenchida para gravação.");
-            return;
-        }}
+            for (let os of OS_DADOS) {{
+                let os_id = os['Ordem servico'];
+                if (osConcluidasSessao.has(os_id)) continue;
+                if (temMuitoAlta && os.Criticidade !== "Muito Alta") continue; 
 
-        await Promise.all(
-            selecionadas.map((item) => new Promise((resolve, reject) => {{
-                const req = txStore("readwrite").put(item);
-                req.onsuccess = () => resolve(true);
-                req.onerror = () => reject(req.error);
-            }}))
-        );
+                let horaIni = document.getElementById(`hora_ini_${{os_id}}`);
+                let horaFim = document.getElementById(`hora_fim_${{os_id}}`);
+                let fotoInput = document.getElementById(`foto_${{os_id}}`);
 
-        // UPDATE: Remoção Visual do Card (A OS sai da lista!)
-        // Assim o técnico sabe visualmente que aquela OS já foi para a fila.
-        indicesParaLimpar.forEach((i) => {{
-            const cardOS = document.getElementById(`card_os_${{i}}`);
-            if (cardOS) {{
-                cardOS.style.display = "none";
+                if (!horaIni) continue; 
+
+                let isPreenchida = horaIni.value || horaFim.value || fotoInput.files.length > 0;
+                let isCompleta = horaIni.value && horaFim.value && fotoInput.files.length > 0;
+
+                if (isPreenchida && !isCompleta) {{
+                    osIncompletas.push(os_id);
+                }} else if (isCompleta) {{
+                    
+                    let [hI, mI] = horaIni.value.split(':').map(Number);
+                    let [hF, mF] = horaFim.value.split(':').map(Number);
+                    let minIni = hI * 60 + mI;
+                    let minFim = hF * 60 + mF;
+                    
+                    let duracaoMin = minFim < minIni ? (24 * 60 - minIni) + minFim : minFim - minIni;
+
+                    if (duracaoMin > 12 * 60) {{
+                        // CORREÇÃO AQUI: Chaves duplas {{ }} em volta da matemática do JS
+                        let resposta = confirm(`⚠️ Atenção na OS ${{os_id}}:\\n\\nA duração calculada é de ${{(duracaoMin/60).toFixed(1)}} horas. Está correto?\\n\\n(Se o serviço terminou à tarde, lembre-se de usar 13:00 em vez de 01:00). Clique em OK para confirmar e salvar.`);
+                        if (!resposta) {{
+                            return; 
+                        }}
+                    }}
+
+                    osParaSalvar.push({{
+                        os_id: os_id,
+                        ativo_id: os.Ativo,
+                        horario_inicio: horaIni.value,
+                        horario_fim: horaFim.value,
+                        fotoBlob: fotoInput.files[0]
+                    }});
+                }}
             }}
-        }});
 
-        await atualizarFila();
-        setSyncMsg(`${{selecionadas.length}} OS gravada(s) localmente com sucesso.`, "blue");
-        alert(`✅ ${{selecionadas.length}} OS movida(s) para a fila de envio.`);
-    }}
+            if (osIncompletas.length > 0) {{
+                alert(`⚠️ Atenção! As seguintes OS estão preenchidas pela metade: ${{osIncompletas.join(", ")}}.\\n\\nPreencha todos os horários e a foto delas, ou apague os dados para continuar.`);
+                return;
+            }}
 
-    async function atualizarFila() {{
-        return new Promise((resolve, reject) => {{
-            const req = txStore("readonly").getAll();
-            req.onsuccess = () => {{
-                const registros = req.result || [];
-                const pendentes = registros.filter((r) => r.status_sync === "pendente");
-                document.getElementById("filaCount").textContent = String(pendentes.length);
-                resolve(pendentes.length);
+            if (osParaSalvar.length === 0) {{
+                alert("Nenhuma OS foi totalmente preenchida. Informe horários e foto para gravar.");
+                return;
+            }}
+
+            const acomp = document.getElementById(`acompGlobal`).value;
+            const dataHora = new Date().toISOString();
+
+            navigator.geolocation.getCurrentPosition(
+                (pos) => {{ gravarNoBanco(osParaSalvar, acomp, dataHora, pos.coords.latitude, pos.coords.longitude); }}, 
+                (err) => {{ gravarNoBanco(osParaSalvar, acomp, dataHora, 0.0, 0.0); }}, 
+                {{ enableHighAccuracy: true, timeout: 10000 }}
+            );
+        }}
+
+        function gravarNoBanco(listaOS, acomp, dataHora, lat, lon) {{
+            let totalSalvas = 0;
+
+            const finalizarProcesso = () => {{
+                alert(`✅ ${{totalSalvas}} OS(s) gravada(s) com sucesso no celular!`);
+                renderizarOS();
+                atualizarContador();
+                if(navigator.onLine) sincronizarDados();
             }};
-            req.onerror = () => reject(req.error);
-        }});
-    }}
 
-    async function limparFila() {{
-        const ok = confirm("Deseja realmente apagar toda a fila local e reiniciar o pacote offline?");
-        if (!ok) return;
-
-        await new Promise((resolve, reject) => {{
-            const req = txStore("readwrite").clear();
-            req.onsuccess = () => resolve(true);
-            req.onerror = () => reject(req.error);
-        }});
-
-        await atualizarFila();
-        setSyncMsg("Fila local apagada com sucesso.", "yellow");
-    }}
-"""
+            if (db) {{
+                const tx = db.transaction("baixas", "readwrite");
+                for (let os of listaOS) {{
+                    const baixa = {{ 
+                        os_id: os.os_id, ativo_id: os.ativo_id, lat: lat, lon: lon, 
+                        data_hora: dataHora, foto: os.fotoBlob, usuario: USUARIO,
+                        acompanhante: acomp, horario_inicio: os.horario_inicio, horario_fim: os.horario_fim
+                    }};
+                    tx.objectStore("baixas").put(baixa);
+                    osConcluidasSessao.add(os.os_id);
+                    totalSalvas++;
+                }}
+                tx.oncomplete = finalizarProcesso;
+            }} else {{
+                for (let os of listaOS) {{
+                    const baixa = {{ 
+                        os_id: os.os_id, ativo_id: os.ativo_id, lat: lat, lon: lon, 
+                        data_hora: dataHora, foto: os.fotoBlob, usuario: USUARIO,
+                        acompanhante: acomp, horario_inicio: os.horario_inicio, horario_fim: os.horario_fim
+                    }};
+                    filaMemoria.push(baixa);
+                    osConcluidasSessao.add(os.os_id);
+                    totalSalvas++;
+                }}
+                finalizarProcesso();
+            }}
+        }}"""
 #endregion 3.12
 
-#region 3.13: Gerador Offline - Lógica JS de Sincronização e Fechamento
-    # Lógica de Sincronização com tratamento de erros (UX Limpa)
+#region 3.13: Gerador Offline - Lógica JS de Sincronização e Fetch
     js_sync = f"""
-    async function sincronizarFila() {{
-        const apiUrl = API_URL_FIXA;
-        const apiKey = API_KEY_FIXA;
+        async function enviarLote(baixas) {{
+            if (baixas.length === 0) return;
+            document.getElementById('btnSync').disabled = true;
+            document.getElementById('btnSync').innerText = "Sincronizando... Aguarde!";
 
-        if (!apiUrl) {{
-            alert("URL da API offline não configurada no pacote.");
-            return;
-        }}
-        if (!apiKey) {{
-            alert("API Key offline não configurada no pacote.");
-            return;
-        }}
-        if (!navigator.onLine) {{
-            alert("Sem internet. Conecte-se antes de sincronizar.");
-            return;
-        }}
+            const tokenTeste = document.getElementById('debugToken').value;
 
-        const registros = await new Promise((resolve, reject) => {{
-            const req = txStore("readonly").getAll();
-            req.onsuccess = () => resolve(req.result || []);
-            req.onerror = () => reject(req.error);
-        }});
+            for (let baixa of baixas) {{
+                let fd = new FormData();
+                fd.append("os_id", baixa.os_id); fd.append("ativo_id", baixa.ativo_id); fd.append("usuario", baixa.usuario);
+                fd.append("lat_browser", baixa.lat); fd.append("lon_browser", baixa.lon); fd.append("data_hora_local", baixa.data_hora);
+                fd.append("acompanhante", baixa.acompanhante); 
+                fd.append("horario_inicio", baixa.horario_inicio); 
+                fd.append("horario_fim", baixa.horario_fim);
+                fd.append("foto", baixa.foto, "evidencia.jpg");
+                
+                if (tokenTeste) {{ fd.append("debug_token", tokenTeste); }}
 
-        const pendentes = registros.filter((r) => r.status_sync === "pendente");
-        if (!pendentes.length) {{
-            setSyncMsg("Nenhuma OS pendente para sincronizar.", "yellow");
-            return;
-        }}
-
-        let sucesso = 0;
-        let falha = 0;
-        const detalhesFalha = [];
-
-        for (const item of pendentes) {{
-            try {{
-                const formData = new FormData();
-                formData.append("os_id", item.os_id);
-                formData.append("ativo_id", item.ativo_id);
-                formData.append("usuario", item.usuario);
-                formData.append("lat_browser", String(item.lat_browser || 0.0));
-                formData.append("lon_browser", String(item.lon_browser || 0.0));
-                formData.append("data_hora_local", item.data_hora_local);
-                formData.append("acompanhante", item.acompanhante || "");
-                formData.append("horario_inicio", item.horario_inicio);
-                formData.append("horario_fim", item.horario_fim);
-                formData.append("foto", item.foto_blob, `${{item.ativo_id}}_${{item.os_id}}.jpg`);
-
-                const resp = await fetch(apiUrl, {{
-                    method: "POST",
-                    headers: {{
-                        "x-api-key": apiKey
-                    }},
-                    body: formData
-                }});
-
-                // --- ATUALIZAÇÃO UX: Tratamento de Erros Limpo ---
-                if (!resp.ok) {{
-                    let msgErro = "Falha na comunicação com o servidor.";
-                    try {{
-                        const errJson = await resp.json();
-                        // Se a API mandar o erro dentro de 'detail', extrai só o texto
-                        if (errJson.detail) {{
-                            msgErro = errJson.detail;
+                try {{
+                    let res = await fetch(API_URL, {{ method: "POST", body: fd }});
+                    if (res.ok) {{
+                        if (db) {{
+                            const txDel = db.transaction("baixas", "readwrite");
+                            txDel.objectStore("baixas").delete(baixa.os_id);
                         }} else {{
-                            msgErro = JSON.stringify(errJson);
+                            filaMemoria = filaMemoria.filter(b => b.os_id !== baixa.os_id);
                         }}
-                    }} catch (parseErr) {{
-                        // Se não for JSON, pega o texto puro ou o código do erro
-                        msgErro = await resp.text() || `Erro no servidor (Código ${{resp.status}})`;
+                    }} else {{
+                        let erroServidor = await res.text();
+                        alert("❌ O Servidor recusou a OS " + baixa.os_id + ". Motivo: " + erroServidor);
                     }}
-                    throw new Error(msgErro);
+                }} catch (e) {{ 
+                    alert("⚠️ Erro de Rede ao sincronizar a OS " + baixa.os_id + "."); 
                 }}
+            }}
+            atualizarContador();
+            document.getElementById('btnSync').disabled = false;
+            document.getElementById('btnSync').innerText = "Enviar Dados Localizados";
+        }}
 
-                await new Promise((resolve, reject) => {{
-                    const reqUpdate = txStore("readwrite").put({{
-                        ...item,
-                        status_sync: "sincronizado",
-                        sincronizado_em: new Date().toISOString()
-                    }});
-                    reqUpdate.onsuccess = () => resolve(true);
-                    reqUpdate.onerror = () => reject(reqUpdate.error);
-                }});
+        function sincronizarDados() {{
+            if (!navigator.onLine) return;
+            if (db) {{
+                try {{
+                    const tx = db.transaction("baixas", "readonly");
+                    const req = tx.objectStore("baixas").getAll();
+                    req.onsuccess = async () => {{ await enviarLote(req.result); }};
+                }} catch (e) {{ enviarLote(filaMemoria); }}
+            }} else {{ enviarLote(filaMemoria); }}
+        }}
 
-                sucesso += 1;
-            }} catch (e) {{
-                console.error("Falha na sincronização da OS", item.os_id, e);
-                falha += 1;
-                // e.message agora contém apenas o texto limpo, sem "HTTP 403"
-                detalhesFalha.push(`OS ${{item.os_id}}: ${{e.message || "Erro desconhecido"}}`);
+        function limparTudo() {{
+            if(confirm("Tem certeza que deseja apagar TODAS as baixas não sincronizadas? Esta ação não pode ser desfeita.")) {{
+                if (db) {{
+                    const tx = db.transaction("baixas", "readwrite");
+                    tx.objectStore("baixas").clear();
+                    tx.oncomplete = () => {{
+                        filaMemoria = [];
+                        alert("✅ Fila limpa com sucesso!");
+                        atualizarContador();
+                        renderizarOS();
+                    }};
+                }} else {{
+                    filaMemoria = [];
+                    alert("✅ Fila limpa com sucesso!");
+                    atualizarContador();
+                    renderizarOS();
+                }}
             }}
         }}
 
-        await atualizarFila();
-
-        if (falha === 0) {{
-            setSyncMsg(`Sincronização concluída com sucesso. ${{sucesso}} OS enviada(s).`, "blue");
-        }} else {{
-            const detalhe = detalhesFalha.length ? ` Motivo: ${{detalhesFalha[0]}}` : "";
-            setSyncMsg(`Sincronização parcial. ${{sucesso}} enviada(s) e ${{falha}} falha(s).${{detalhe}}`, "yellow");
+        function atualizarContador() {{
+            if (db) {{
+                try {{
+                    const tx = db.transaction("baixas", "readonly");
+                    const req = tx.objectStore("baixas").count();
+                    req.onsuccess = () => {{ document.getElementById('contadorFila').innerText = req.result; }};
+                }} catch (e) {{ document.getElementById('contadorFila').innerText = filaMemoria.length; }}
+            }} else {{ document.getElementById('contadorFila').innerText = filaMemoria.length; }}
         }}
-    }}
-
-    async function bootstrap() {{
-        await abrirDB();
-        setStatusOnline();
-        popularEquipe();
-        popularListaAtivos();
-        renderListaOS();
-        await atualizarFila();
-
-        window.addEventListener("online", setStatusOnline);
-        window.addEventListener("offline", setStatusOnline);
-
-        document.getElementById("filtroAtivo").addEventListener("input", renderListaOS);
-        document.getElementById("btnCapturarGps").addEventListener("click", capturarGPS);
-        document.getElementById("btnSalvarLote").addEventListener("click", salvarSelecionadasNoLote);
-        document.getElementById("btnSync").addEventListener("click", sincronizarFila);
-        document.getElementById("btnClear").addEventListener("click", limparFila);
-    }}
-
-    bootstrap().catch((err) => {{
-        console.error(err);
-        alert("Falha ao inicializar o pacote offline.");
-    }});
-</script>
+    </script>
 </body>
-</html>
-"""
+</html>"""
 
+    # Concatenação final de todas as partes modulares criadas acima
     html_final = html_head + html_body + js_core + js_lote + js_sync
     return html_final.encode("utf-8")
 #endregion 3.13
@@ -3412,13 +3173,37 @@ if st.session_state.get("tela_atual") == "governanca":
             if not df_aderencia.empty:
                 df_aderencia["x_date"] = pd.to_datetime(df_aderencia["data_hora_login"]).dt.strftime("%d/%m")
                 dt_login, dt_baixa = pd.to_datetime(df_aderencia["data_hora_login"]), pd.to_datetime(df_aderencia["dt_baixa_1os"])
+                
                 df_aderencia["y_login_frac"] = dt_login.dt.hour + dt_login.dt.minute / 60.0
                 df_aderencia["y_baixa_frac"] = dt_baixa.dt.hour + dt_baixa.dt.minute / 60.0
-                df_aderencia = df_aderencia.sort_values("Data_Real_Pure")
-                login_data = [[row["x_date"], round(row["y_login_frac"], 2), row["username"]] for _, row in df_aderencia.iterrows()]
-                baixa_data = [[row["x_date"], round(row["y_baixa_frac"], 2), row["username"]] for _, row in df_aderencia.iterrows()]
-                st_echarts(options={ "tooltip": { "trigger": "item", "formatter": JsCode("""function (p) { var hh = Math.floor(p.data[1]); var mm = Math.round((p.data[1] - hh) * 60); if (mm == 60) { hh += 1; mm = 0; } return '<b>' + p.data[2] + '</b><br>' + p.seriesName + ': ' + (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm + '<br>Data: ' + p.data[0]; }""") }, "legend": {"data": ["Login", "Primeira Baixa"], "bottom": "0%"}, "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}], "grid": {"top": "10%", "bottom": "25%", "left": "12%", "right": "5%"}, "xAxis": {"type": "category", "data": sorted(df_aderencia["x_date"].unique().tolist())}, "yAxis": { "type": "value", "name": "Horário", "min": 0, "max": 24, "interval": 4, "axisLabel": { "formatter": JsCode("""function(value) { var hh = Math.floor(value); return (hh < 10 ? '0' : '') + hh + ':00'; }""") } }, "series": [ {"name": "Login", "type": "scatter", "data": login_data, "symbolSize": 10, "itemStyle": {"color": "#3B82F6"}}, {"name": "Primeira Baixa", "type": "scatter", "data": baixa_data, "symbolSize": 10, "itemStyle": {"color": "#10B981"}} ] }, height="400px", theme="streamlit", key="gov_scatter_aderencia")
-            else: st.info("Dados insuficientes para cruzar login com apontamento.")
+                
+                # --- CORREÇÃO AQUI: Remove os NaNs antes de criar as listas do JSON ---
+                df_aderencia = df_aderencia.dropna(subset=["y_login_frac", "y_baixa_frac"]).sort_values("Data_Real_Pure")
+                
+                # Só monta o gráfico se ainda sobrar dados após a limpeza
+                if not df_aderencia.empty:
+                    login_data = [[row["x_date"], round(row["y_login_frac"], 2), row["username"]] for _, row in df_aderencia.iterrows()]
+                    baixa_data = [[row["x_date"], round(row["y_baixa_frac"], 2), row["username"]] for _, row in df_aderencia.iterrows()]
+                    
+                    st_echarts(options={ 
+                        "tooltip": { 
+                            "trigger": "item", 
+                            "formatter": JsCode("""function (p) { var hh = Math.floor(p.data[1]); var mm = Math.round((p.data[1] - hh) * 60); if (mm == 60) { hh += 1; mm = 0; } return '<b>' + p.data[2] + '</b><br>' + p.seriesName + ': ' + (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm + '<br>Data: ' + p.data[0]; }""") 
+                        }, 
+                        "legend": {"data": ["Login", "Primeira Baixa"], "bottom": "0%"}, 
+                        "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}], 
+                        "grid": {"top": "10%", "bottom": "25%", "left": "12%", "right": "5%"}, 
+                        "xAxis": {"type": "category", "data": sorted(df_aderencia["x_date"].unique().tolist())}, 
+                        "yAxis": { "type": "value", "name": "Horário", "min": 0, "max": 24, "interval": 4, "axisLabel": { "formatter": JsCode("""function(value) { var hh = Math.floor(value); return (hh < 10 ? '0' : '') + hh + ':00'; }""") } }, 
+                        "series": [ 
+                            {"name": "Login", "type": "scatter", "data": login_data, "symbolSize": 10, "itemStyle": {"color": "#3B82F6"}}, 
+                            {"name": "Primeira Baixa", "type": "scatter", "data": baixa_data, "symbolSize": 10, "itemStyle": {"color": "#10B981"}} 
+                        ] 
+                    }, height="400px", theme="streamlit", key="gov_scatter_aderencia")
+                else:
+                    st.info("Dados de horário insuficientes para plotar o gráfico de aderência.")
+            else: 
+                st.info("Dados insuficientes para cruzar login com apontamento.")
 
         with col_l3_c2:
             st.markdown("#### 🔝 Top Técnicos: OS por Pátio")
@@ -3429,7 +3214,6 @@ if st.session_state.get("tela_atual") == "governanca":
 
         with col_l3_c3:
             st.markdown("#### 📊 Variabilidade de Execução")
-            # FIX: Garantindo que valores nulos sejam limpos para evitar falha no e-charts
             df_var = df_gov_f.groupby("concluido_por")["Tempo_Minutos"].mean().fillna(0).reset_index().sort_values("Tempo_Minutos", ascending=True)
             st_echarts(options={ "tooltip": {"trigger": "axis"}, "grid": {"left": "5%", "right": "8%", "bottom": "10%", "top": "10%", "containLabel": True}, "xAxis": {"type": "value", "name": "Minutos"}, "yAxis": {"type": "category", "data": df_var["concluido_por"].tolist(), "axisLabel": {"fontSize": 10}}, "series": [{"type": "bar", "data": df_var["Tempo_Minutos"].round(1).tolist(), "itemStyle": {"color": "#8B5CF6"}, "label": {"show": True, "position": "right", "formatter": "{c} min", "fontSize": 10}}] }, height="400px", theme="streamlit", key="gov_variab")
 #endregion 11.6
