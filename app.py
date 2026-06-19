@@ -4191,33 +4191,14 @@ if st.session_state.get("tela_atual") == "governanca":
                 return diff + (24 * 60) if diff < 0 else diff
             except: return 0.0
 
-        # --- PARSER UNIVERSAL ROBUSTO (Blindagem ISO vs BR) ---
-        def parse_data_br_gov(valor):
-            if pd.isna(valor): return pd.NaT
-            if isinstance(valor, (pd.Timestamp, datetime)): return pd.to_datetime(valor)
-            # Pega só a data e remove horas
-            texto = str(valor).split(" ")[0].strip() 
-            # O dayfirst=True entende sozinho dd/mm/yyyy, ISO e dd-mmm-yyyy (26-jun-2026)
-            return pd.to_datetime(texto, dayfirst=True, errors="coerce")
-            
-            # 1. Se for formato ISO nativo do Banco (YYYY-MM-DD)
-            if re.match(r"^\d{4}-\d{2}-\d{2}$", texto):
-                return pd.to_datetime(texto, format="%Y-%m-%d", errors="coerce")
-            
-            # 2. Se for formato BR da Planilha
-            texto_br = texto.replace(".", "/").replace("-", "/")
-            if re.match(r"^\d{1,2}/\d{1,2}/\d{4}$", texto_br):
-                return pd.to_datetime(texto_br, format="%d/%m/%Y", errors="coerce")
-                
-            return pd.to_datetime(texto, dayfirst=True, errors="coerce")
-
         df_gov["Tempo_Minutos"] = df_gov.apply(calc_duracao, axis=1)
-        df_gov["Data_Real_DT"] = df_gov["data_inicio"].apply(parse_data_br_gov)
+        
+        # O SEGREDO DO SUCESSO DA ABA 1: Conversão Nativa do Pandas
+        df_gov["Data_Real_DT"] = pd.to_datetime(df_gov["data_inicio"], dayfirst=True, errors="coerce")
         df_gov["Data_Real"] = df_gov["Data_Real_DT"].dt.date
         df_gov["Via_GPS"] = df_gov["geolocalizacao_baixa"].apply(lambda x: 0 if "Base" in str(x) or "Sede" in str(x) else 1)
         df_gov["Alta_Prioridade"] = df_gov["Criticidade_rank"].apply(lambda x: 1 if x in [1, 2] else 0)
 
-        # --- RESTAURAÇÃO: Mapeamento do Nome do Colaborador ---
         try:
             conn = get_connection()
             df_users_gov = pd.read_sql_query("SELECT username, nome FROM usuarios", conn)
@@ -4240,36 +4221,12 @@ if st.session_state.get("tela_atual") == "governanca":
 #endregion 11.2
 
 #region 11.3: Fragmento de Governança (@st.fragment)
-
     @st.fragment
     def fragmento_governanca():
-        #region 11.3.0: Parser BR exclusivo da Governança
-        def parse_data_br_gov(valor):
-            import re
-            if pd.isna(valor): return pd.NaT
-            if isinstance(valor, (pd.Timestamp, datetime)): return pd.to_datetime(valor)
-            texto = str(valor).split(" ")[0].strip()
-            if re.match(r"^\d{4}-\d{2}-\d{2}$", texto): return pd.to_datetime(texto, format="%Y-%m-%d", errors="coerce")
-            texto_br = texto.replace(".", "/").replace("-", "/")
-            if re.match(r"^\d{1,2}/\d{1,2}/\d{4}$", texto_br): return pd.to_datetime(texto_br, format="%d/%m/%Y", errors="coerce")
-            return pd.to_datetime(texto, dayfirst=True, errors="coerce")
-        #endregion 11.3.0
-
-        # Base local da Governança com data corrigida em padrão BR.
+        
         df_gov_local = df_gov.copy()
 
-        if "data_inicio" in df_gov_local.columns:
-            df_gov_local["Data_Real_DT"] = (
-                df_gov_local["data_inicio"]
-                .apply(parse_data_br_gov)
-                .dt.normalize()
-            )
-            df_gov_local["Data_Real"] = df_gov_local["Data_Real_DT"].dt.date
-        else:
-            df_gov_local["Data_Real_DT"] = pd.NaT
-            df_gov_local["Data_Real"] = pd.NaT
-
-        # Garante que existe uma coluna de exibição para colaborador.
+        # Garante que existe uma coluna de exibição para colaborador
         if "Colaborador" not in df_gov_local.columns:
             df_gov_local["Colaborador"] = df_gov_local["concluido_por"].astype(str).str.strip()
 
@@ -4410,11 +4367,8 @@ if st.session_state.get("tela_atual") == "governanca":
         # -----------------------------
         df_real_base = df_gov_f.copy()
 
-        df_real_base["Data_Real_DT"] = (
-            df_real_base["data_inicio"]
-            .apply(parse_data_br_gov)
-            .dt.normalize()
-        )
+        # Já convertido na 11.2 nativamente
+        df_real_base["Data_Real_DT"] = df_real_base["Data_Real_DT"].dt.normalize()
 
         df_real_base = df_real_base[
             (df_real_base["Data_Real_DT"] >= data_ini_gov)
@@ -4434,17 +4388,11 @@ if st.session_state.get("tela_atual") == "governanca":
         # -----------------------------
         df_plan_base = df_os_base.copy()
 
-        # CORREÇÃO APLICADA: Uso do parser BR para evitar inversão nas datas programadas
-        df_plan_base["Data_Prog_DT"] = (
-            df_plan_base["Data inicial programada"]
-            .apply(parse_data_br_gov)
-            .dt.normalize()
-        )
+        # O SEGREDO DA ABA 1 (SEM dayfirst=True para planilhas do SAP)
+        df_plan_base["Data_Prog_DT"] = pd.to_datetime(df_plan_base["Data inicial programada"], errors="coerce").dt.normalize()
 
         if "Patio" in df_plan_base.columns:
-            df_plan_base = df_plan_base[
-                df_plan_base["Patio"].astype(str).isin([str(p) for p in patio_selecionado])
-            ].copy()
+            df_plan_base = df_plan_base[df_plan_base["Patio"].astype(str).isin([str(p) for p in patio_selecionado])].copy()
 
         df_plan_base = df_plan_base[
             (df_plan_base["Data_Prog_DT"] >= data_ini_gov)
@@ -4759,18 +4707,11 @@ if st.session_state.get("tela_atual") == "governanca":
             st.markdown("#### 🕒 Aderência: Login vs. Apontamento")
             
             df_logs_local = df_logs.copy()
-            # Logins costumam vir do banco (timestamps). Garantimos que viram datas absolutas.
-            df_logs_local["Data_Real_Pure"] = pd.to_datetime(df_logs_local["data_hora_login"], errors="coerce").dt.date
+            df_logs_local["dt_login_calc"] = pd.to_datetime(df_logs_local["data_hora_login"], errors="coerce")
+            df_logs_local["Data_Real_Pure"] = df_logs_local["dt_login_calc"].dt.date
 
-            # Junta Data e Hora com segurança absoluta usando dayfirst=True (como na Aba 1)
-            def parse_dt_aderencia(d, h):
-                if pd.isna(d) or pd.isna(h): return pd.NaT
-                d_str = str(d).split(" ")[0].strip()
-                h_str = str(h).strip()
-                # Tenta formatar dd/mm/yyyy hh:mm:ss forçando o dia primeiro
-                return pd.to_datetime(f"{d_str} {h_str}", dayfirst=True, errors="coerce")
-
-            df_gov_f["dt_baixa_calc"] = df_gov_f.apply(lambda r: parse_dt_aderencia(r["data_fim"], r["hora_fim"]), axis=1)
+            # Junta Data e Hora como Strings e converte nativamente com dayfirst=True
+            df_gov_f["dt_baixa_calc"] = pd.to_datetime(df_gov_f["data_fim"].astype(str).str.strip() + " " + df_gov_f["hora_fim"].astype(str).str.strip(), dayfirst=True, errors="coerce")
 
             df_primeira_baixa = (
                 df_gov_f
@@ -4779,13 +4720,12 @@ if st.session_state.get("tela_atual") == "governanca":
                 .reset_index(name="dt_baixa_1os")
             )
 
-            # >> AQUI ESTÁ A VARIÁVEL RESTAURADA <<
+            # >> O DATAFRAME DA ADERÊNCIA RENASCE AQUI <<
             df_aderencia = df_logs_local.merge(df_primeira_baixa, left_on=["username", "Data_Real_Pure"], right_on=["concluido_por", "Data_Real"])
 
             if not df_aderencia.empty:
-                # Usa datetime puro para extrair o eixo X
-                dt_login = pd.to_datetime(df_aderencia["data_hora_login"], errors="coerce")
-                dt_baixa = pd.to_datetime(df_aderencia["dt_baixa_1os"], errors="coerce")
+                dt_login = df_aderencia["dt_login_calc"]
+                dt_baixa = df_aderencia["dt_baixa_1os"]
                 
                 df_aderencia["x_date"] = dt_login.dt.strftime("%d/%m")
                 df_aderencia["y_login_frac"] = dt_login.dt.hour + dt_login.dt.minute / 60.0
@@ -4930,8 +4870,8 @@ if st.session_state.get("tela_atual") == "governanca":
             .copy()
         )
 
-        # 1. Cria a coluna de ordenação cronológica real com o parser robusto
-        df_auditoria["Data_Sort"] = df_auditoria["data_inicio"].apply(parse_data_br_gov)
+        # 1. Cria a coluna de ordenação cronológica com Pandas Nativo
+        df_auditoria["Data_Sort"] = pd.to_datetime(df_auditoria["data_inicio"], dayfirst=True, errors="coerce")
         
         # 2. Para exibição, garante o formato visual BR estrito (DD/MM/YYYY)
         df_auditoria["data_inicio"] = df_auditoria["Data_Sort"].dt.strftime("%d/%m/%Y").fillna("N/D")
