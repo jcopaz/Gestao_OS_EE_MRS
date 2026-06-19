@@ -4181,99 +4181,15 @@ if st.session_state.get("tela_atual") == "governanca":
         st.markdown("---")
         st.markdown("#### 📍 Tabela de Auditoria de Apontamentos (GPS)")
 
-        # Mapa de exibição:
-        # username/matrícula -> Nome (matrícula)
-        # Mantém concluido_por/equipe originais preservados no df_gov_f.
-        try:
-            conn = get_connection()
-            df_users_auditoria = pd.read_sql_query(
-                "SELECT username, nome FROM usuarios",
-                conn
-            )
-        finally:
-            release_connection(conn)
-
-        if not df_users_auditoria.empty:
-            df_users_auditoria["username_key"] = (
-                df_users_auditoria["username"]
-                .astype(str)
-                .str.strip()
-            )
-
-            df_users_auditoria["nome_clean"] = (
-                df_users_auditoria["nome"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-            )
-
-            mapa_nome_usuario_auditoria = dict(
-                zip(
-                    df_users_auditoria["username_key"],
-                    df_users_auditoria["nome_clean"]
-                )
-            )
-        else:
-            mapa_nome_usuario_auditoria = {}
-
-        def label_apontador_principal(valor):
-            matricula = str(valor).strip()
-
-            if not matricula or matricula.lower() in ("nan", "none", "null"):
-                return "Não informado"
-
-            nome = str(mapa_nome_usuario_auditoria.get(matricula, "")).strip()
-
-            if nome:
-                return f"{nome} ({matricula})"
-
-            return matricula
-
-        def label_equipe_coexecutantes(valor):
-            texto = str(valor).strip()
-
-            if not texto or texto.lower() in ("nan", "none", "null", "sozinho"):
-                return "Sozinho"
-
-            partes = [
-                p.strip()
-                for p in texto.split(",")
-                if p.strip()
-            ]
-
-            nomes_formatados = []
-
-            for item in partes:
-                nome = str(mapa_nome_usuario_auditoria.get(item, "")).strip()
-
-                if nome:
-                    nomes_formatados.append(f"{nome} ({item})")
-                else:
-                    nomes_formatados.append(item)
-
-            return ", ".join(nomes_formatados) if nomes_formatados else "Sozinho"
-
-        df_auditoria_base = df_gov_f.copy()
-
-        df_auditoria_base["Apontador Principal"] = (
-            df_auditoria_base["concluido_por"]
-            .apply(label_apontador_principal)
-        )
-
-        df_auditoria_base["Co-Executantes"] = (
-            df_auditoria_base["equipe"]
-            .apply(label_equipe_coexecutantes)
-        )
-
         df_auditoria = (
-            df_auditoria_base[
+            df_gov_f[
                 [
                     "Ordem servico",
-                    "Apontador Principal",
+                    "concluido_por",
                     "data_inicio",
                     "hora_fim",
                     "geolocalizacao_baixa",
-                    "Co-Executantes",
+                    "equipe",
                     "Tempo_Minutos"
                 ]
             ]
@@ -4284,9 +4200,11 @@ if st.session_state.get("tela_atual") == "governanca":
             )
             .rename(columns={
                 "Ordem servico": "OS",
+                "concluido_por": "Apontador Principal",
                 "data_inicio": "Data",
                 "hora_fim": "Hora Apontada",
                 "geolocalizacao_baixa": "Localização do Celular",
+                "equipe": "Co-Executantes",
                 "Tempo_Minutos": "Tempo Gasto (min)"
             })
         )
@@ -4309,12 +4227,16 @@ if st.session_state.get("tela_atual") == "governanca":
             return "color: #065F46;"
 
         st.dataframe(
-            df_auditoria
-            .style
-            .map(estilo_gps, subset=["Localização do Celular"]),
+            df_auditoria.style.map(
+                estilo_gps,
+                subset=["Localização do Celular"]
+            ),
             use_container_width=True,
-            height=400,
+            height=300,
             hide_index=True
         )
 #endregion 11.7
+    fragmento_governanca()
+    st.stop()
+#endregion
 #endregion
