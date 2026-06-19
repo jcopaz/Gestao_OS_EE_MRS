@@ -1201,444 +1201,248 @@ def render_tela_admin():
             st.download_button("⬇️ Baixar Arquivo SAP", data=st.session_state["sap_massa_bytes"], file_name=st.session_state["sap_massa_nome"], mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     #endregion 3.8.4
 
-#region 3.8.5: Importação de Baixas em Massa (IW47)
-    st.markdown("---")
-    st.subheader("📥 Importação de Baixas em Massa (IW47)")
+# region 3.8.5: Importação de Baixas em Massa (IW47)
+st.markdown("---")
+st.subheader("📥 Importação de Baixas em Massa (IW47)")
 
-    st.info("""
-    💡 **Padrão Exigido para a Planilha IW47:**
-    A planilha exportada do SAP deve conter os seguintes cabeçalhos:
-    * **Ordem**
-    * **Nº pessoal**, **Matrícula** ou **Nome do empregado**
-    * **Data real do fim de execução**
-    * **Hora real do fim de execução**
-    * **Data de início de execução real**
-    * **Hora de início de execução real**
-    * **Centro trab.(real)**, **Centro de Trabalho** ou equivalente
-    """)
+coord_baixa = st.selectbox("Coordenação", ["Paranapiacaba", "Piaçaguera"])
+arquivo_iw47 = st.file_uploader("Selecione a planilha IW47", type=["xlsx", "csv"])
 
-    coord_baixa = st.selectbox(
-        "Coordenação (fallback caso a planilha não informe)",
-        ["Paranapiacaba", "Piaçaguera"],
-        key="coord_baixa_iw47"
-    )
+def _normalizar_nome_coluna(col):
+    return re.sub(r"\s+", " ", str(col)).strip().upper()
 
-    arquivo_iw47 = st.file_uploader(
-        "Selecione a planilha IW47 exportada do SAP",
-        type=["xlsx", "csv"],
-        key="upload_iw47"
-    )
+def _pick_coluna(df, candidatos):
+    mapa = {_normalizar_nome_coluna(c): c for c in df.columns}
+    for candidato in candidatos:
+        chave = _normalizar_nome_coluna(candidato)
+        if chave in mapa:
+            return mapa[chave]
+    return None
 
-    if arquivo_iw47 and st.button("🚀 Processar Baixas em Massa", type="primary", key="btn_proc_iw47"):
-        with st.spinner("Processando baixas da IW47..."):
-            try:
-                if arquivo_iw47.name.lower().endswith(".csv"):
-                    df_iw = pd.read_csv(
-                        arquivo_iw47,
-                        sep=None,
-                        engine="python",
-                        encoding="utf-8-sig",
-                        dtype=object
-                    )
-                else:
-                    df_iw = pd.read_excel(arquivo_iw47, engine="openpyxl", dtype=object)
+def _formatar_data_iw47(valor):
+    if pd.isna(valor) or str(valor).strip() == "":
+        return ""
 
-                df_iw.columns = [
-                    str(c).strip().replace("\n", " ").replace("\r", " ")
-                    for c in df_iw.columns
-                ]
+    if isinstance(valor, (int, float)) and not isinstance(valor, bool):
+        try:
+            if 20000 <= float(valor) <= 60000:
+                dt = pd.Timestamp("1899-12-30") + pd.to_timedelta(float(valor), unit="D")
+                return dt.strftime("%d/%m/%Y")
+        except Exception:
+            pass
 
-                if df_iw.empty:
-                    st.warning("⚠️ A planilha IW47 está vazia.")
-                    st.stop()
+    dt = pd.to_datetime(valor, dayfirst=True, errors="coerce")
+    if pd.isna(dt):
+        return ""
 
-                def _norm_col_txt(valor):
-                    import unicodedata
+    return dt.strftime("%d/%m/%Y")
 
-                    texto = str(valor).strip().upper()
-                    texto = unicodedata.normalize("NFKD", texto)
-                    texto = "".join(ch for ch in texto if not unicodedata.combining(ch))
-                    texto = re.sub(r"\s+", " ", texto)
-                    return texto
+def _formatar_hora_iw47(valor):
+    if pd.isna(valor) or str(valor).strip() == "":
+        return "00:00:00"
 
-                def find_col(df, candidatos):
-                    mapa_cols = {col: _norm_col_txt(col) for col in df.columns}
-                    candidatos_norm = [_norm_col_txt(c) for c in candidatos]
+    if hasattr(valor, "hour") and hasattr(valor, "minute"):
+        return f"{int(valor.hour):02d}:{int(valor.minute):02d}:{int(getattr(valor, 'second', 0)):02d}"
 
-                    for candidato in candidatos_norm:
-                        for col, col_norm in mapa_cols.items():
-                            if candidato in col_norm:
-                                return col
+    texto = str(valor).strip().replace(",", ".")
 
-                    return None
+    if ":" in texto:
+        try:
+            partes = texto.split(":")
+            hora = int(float(partes[0])) % 24
+            minuto = int(float(partes[1])) if len(partes) > 1 else 0
+            segundo = int(float(partes[2])) if len(partes) > 2 else 0
+            return f"{hora:02d}:{minuto:02d}:{segundo:02d}"
+        except Exception:
+            return "00:00:00"
 
-                col_os = find_col(df_iw, [
-                    "Ordem",
-                    "Ordem servico",
-                    "Ordem serviço",
-                    "OS"
-                ])
+    try:
+        numero = float(texto)
 
-                col_mat = find_col(df_iw, [
-                    "Nº pessoal",
-                    "N° pessoal",
-                    "No pessoal",
-                    "Numero pessoal",
-                    "Número pessoal",
-                    "Matricula",
-                    "Matrícula",
-                    "Nome do empregado",
-                    "Nome",
-                    "Tecnico",
-                    "Técnico"
-                ])
+        if 0 <= numero < 1:
+            total_segundos = int(round(numero * 86400)) % 86400
+            return f"{total_segundos // 3600:02d}:{(total_segundos % 3600) // 60:02d}:{total_segundos % 60:02d}"
 
-                col_nome = find_col(df_iw, [
-                    "Nome do empregado",
-                    "Nome empregado",
-                    "Nome"
-                ])
+        if 1 <= numero < 24:
+            total_segundos = int(round(numero * 3600)) % 86400
+            return f"{total_segundos // 3600:02d}:{(total_segundos % 3600) // 60:02d}:{total_segundos % 60:02d}"
 
-                col_dt_ini = find_col(df_iw, [
-                    "Data de início de execução real",
-                    "Data de inicio de execucao real",
-                    "Data real de início",
-                    "Data real do inicio",
-                    "Data inicio"
-                ])
+    except Exception:
+        pass
 
-                col_hr_ini = find_col(df_iw, [
-                    "Hora de início de execução real",
-                    "Hora de inicio de execucao real",
-                    "Hora real de início",
-                    "Hora real do inicio",
-                    "Hora inicio"
-                ])
+    dt = pd.to_datetime(valor, errors="coerce")
+    if pd.notna(dt):
+        return dt.strftime("%H:%M:%S")
 
-                col_dt_fim = find_col(df_iw, [
-                    "Data real do fim de execução",
-                    "Data real do fim de execucao",
-                    "Data fim",
-                    "Data final"
-                ])
+    return "00:00:00"
 
-                col_hr_fim = find_col(df_iw, [
-                    "Hora real do fim de execução",
-                    "Hora real do fim de execucao",
-                    "Hora fim",
-                    "Hora final"
-                ])
+def _montar_datetime_iw47(data_valor, hora_valor):
+    data_txt = _formatar_data_iw47(data_valor)
+    hora_txt = _formatar_hora_iw47(hora_valor)
 
-                col_centro = find_col(df_iw, [
-                    "Centro trab.(real)",
-                    "Centro trab",
-                    "Centro de Trabalho",
-                    "Centro trabalho",
-                    "Centro",
-                    "Coordenação",
-                    "Coordenacao",
-                    "Local"
-                ])
+    if not data_txt or hora_txt == "00:00:00":
+        return pd.NaT
 
-                faltantes = []
-                if not col_os:
-                    faltantes.append("Ordem")
-                if not col_dt_fim:
-                    faltantes.append("Data real do fim de execução")
-                if not col_hr_fim:
-                    faltantes.append("Hora real do fim de execução")
+    return pd.to_datetime(f"{data_txt} {hora_txt}", dayfirst=True, errors="coerce")
 
-                if faltantes:
-                    st.error(
-                        "❌ Colunas obrigatórias não encontradas na IW47: "
-                        + ", ".join(faltantes)
-                    )
-                    st.stop()
+def _trabalho_real_minutos(valor):
+    if pd.isna(valor) or str(valor).strip() == "":
+        return None
 
-                def formatar_data(val):
-                    if pd.isna(val) or str(val).strip() == "":
-                        return ""
+    texto = str(valor).strip().replace(",", ".")
 
-                    try:
-                        dt = pd.to_datetime(val, dayfirst=True, errors="coerce")
-                        if pd.isna(dt):
-                            return ""
-                        return dt.strftime("%d/%m/%Y")
-                    except Exception:
-                        return ""
+    try:
+        return float(texto)
+    except Exception:
+        return None
 
-                def formatar_hora(val):
-                    if pd.isna(val) or str(val).strip() == "":
-                        return "00:00:00"
+def _coord_por_centro_trabalho(valor, coord_fallback):
+    centro = re.sub(r"\s+", " ", str(valor)).strip().upper()
 
-                    if hasattr(val, "hour") and hasattr(val, "minute"):
-                        return (
-                            f"{int(val.hour):02d}:"
-                            f"{int(val.minute):02d}:"
-                            f"{int(getattr(val, 'second', 0)):02d}"
+    if "IPG" in centro or "PIACAGUERA" in centro or "PIAÇAGUERA" in centro:
+        return "Piaçaguera"
+
+    if "IPA" in centro or "PARANAPIACABA" in centro:
+        return "Paranapiacaba"
+
+    return coord_fallback
+
+if arquivo_iw47 and st.button("🚀 Processar Baixas em Massa", type="primary"):
+    with st.spinner("Processando..."):
+        try:
+            if arquivo_iw47.name.lower().endswith(".csv"):
+                df_iw = pd.read_csv(
+                    arquivo_iw47,
+                    sep=None,
+                    engine="python",
+                    encoding="utf-8-sig",
+                    dtype=object
+                )
+            else:
+                df_iw = pd.read_excel(arquivo_iw47, engine="openpyxl", dtype=object)
+
+            df_iw.columns = [str(c).strip() for c in df_iw.columns]
+
+            col_matricula = _pick_coluna(df_iw, ["Matrícula", "Nº pessoal", "N° pessoal", "No pessoal"])
+            col_nome = _pick_coluna(df_iw, ["Nome do empregado", "Nome"])
+            col_ordem = _pick_coluna(df_iw, ["Ordem", "Ordem servico", "Ordem serviço"])
+            col_dt_ini = _pick_coluna(df_iw, ["Data real de início da execução", "Data de início de execução real"])
+            col_hr_ini = _pick_coluna(df_iw, ["Hora real do início da execução", "Hora de início de execução real"])
+            col_dt_fim = _pick_coluna(df_iw, ["Data real do fim de execução", "Data real de fim da execução"])
+            col_hr_fim = _pick_coluna(df_iw, ["Hora real do fim de execução", "Hora real de fim da execução"])
+            col_trabalho = _pick_coluna(df_iw, ["Trabalho real", "Trab. real"])
+            col_centro = _pick_coluna(df_iw, ["Centro de Trabalho", "Centro trab.(real)", "Centro trab."])
+
+            obrigatorias = {
+                "Matrícula": col_matricula,
+                "Nome do empregado": col_nome,
+                "Ordem": col_ordem,
+                "Data inicial": col_dt_ini,
+                "Hora inicial": col_hr_ini,
+                "Data final": col_dt_fim,
+                "Hora final": col_hr_fim,
+                "Centro de Trabalho": col_centro,
+            }
+
+            faltantes = [nome for nome, coluna in obrigatorias.items() if coluna is None]
+            if faltantes:
+                st.error(f"❌ Colunas obrigatórias não encontradas: {', '.join(faltantes)}")
+                st.stop()
+
+            df_iw["_os"] = df_iw[col_ordem].astype(str).str.strip()
+            df_iw = df_iw[df_iw["_os"].ne("") & df_iw["_os"].str.lower().ne("nan")].copy()
+
+            registros_baixa = []
+            alertas = []
+
+            for os_id, grp in df_iw.groupby("_os", sort=False):
+                f = grp.iloc[0].copy()
+
+                dt_ini = _montar_datetime_iw47(f[col_dt_ini], f[col_hr_ini])
+                dt_fim = _montar_datetime_iw47(f[col_dt_fim], f[col_hr_fim])
+                trabalho_min = _trabalho_real_minutos(f[col_trabalho]) if col_trabalho else None
+
+                if pd.isna(dt_ini) or pd.isna(dt_fim):
+                    alertas.append(f"OS {os_id}: data/hora inválida. Registro ignorado.")
+                    continue
+
+                duracao_min = (dt_fim - dt_ini).total_seconds() / 60.0
+
+                if duracao_min <= 0 or duracao_min > 14 * 60:
+                    if trabalho_min is not None and 0 < trabalho_min <= 14 * 60:
+                        dt_fim = dt_ini + timedelta(minutes=float(trabalho_min))
+                        alertas.append(
+                            f"OS {os_id}: duração incoerente ajustada pelo Trabalho real ({trabalho_min:.0f} min)."
                         )
-
-                    if isinstance(val, pd.Timedelta):
-                        total = int(round(val.total_seconds())) % 86400
-                        return f"{total // 3600:02d}:{(total % 3600) // 60:02d}:{total % 60:02d}"
-
-                    val_str = str(val).strip().replace(",", ".")
-
-                    if ":" in val_str:
-                        try:
-                            partes = val_str.split(":")
-                            hora = int(float(partes[0]))
-                            minuto = int(float(partes[1])) if len(partes) > 1 else 0
-                            segundo = int(float(partes[2])) if len(partes) > 2 else 0
-                            return f"{hora % 24:02d}:{minuto:02d}:{segundo:02d}"
-                        except Exception:
-                            return "00:00:00"
-
-                    try:
-                        numero = float(val_str)
-
-                        # Fração de dia do Excel: 0.5 = 12:00:00
-                        if 0 <= numero < 1:
-                            total = int(round(numero * 86400)) % 86400
-                            return f"{total // 3600:02d}:{(total % 3600) // 60:02d}:{total % 60:02d}"
-
-                        # Algumas bases podem trazer hora decimal: 9.5 = 09:30:00
-                        if 1 <= numero < 24:
-                            total = int(round(numero * 3600)) % 86400
-                            return f"{total // 3600:02d}:{(total % 3600) // 60:02d}:{total % 60:02d}"
-                    except Exception:
-                        pass
-
-                    try:
-                        dt = pd.to_datetime(val, errors="coerce")
-                        if pd.notna(dt):
-                            return dt.strftime("%H:%M:%S")
-                    except Exception:
-                        pass
-
-                    return "00:00:00"
-
-                def inferir_coord(valor):
-                    texto = _norm_col_txt(valor)
-                    if "IPG" in texto or "PIACAGUERA" in texto or "PIACAGUERA" in texto:
-                        return "Piaçaguera"
-                    if "IPA" in texto or "PARANAPIACABA" in texto:
-                        return "Paranapiacaba"
-                    return coord_baixa
-
-                def montar_executor(row):
-                    if col_mat and str(row.get(col_mat, "")).strip() not in ("", "nan", "NaN", "None"):
-                        return str(row.get(col_mat)).strip()
-
-                    if col_nome and str(row.get(col_nome, "")).strip() not in ("", "nan", "NaN", "None"):
-                        return str(row.get(col_nome)).strip()
-
-                    return ""
-
-                def combinar_data_hora(data_str, hora_str):
-                    if not data_str:
-                        return pd.NaT
-                    return pd.to_datetime(
-                        f"{data_str} {hora_str}",
-                        dayfirst=True,
-                        errors="coerce"
-                    )
-
-                df_iw["_os"] = df_iw[col_os].astype(str).str.strip()
-                df_iw = df_iw[
-                    df_iw["_os"].notna()
-                    & (df_iw["_os"] != "")
-                    & (df_iw["_os"].str.lower() != "nan")
-                ].copy()
-
-                if df_iw.empty:
-                    st.warning("⚠️ Nenhuma OS válida encontrada na planilha.")
-                    st.stop()
-
-                df_iw["_executor"] = df_iw.apply(montar_executor, axis=1)
-                df_iw["_dt_ini"] = df_iw[col_dt_ini].apply(formatar_data) if col_dt_ini else ""
-                df_iw["_hr_ini"] = df_iw[col_hr_ini].apply(formatar_hora) if col_hr_ini else "00:00:00"
-                df_iw["_dt_fim"] = df_iw[col_dt_fim].apply(formatar_data)
-                df_iw["_hr_fim"] = df_iw[col_hr_fim].apply(formatar_hora)
-                df_iw["_coord"] = df_iw[col_centro].apply(inferir_coord) if col_centro else coord_baixa
-
-                df_iw["_dt_ini_calc"] = df_iw.apply(
-                    lambda r: combinar_data_hora(r["_dt_ini"], r["_hr_ini"]),
-                    axis=1
-                )
-                df_iw["_dt_fim_calc"] = df_iw.apply(
-                    lambda r: combinar_data_hora(r["_dt_fim"], r["_hr_fim"]),
-                    axis=1
-                )
-
-                qtd_hora_ini_zero = int((df_iw["_hr_ini"] == "00:00:00").sum())
-                qtd_hora_fim_zero = int((df_iw["_hr_fim"] == "00:00:00").sum())
-
-                if qtd_hora_fim_zero == len(df_iw):
-                    st.error(
-                        "❌ Todas as horas de fim foram interpretadas como 00:00:00. "
-                        "Importação bloqueada para evitar baixa incorreta."
-                    )
-                    st.stop()
-
-                registros_baixa = []
-
-                for os_id, grp in df_iw.groupby("_os", sort=False):
-                    grp = grp.copy()
-
-                    grp_fim_valido = grp.dropna(subset=["_dt_fim_calc"])
-                    if not grp_fim_valido.empty:
-                        linha_ref = grp_fim_valido.sort_values("_dt_fim_calc").iloc[-1]
                     else:
-                        linha_ref = grp.iloc[0]
-
-                    grp_ini_valido = grp.dropna(subset=["_dt_ini_calc"])
-                    if not grp_ini_valido.empty:
-                        linha_ini = grp_ini_valido.sort_values("_dt_ini_calc").iloc[0]
-                    else:
-                        linha_ini = linha_ref
-
-                    executores = [
-                        str(x).strip()
-                        for x in grp["_executor"].dropna().tolist()
-                        if str(x).strip() not in ("", "nan", "NaN", "None")
-                    ]
-                    executores = list(dict.fromkeys(executores))
-
-                    concluido_por = executores[0] if executores else ""
-                    equipe = ", ".join(executores[1:]) if len(executores) > 1 else "Sozinho"
-
-                    data_inicio = linha_ini["_dt_ini"] or linha_ref["_dt_fim"]
-                    hora_inicio = linha_ini["_hr_ini"] or "00:00:00"
-                    data_fim = linha_ref["_dt_fim"]
-                    hora_fim = linha_ref["_hr_fim"]
-
-                    if not data_fim:
+                        alertas.append(
+                            f"OS {os_id}: duração incoerente sem Trabalho real válido. Registro ignorado."
+                        )
                         continue
 
-                    registros_baixa.append({
-                        "os": str(os_id).strip(),
-                        "concluido_por": concluido_por,
-                        "equipe": equipe,
-                        "realizado_em": f"{data_fim} {hora_fim[:5]}",
-                        "coordenacao": linha_ref["_coord"],
-                        "data_inicio": data_inicio,
-                        "hora_inicio": hora_inicio,
-                        "data_fim": data_fim,
-                        "hora_fim": hora_fim
-                    })
-
-                if not registros_baixa:
-                    st.warning("⚠️ Nenhum registro válido para gravar após o tratamento da IW47.")
-                    st.stop()
-
-                conn = get_connection()
-                try:
-                    df_prog = pd.read_sql_query(
-                        """
-                        SELECT
-                            os,
-                            dados_completos->>'Data inicial programada' AS dt_prog
-                        FROM os_programadas
-                        """,
-                        conn
-                    )
-                finally:
-                    release_connection(conn)
-
-                mapa_dt_prog = {}
-                if not df_prog.empty:
-                    for _, row_prog in df_prog.iterrows():
-                        os_prog = str(row_prog["os"]).strip()
-                        dt_prog = pd.to_datetime(
-                            row_prog["dt_prog"],
-                            dayfirst=True,
-                            errors="coerce"
-                        )
-                        mapa_dt_prog[os_prog] = dt_prog
-
-                lote_valores = []
-
-                for r in registros_baixa:
-                    dt_prog = mapa_dt_prog.get(r["os"], pd.NaT)
-                    dt_exec = pd.to_datetime(
-                        r["data_fim"],
-                        format="%d/%m/%Y",
-                        errors="coerce"
-                    )
-
-                    if pd.notna(dt_prog) and pd.notna(dt_exec) and dt_exec.date() > dt_prog.date():
-                        status = "Realizado Fora da Data de Programação"
-                    else:
-                        status = "Realizado"
-
-                    lote_valores.append((
-                        r["os"],
-                        status,
-                        r["realizado_em"],
-                        r["coordenacao"],
-                        r["concluido_por"],
-                        "Baixa IW47",
-                        r["equipe"],
-                        r["data_inicio"],
-                        r["hora_inicio"],
-                        r["data_fim"],
-                        r["hora_fim"]
-                    ))
-
-                conn = get_connection()
-                try:
-                    cur = conn.cursor()
-                    execute_values(
-                        cur,
-                        """
-                        INSERT INTO baixas (
-                            os,
-                            status,
-                            realizado_em,
-                            coordenacao,
-                            concluido_por,
-                            geolocalizacao_baixa,
-                            equipe,
-                            data_inicio,
-                            hora_inicio,
-                            data_fim,
-                            hora_fim
-                        )
-                        VALUES %s
-                        ON CONFLICT (os) DO UPDATE SET
-                            status = EXCLUDED.status,
-                            realizado_em = EXCLUDED.realizado_em,
-                            coordenacao = EXCLUDED.coordenacao,
-                            concluido_por = EXCLUDED.concluido_por,
-                            geolocalizacao_baixa = EXCLUDED.geolocalizacao_baixa,
-                            equipe = EXCLUDED.equipe,
-                            data_inicio = EXCLUDED.data_inicio,
-                            hora_inicio = EXCLUDED.hora_inicio,
-                            data_fim = EXCLUDED.data_fim,
-                            hora_fim = EXCLUDED.hora_fim
-                        """,
-                        lote_valores,
-                        page_size=500
-                    )
-                    conn.commit()
-                    cur.close()
-                finally:
-                    release_connection(conn)
-
-                st.success(
-                    f"✅ {len(lote_valores)} OS importadas/atualizadas com sucesso. "
-                    f"Horas início zeradas: {qtd_hora_ini_zero}. "
-                    f"Horas fim zeradas: {qtd_hora_fim_zero}."
+                execs = (
+                    grp[[col_matricula, col_nome]]
+                    .dropna(subset=[col_matricula])
+                    .drop_duplicates(subset=[col_matricula])
+                    .copy()
                 )
 
-                st.cache_data.clear()
-                time.sleep(1)
-                st.rerun()
+                if execs.empty:
+                    alertas.append(f"OS {os_id}: sem matrícula válida. Registro ignorado.")
+                    continue
 
-            except Exception as e:
-                st.error(f"❌ Erro ao processar a planilha IW47: {e}")
-#endregion 3.8.5
+                matriculas = execs[col_matricula].astype(str).str.strip().tolist()
+                concluido_por = matriculas[0]
+                equipe = ", ".join(matriculas[1:]) if len(matriculas) > 1 else "Sozinho"
+
+                coord_final = _coord_por_centro_trabalho(f[col_centro], coord_baixa)
+
+                registros_baixa.append({
+                    "os": str(os_id).strip(),
+                    "status": "Realizado",
+                    "realizado_em": dt_fim.strftime("%d/%m/%Y %H:%M"),
+                    "coordenacao": coord_final,
+                    "concluido_por": concluido_por,
+                    "geolocalizacao_baixa": "Importação IW47",
+                    "equipe": equipe,
+                    "data_inicio": dt_ini.strftime("%d/%m/%Y"),
+                    "hora_inicio": dt_ini.strftime("%H:%M:%S"),
+                    "data_fim": dt_fim.strftime("%d/%m/%Y"),
+                    "hora_fim": dt_fim.strftime("%H:%M:%S"),
+                })
+
+            if not registros_baixa:
+                st.warning("⚠️ Nenhum registro válido encontrado para importação.")
+                st.stop()
+
+            for reg in registros_baixa:
+                upsert_baixa(
+                    reg["os"],
+                    reg["status"],
+                    reg["realizado_em"],
+                    reg["coordenacao"],
+                    reg["concluido_por"],
+                    reg["geolocalizacao_baixa"],
+                    reg["equipe"],
+                    reg["data_inicio"],
+                    reg["hora_inicio"],
+                    reg["data_fim"],
+                    reg["hora_fim"],
+                )
+
+            if alertas:
+                st.warning(f"⚠️ Importação concluída com {len(alertas)} alerta(s).")
+                with st.expander("Ver alertas da importação IW47"):
+                    for alerta in alertas[:200]:
+                        st.write(f"- {alerta}")
+
+            st.success(f"✅ {len(registros_baixa)} baixa(s) importada(s) com sucesso.")
+            st.cache_data.clear()
+            st.rerun()
+
+        except Exception as e:
+            st.error(f"❌ Erro ao importar IW47: {e}")
+# endregion 3.8.5
 #endregion
 #endregion 3.8
 
