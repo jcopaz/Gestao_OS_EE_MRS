@@ -4191,88 +4191,22 @@ if st.session_state.get("tela_atual") == "governanca":
                 return diff + (24 * 60) if diff < 0 else diff
             except: return 0.0
 
-        
-        df_gov["Tempo_Minutos"] = df_gov.apply(calc_duracao, axis=1)
-
+        # --- PARSER UNIVERSAL BR DE DATAS ---
         def parse_data_br_gov(valor):
-            """
-            Parser único da Governança.
-            Garante padrão brasileiro DD/MM/AAAA e evita inversão 01/05 -> 05/01.
-            """
-            if pd.isna(valor):
-                return pd.NaT
+            if pd.isna(valor): return pd.NaT
+            if isinstance(valor, (pd.Timestamp, datetime)): return pd.to_datetime(valor, errors="coerce")
+            texto = str(valor).split(" ")[0].strip().replace(".", "/").replace("-", "/")
+            dt = pd.to_datetime(texto, format="%d/%m/%Y", errors="coerce")
+            if pd.notna(dt): return dt
+            return pd.to_datetime(texto, dayfirst=True, errors="coerce")
 
-            texto = str(valor).strip()
-
-            if not texto or texto.lower() in ("nan", "none", "null"):
-                return pd.NaT
-
-            # Se vier com hora junto, mantém só a data.
-            texto = texto.split(" ")[0].strip()
-
-            # Normaliza separadores comuns.
-            texto = texto.replace(".", "/").replace("-", "/")
-
-            # Primeiro tenta o formato brasileiro explícito.
-            dt = pd.to_datetime(
-                texto,
-                format="%d/%m/%Y",
-                errors="coerce"
-            )
-
-            if pd.notna(dt):
-                return dt
-
-            # Fallback com dayfirst=True para variações não previstas.
-            return pd.to_datetime(
-                texto,
-                dayfirst=True,
-                errors="coerce"
-            )
-
-        df_gov["Data_Real_DT"] = df_gov["data_inicio"].apply(parse_data_br_gov)
-        df_gov["Data_Real"] = df_gov["Data_Real_DT"].dt.date
-
-        df_gov["Via_GPS"] = df_gov["geolocalizacao_baixa"].apply(
-            lambda x: 0 if "Base" in str(x) or "Sede" in str(x) else 1
-        )
-
+        df_gov["Tempo_Minutos"] = df_gov.apply(calc_duracao, axis=1)
+        
+        # CORREÇÃO APLICADA AQUI
+        df_gov["Data_Real"] = df_gov["data_inicio"].apply(parse_data_br_gov).dt.date
+        
+        df_gov["Via_GPS"] = df_gov["geolocalizacao_baixa"].apply(lambda x: 0 if "Base" in str(x) or "Sede" in str(x) else 1)
         df_gov["Alta_Prioridade"] = df_gov["Criticidade_rank"].apply(lambda x: 1 if x in [1, 2] else 0)
-    try:
-        conn = get_connection()
-        df_users_gov = pd.read_sql_query(
-            "SELECT username, nome FROM usuarios",
-            conn
-        )
-    finally:
-        release_connection(conn)
-
-    if not df_users_gov.empty:
-        df_users_gov["username_key"] = df_users_gov["username"].astype(str).str.strip()
-        df_users_gov["nome_clean"] = df_users_gov["nome"].fillna("").astype(str).str.strip()
-
-        mapa_nome_usuario_gov = dict(
-            zip(df_users_gov["username_key"], df_users_gov["nome_clean"])
-        )
-    else:
-        mapa_nome_usuario_gov = {}
-
-    def label_colaborador_gov(valor):
-        matricula = str(valor).strip()
-
-        if not matricula or matricula.lower() in ("nan", "none", "null"):
-            return "Não informado"
-
-        nome = str(mapa_nome_usuario_gov.get(matricula, "")).strip()
-
-        if nome:
-            return f"{nome} ({matricula})"
-
-        # Fallback: se já vier nome pela IW47 ou se não existir no cadastro.
-        return matricula
-
-    df_gov["Colaborador"] = df_gov["concluido_por"].apply(label_colaborador_gov)
-
 #endregion 11.2
 
 #region 11.3: Fragmento de Governança (@st.fragment)
@@ -4501,6 +4435,7 @@ if st.session_state.get("tela_atual") == "governanca":
         # -----------------------------
         df_plan_base = df_os_base.copy()
 
+        # CORREÇÃO APLICADA: Uso do parser BR para evitar inversão nas datas programadas
         df_plan_base["Data_Prog_DT"] = (
             df_plan_base["Data inicial programada"]
             .apply(parse_data_br_gov)
@@ -4818,68 +4753,53 @@ if st.session_state.get("tela_atual") == "governanca":
 #endregion 11.5
 
 #region 11.6: Aderência, Top Técnicos e Variabilidade
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("---")
+        st.markdown("<br>", unsafe_allow_html=True); st.markdown("---")
         col_l3_c1, col_l3_c2, col_l3_c3 = st.columns(3, gap="medium")
 
         with col_l3_c1:
             st.markdown("#### 🕒 Aderência: Login vs. Apontamento")
-
-            # IMPORTANTE:
-            # Não use "df_logs = df_logs.copy()" dentro do fragmento.
-            # Isso cria uma variável local e quebra o acesso ao df_logs carregado na Sessão 11.2.
-            df_logs_local = df_logs.copy()
-
-            df_logs_local["Data_Real_Pure"] = pd.to_datetime(
-                df_logs_local["data_hora_login"],
-                errors="coerce"
-            ).dt.date
-
-            df_gov_f["dt_baixa_calc"] = pd.to_datetime(
-                df_gov_f["data_fim"].astype(str).str.strip()
-                + " "
-                + df_gov_f["hora_fim"].astype(str).str.strip(),
-                format="%d/%m/%Y %H:%M:%S",
-                errors="coerce"
-            )
-
-            df_primeira_baixa = (
-                df_gov_f
-                .groupby(["concluido_por", "Data_Real"])["dt_baixa_calc"]
-                .min()
-                .reset_index(name="dt_baixa_1os")
-            )
-
-            df_aderencia = df_logs_local.merge(
-                df_primeira_baixa,
-                left_on=["username", "Data_Real_Pure"],
-                right_on=["concluido_por", "Data_Real"]
-            )
+            
+            # CORREÇÃO APLICADA: dayfirst=True explícito
+            df_logs["Data_Real_Pure"] = pd.to_datetime(df_logs["data_hora_login"], dayfirst=True, errors="coerce").dt.date
+            df_gov_f["dt_baixa_calc"] = pd.to_datetime(df_gov_f["data_fim"] + " " + df_gov_f["hora_fim"], dayfirst=True, errors="coerce")
+            
+            df_primeira_baixa = df_gov_f.groupby(["concluido_por", "Data_Real"])["dt_baixa_calc"].min().reset_index(name="dt_baixa_1os")
+            df_aderencia = df_logs.merge(df_primeira_baixa, left_on=["username", "Data_Real_Pure"], right_on=["concluido_por", "Data_Real"])
 
             if not df_aderencia.empty:
-                df_aderencia["x_date"] = pd.to_datetime(
-                    df_aderencia["data_hora_login"],
-                    errors="coerce"
-                ).dt.strftime("%d/%m")
-
-                dt_login = pd.to_datetime(
-                    df_aderencia["data_hora_login"],
-                    errors="coerce"
-                )
-
-                dt_baixa = pd.to_datetime(
-                    df_aderencia["dt_baixa_1os"],
-                    errors="coerce"
-                )
-
+                # CORREÇÃO APLICADA: dayfirst=True
+                df_aderencia["x_date"] = pd.to_datetime(df_aderencia["data_hora_login"], dayfirst=True, errors="coerce").dt.strftime("%d/%m")
+                dt_login, dt_baixa = pd.to_datetime(df_aderencia["data_hora_login"], dayfirst=True, errors="coerce"), pd.to_datetime(df_aderencia["dt_baixa_1os"], errors="coerce")
+                
                 df_aderencia["y_login_frac"] = dt_login.dt.hour + dt_login.dt.minute / 60.0
                 df_aderencia["y_baixa_frac"] = dt_baixa.dt.hour + dt_baixa.dt.minute / 60.0
+                
+                df_aderencia = df_aderencia.dropna(subset=["y_login_frac", "y_baixa_frac"]).sort_values("Data_Real_Pure")
+                
+                if not df_aderencia.empty:
+                    df_aderencia["x_date"] = pd.to_datetime(
+                        df_aderencia["data_hora_login"],
+                        errors="coerce"
+                    ).dt.strftime("%d/%m")
 
-                df_aderencia = (
-                    df_aderencia
-                    .dropna(subset=["y_login_frac", "y_baixa_frac", "x_date"])
-                    .sort_values("Data_Real_Pure")
-                )
+                    dt_login = pd.to_datetime(
+                        df_aderencia["data_hora_login"],
+                        errors="coerce"
+                    )
+
+                    dt_baixa = pd.to_datetime(
+                        df_aderencia["dt_baixa_1os"],
+                        errors="coerce"
+                    )
+
+                    df_aderencia["y_login_frac"] = dt_login.dt.hour + dt_login.dt.minute / 60.0
+                    df_aderencia["y_baixa_frac"] = dt_baixa.dt.hour + dt_baixa.dt.minute / 60.0
+
+                    df_aderencia = (
+                        df_aderencia
+                        .dropna(subset=["y_login_frac", "y_baixa_frac", "x_date"])
+                        .sort_values("Data_Real_Pure")
+                    )
 
                 if not df_aderencia.empty:
                     login_data = [
@@ -5183,23 +5103,17 @@ if st.session_state.get("tela_atual") == "governanca":
             .apply(label_equipe_coexecutantes)
         )
 
+        df_auditoria = df_auditoria_base[[
+            "Ordem servico", "Apontador Principal", "data_inicio", 
+            "hora_fim", "geolocalizacao_baixa", "Co-Executantes", "Tempo_Minutos"
+        ]].copy()
+        
+        # CORREÇÃO APLICADA: Ordenação cronológica real em vez de alfabética
+        df_auditoria["Data_Sort"] = pd.to_datetime(df_auditoria["data_inicio"], dayfirst=True, errors="coerce")
+
         df_auditoria = (
-            df_auditoria_base[
-                [
-                    "Ordem servico",
-                    "Apontador Principal",
-                    "data_inicio",
-                    "hora_fim",
-                    "geolocalizacao_baixa",
-                    "Co-Executantes",
-                    "Tempo_Minutos"
-                ]
-            ]
-            .copy()
-            .sort_values(
-                by=["data_inicio", "hora_fim"],
-                ascending=[False, False]
-            )
+            df_auditoria.sort_values(by=["Data_Sort", "hora_fim"], ascending=[False, False])
+            .drop(columns=["Data_Sort"])
             .rename(columns={
                 "Ordem servico": "OS",
                 "data_inicio": "Data",
