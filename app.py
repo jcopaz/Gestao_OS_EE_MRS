@@ -77,7 +77,7 @@ if not st.session_state.get("logged_in", False):
 
     col_vazia1, col_centro, col_vazia2 = st.columns([1, 1, 1])
     with col_centro:
-        st.markdown("<h1 class='titulo-login'>Acesso Restrito</h1>", unsafe_allow_html=True)
+        st.markdown("<h1 class='titulo-login'>⚡SGO MRS</h1>", unsafe_allow_html=True)
 #endregion 1.2
 
 #region 1.3: Conexão com Banco de Dados e Constantes de Status
@@ -235,7 +235,7 @@ if "logged_in" not in st.session_state:
     st.session_state.update({"logged_in": False, "username": "", "perfil": "", "escopo": "", "governanca": "", "needs_reset": False, "validando_gps": False})
 
 if not st.session_state["logged_in"]:
-    st.markdown("<h3 style='text-align: center; color: #475569;'>Acesso Restrito</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align: center; color: #FFFFFF;'>Acesso Restrito</h3>", unsafe_allow_html=True)
     col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
     
     with col_l2:
