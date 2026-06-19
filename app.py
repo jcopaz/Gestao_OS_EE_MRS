@@ -36,7 +36,7 @@ if not st.session_state.get("logged_in", False):
         /* Imagem de Fundo (Altere o caminho abaixo para o seu arquivo) */
         .stApp {
             background: linear-gradient(rgba(15, 23, 42, 0.85), rgba(15, 23, 42, 0.85)), 
-                        url("fundo.png"); 
+                        url("https://www.google.com/images/branding/googlelogo/1x/googlelogo_color_272x92dp.png"); 
             background-size: cover;
             background-position: center;
         }
