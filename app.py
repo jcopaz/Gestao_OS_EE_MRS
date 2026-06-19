@@ -2040,20 +2040,123 @@ if _DEV_MODE:
 
 #region SESSÃO 7: Sidebar, Navegação, Carga e Filtro
 
+#region SESSÃO 7: Sidebar, Navegação, Carga e Filtro
+
 #region 7.1: Identidade visual, navegação e escopo
-# ... (mantenha o seu CSS e a navegação dos botões de Painel/Dados)
+st.markdown("""
+    <style>
+    /* 1. FORÇANDO O FUNDO DA SIDEBAR PARA DARK/PRETO */
+    [data-testid="stSidebar"], 
+    [data-testid="stSidebar"] > div:first-child,
+    [data-testid="stSidebarContent"] { 
+        background-color: #0F172A !important; 
+    }
+    
+    /* 2. TEXTOS DA SIDEBAR EM BRANCO/CINZA CLARO */
+    [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3, 
+    [data-testid="stSidebar"] h4, [data-testid="stSidebar"] h5, [data-testid="stSidebar"] h6,
+    [data-testid="stSidebar"] label, [data-testid="stSidebar"] p, [data-testid="stSidebar"] span,
+    [data-testid="stSidebar"] small, [data-testid="stSidebar"] caption { color: #F8FAFC !important; }
+    
+    /* 3. ESTILIZAÇÃO DOS WIDGETS DA SIDEBAR */
+    [data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child { display: none !important; }
+    [data-testid="stSidebar"] div[role="radiogroup"] > label {
+        padding: 10px 16px !important; background-color: transparent !important;
+        border-radius: 8px !important; margin-bottom: 6px !important;
+        transition: all 0.2s ease-in-out !important; cursor: pointer !important; color: #CBD5E1 !important;
+    }
+    [data-testid="stSidebar"] div[role="radiogroup"] > label:hover { background-color: rgba(255, 255, 255, 0.08) !important; color: #FFFFFF !important; }
+    [data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked) { background-color: rgba(255, 75, 75, 0.2) !important; border-left: 4px solid #FF4B4B !important; }
+    [data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked) p { font-weight: bold !important; color: #FFFFFF !important; }
+    [data-testid="stSidebar"] .stSelectbox label p, [data-testid="stSidebar"] .stMultiSelect label p, [data-testid="stSidebar"] .stDateInput label p {
+        font-size: 14px !important; font-weight: 700 !important; color: #F8FAFC !important; margin-bottom: 4px;
+    }
+    .stMultiSelect [data-baseweb="tag"] { background-color: #FF4B4B !important; color: white !important; border-radius: 6px !important; }
+    [data-testid="stSidebar"] div[data-baseweb="select"] > div, [data-testid="stSidebar"] div[data-baseweb="input"] > div, [data-testid="stSidebar"] div[data-baseweb="base-input"] > input {
+        background-color: #1E293B !important; border-color: #475569 !important; border-radius: 6px !important; color: white !important;
+    }
+    [data-testid="stSidebar"] div[data-baseweb="select"] span, [data-testid="stSidebar"] div[data-baseweb="input"] input { color: white !important; }
+    
+    /* 4. EXPANDERS (Painel Retrátil na Sidebar) */
+    [data-testid="stSidebar"] [data-testid="stExpander"] details { border: 1px solid #FF4B4B !important; border-radius: 8px !important; overflow: hidden; }
+    [data-testid="stSidebar"] [data-testid="stExpander"] summary { background-color: #FF4B4B !important; }
+    [data-testid="stSidebar"] [data-testid="stExpander"] summary p { color: #FFFFFF !important; font-weight: 800 !important; font-size: 16px !important; }
+    [data-testid="stSidebar"] [data-testid="stExpander"] svg { fill: #FFFFFF !important; }
+    [data-testid="stSidebar"] [data-testid="stExpander"] [data-testid="stExpanderDetails"] { background-color: #0F172A !important; padding-top: 15px !important; }
+    
+    /* ============================================================================== */
+    /* 5. BOTÕES EM GRADIENTE (GLOBAL PARA TODO O APLICATIVO) */
+    /* ============================================================================== */
+    
+    /* Botões Secundários (Gerais / Navegação) -> Gradiente Azul Profundo */
+    button[kind="secondary"] {
+        background: linear-gradient(135deg, #1E3A8A 0%, #3B82F6 100%) !important;
+        color: #FFFFFF !important;
+        border: none !important;
+        border-radius: 8px !important;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2) !important;
+        transition: all 0.3s ease !important;
+        font-weight: 600 !important;
+    }
+    button[kind="secondary"]:hover {
+        background: linear-gradient(135deg, #2563EB 0%, #60A5FA 100%) !important;
+        box-shadow: 0 6px 12px rgba(59, 130, 246, 0.4) !important;
+        transform: translateY(-2px) !important;
+        color: #FFFFFF !important;
+    }
+
+    /* Botões Primários (Ações Fortes / Aplicar / Salvar) -> Gradiente Rubi/Vermelho */
+    button[kind="primary"] {
+        background: linear-gradient(135deg, #991B1B 0%, #EF4444 100%) !important;
+        color: #FFFFFF !important;
+        border: none !important;
+        border-radius: 8px !important;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2) !important;
+        transition: all 0.3s ease !important;
+        font-weight: 700 !important;
+    }
+    button[kind="primary"]:hover {
+        background: linear-gradient(135deg, #DC2626 0%, #F87171 100%) !important;
+        box-shadow: 0 6px 12px rgba(239, 68, 68, 0.4) !important;
+        transform: translateY(-2px) !important;
+        color: #FFFFFF !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+st.sidebar.image("logo_mrs.png", use_container_width=True)
+st.sidebar.markdown("<br>", unsafe_allow_html=True)
+
+st.sidebar.markdown("### 🧭 Navegação")
+if "tela_atual" not in st.session_state: st.session_state["tela_atual"] = "dashboard"
+
+gov_usuario = st.session_state.get("governanca", "")
+tem_painel = "Painel Gerencial" in gov_usuario or "Mapa de Campo" in gov_usuario
+tem_dados = "Upload de Dados" in gov_usuario
+tem_governanca = "Gestão de Usuários" in gov_usuario or "Governança" in gov_usuario
+
+if tem_painel and tem_dados:
+    col_nav1, col_nav2 = st.sidebar.columns(2)
+    with col_nav1:
+        if st.button("📊 Painel", use_container_width=True): st.session_state["tela_atual"] = "dashboard"; st.rerun()
+    with col_nav2:
+        if st.button("⚙️ Dados", use_container_width=True): st.session_state["tela_atual"] = "admin"; st.rerun()
+elif tem_painel:
+    if st.sidebar.button("📊 Painel", use_container_width=True): st.session_state["tela_atual"] = "dashboard"; st.rerun()
+elif tem_dados:
+    if st.sidebar.button("⚙️ Dados", use_container_width=True): st.session_state["tela_atual"] = "admin"; st.rerun()
+
+if tem_governanca:
+    if st.sidebar.button("🛡️ Governança (Auditoria)", use_container_width=True): st.session_state["tela_atual"] = "governanca"; st.rerun()
 
 if st.session_state.get("tela_atual") == "admin":
     render_tela_admin()
     st.stop()
 
-# --- CORREÇÃO AQUI: BLINDAGEM DO PERFIL TÉCNICO ---
+# --- BLINDAGEM DO PERFIL TÉCNICO ---
 is_tecnico = st.session_state.get("perfil") == "Técnico"
 
-# Garantindo a declaração da variável antes do uso
-gov_usuario = st.session_state.get("governanca", "")
-
-#Só exibe o menu de visão gerencial se tiver a governança E NÃO for Técnico
+# Só exibe o menu de visão gerencial se tiver a governança E NÃO for Técnico
 if "Painel Gerencial" in gov_usuario and not is_tecnico:
     visao_selecionada = st.sidebar.radio(
         "Selecione a Visão:", 
@@ -2064,7 +2167,6 @@ if "Painel Gerencial" in gov_usuario and not is_tecnico:
     filtro_visao = "Todas" if visao_selecionada == "Gerência" else visao_selecionada
 else:
     filtro_visao = st.session_state.get("escopo", "Todas")
-    # Para deixar a tela do técnico 100% limpa, só mostra esse aviso se não for técnico
     if not is_tecnico:
         st.sidebar.info(f"Visão Restrita: {filtro_visao}")
 #endregion 7.1
