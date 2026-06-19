@@ -1537,6 +1537,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 #endregion 3.12
 
 #region 3.13: Gerador Offline - Lógica JS de Sincronização e Fechamento
+    # Lógica de Sincronização com tratamento de erros (UX Limpa)
     js_sync = f"""
     async function sincronizarFila() {{
         const apiUrl = API_URL_FIXA;
@@ -1593,9 +1594,22 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                     body: formData
                 }});
 
+                // --- ATUALIZAÇÃO UX: Tratamento de Erros Limpo ---
                 if (!resp.ok) {{
-                    const textoErro = await resp.text();
-                    throw new Error(`HTTP ${{resp.status}}: ${{textoErro || "Falha na API"}}`);
+                    let msgErro = "Falha na comunicação com o servidor.";
+                    try {{
+                        const errJson = await resp.json();
+                        // Se a API mandar o erro dentro de 'detail', extrai só o texto
+                        if (errJson.detail) {{
+                            msgErro = errJson.detail;
+                        }} else {{
+                            msgErro = JSON.stringify(errJson);
+                        }}
+                    }} catch (parseErr) {{
+                        // Se não for JSON, pega o texto puro ou o código do erro
+                        msgErro = await resp.text() || `Erro no servidor (Código ${{resp.status}})`;
+                    }}
+                    throw new Error(msgErro);
                 }}
 
                 await new Promise((resolve, reject) => {{
@@ -1612,7 +1626,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             }} catch (e) {{
                 console.error("Falha na sincronização da OS", item.os_id, e);
                 falha += 1;
-                detalhesFalha.push(`OS ${{item.os_id}}: ${{e.message || e}}`);
+                // e.message agora contém apenas o texto limpo, sem "HTTP 403"
+                detalhesFalha.push(`OS ${{item.os_id}}: ${{e.message || "Erro desconhecido"}}`);
             }}
         }}
 
@@ -1621,7 +1636,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         if (falha === 0) {{
             setSyncMsg(`Sincronização concluída com sucesso. ${{sucesso}} OS enviada(s).`, "blue");
         }} else {{
-            const detalhe = detalhesFalha.length ? ` Primeira falha: ${{detalhesFalha[0]}}` : "";
+            const detalhe = detalhesFalha.length ? ` Motivo: ${{detalhesFalha[0]}}` : "";
             setSyncMsg(`Sincronização parcial. ${{sucesso}} enviada(s) e ${{falha}} falha(s).${{detalhe}}`, "yellow");
         }}
     }}
@@ -1653,125 +1668,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 </html>
 """
 
-    html_final = html_head + html_body + js_core + js_lote + js_sync
-    return html_final.encode("utf-8")
-#endregion 3.13
-    js_sync = f"""
-<script>
-    async function sincronizarFila() {{
-        const apiUrl = API_URL_FIXA;
-        const apiKey = API_KEY_FIXA;
-
-        if (!apiUrl) {{
-            alert("URL da API offline não configurada no pacote.");
-            return;
-        }}
-        if (!apiKey) {{
-            alert("API Key offline não configurada no pacote.");
-            return;
-        }}
-        if (!navigator.onLine) {{
-            alert("Sem internet. Conecte-se antes de sincronizar.");
-            return;
-        }}
-
-        const registros = await new Promise((resolve, reject) => {{
-            const req = txStore("readonly").getAll();
-            req.onsuccess = () => resolve(req.result || []);
-            req.onerror = () => reject(req.error);
-        }});
-
-        const pendentes = registros.filter((r) => r.status_sync === "pendente");
-        if (!pendentes.length) {{
-            setSyncMsg("Nenhuma OS pendente para sincronizar.", "yellow");
-            return;
-        }}
-
-        let sucesso = 0;
-        let falha = 0;
-        const detalhesFalha = [];
-
-        for (const item of pendentes) {{
-            try {{
-                const formData = new FormData();
-                formData.append("os_id", item.os_id);
-                formData.append("ativo_id", item.ativo_id);
-                formData.append("usuario", item.usuario);
-                formData.append("lat_browser", String(item.lat_browser || 0.0));
-                formData.append("lon_browser", String(item.lon_browser || 0.0));
-                formData.append("data_hora_local", item.data_hora_local);
-                formData.append("acompanhante", item.acompanhante || "");
-                formData.append("horario_inicio", item.horario_inicio);
-                formData.append("horario_fim", item.horario_fim);
-                formData.append("foto", item.foto_blob, `${{item.ativo_id}}_${{item.os_id}}.jpg`);
-
-                const resp = await fetch(apiUrl, {{
-                    method: "POST",
-                    headers: {{
-                        "x-api-key": apiKey
-                    }},
-                    body: formData
-                }});
-
-                if (!resp.ok) {{
-                    const textoErro = await resp.text();
-                    throw new Error(`HTTP ${{resp.status}}: ${{textoErro || "Falha na API"}}`);
-                }}
-
-                await new Promise((resolve, reject) => {{
-                    const reqUpdate = txStore("readwrite").put({{
-                        ...item,
-                        status_sync: "sincronizado",
-                        sincronizado_em: new Date().toISOString()
-                    }});
-                    reqUpdate.onsuccess = () => resolve(true);
-                    reqUpdate.onerror = () => reject(reqUpdate.error);
-                }});
-
-                sucesso += 1;
-            }} catch (e) {{
-                console.error("Falha na sincronização da OS", item.os_id, e);
-                falha += 1;
-                detalhesFalha.push(`OS ${{item.os_id}}: ${{e.message || e}}`);
-            }}
-        }}
-
-        await atualizarFila();
-
-        if (falha === 0) {{
-            setSyncMsg(`Sincronização concluída com sucesso. ${{sucesso}} OS enviada(s).`, "blue");
-        }} else {{
-            const detalhe = detalhesFalha.length ? ` Primeira falha: ${{detalhesFalha[0]}}` : "";
-            setSyncMsg(`Sincronização parcial. ${{sucesso}} enviada(s) e ${{falha}} falha(s).${{detalhe}}`, "yellow");
-        }}
-    }}
-
-    async function bootstrap() {{
-        await abrirDB();
-        setStatusOnline();
-        popularEquipe();
-        popularListaAtivos();
-        renderListaOS();
-        await atualizarFila();
-
-        window.addEventListener("online", setStatusOnline);
-        window.addEventListener("offline", setStatusOnline);
-
-        document.getElementById("filtroAtivo").addEventListener("input", renderListaOS);
-        document.getElementById("btnCapturarGps").addEventListener("click", capturarGPS);
-        document.getElementById("btnSalvarLote").addEventListener("click", salvarSelecionadasNoLote);
-        document.getElementById("btnSync").addEventListener("click", sincronizarFila);
-        document.getElementById("btnClear").addEventListener("click", limparFila);
-    }}
-
-    bootstrap().catch((err) => {{
-        console.error(err);
-        alert("Falha ao inicializar o pacote offline.");
-    }});
-</script>
-</body>
-</html>
-"""
     html_final = html_head + html_body + js_core + js_lote + js_sync
     return html_final.encode("utf-8")
 #endregion 3.13
@@ -2145,79 +2041,32 @@ if _DEV_MODE:
 #region SESSÃO 7: Sidebar, Navegação, Carga e Filtro
 
 #region 7.1: Identidade visual, navegação e escopo
-st.markdown("""
-    <style>
-    [data-testid="stSidebar"] { background-color: #1A202C !important; }
-    [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3, 
-    [data-testid="stSidebar"] h4, [data-testid="stSidebar"] h5, [data-testid="stSidebar"] h6,
-    [data-testid="stSidebar"] label, [data-testid="stSidebar"] p, [data-testid="stSidebar"] span,
-    [data-testid="stSidebar"] small, [data-testid="stSidebar"] caption { color: #F1F5F9 !important; }
-    [data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child { display: none !important; }
-    [data-testid="stSidebar"] div[role="radiogroup"] > label {
-        padding: 10px 16px !important; background-color: transparent !important;
-        border-radius: 8px !important; margin-bottom: 6px !important;
-        transition: all 0.2s ease-in-out !important; cursor: pointer !important; color: #CBD5E1 !important;
-    }
-    [data-testid="stSidebar"] div[role="radiogroup"] > label:hover { background-color: rgba(255, 255, 255, 0.08) !important; color: #FFFFFF !important; }
-    [data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked) { background-color: rgba(255, 75, 75, 0.2) !important; border-left: 4px solid #FF4B4B !important; }
-    [data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked) p { font-weight: bold !important; color: #FFFFFF !important; }
-    [data-testid="stSidebar"] .stSelectbox label p, [data-testid="stSidebar"] .stMultiSelect label p, [data-testid="stSidebar"] .stDateInput label p {
-        font-size: 16px !important; font-weight: 700 !important; color: #F8FAFC !important; margin-bottom: 4px;
-    }
-    .stMultiSelect [data-baseweb="tag"] { background-color: #FF4B4B !important; color: white !important; border-radius: 6px !important; }
-    [data-testid="stSidebar"] div[data-baseweb="select"] > div, [data-testid="stSidebar"] div[data-baseweb="input"] > div, [data-testid="stSidebar"] div[data-baseweb="base-input"] > input {
-        background-color: #333D4E !important; border-color: #475569 !important; border-radius: 6px !important; color: white !important;
-    }
-    [data-testid="stSidebar"] div[data-baseweb="select"] span, [data-testid="stSidebar"] div[data-baseweb="input"] input { color: white !important; }
-    [data-testid="stSidebar"] [data-testid="stExpander"] details { border: 1px solid #FF4B4B !important; border-radius: 8px !important; overflow: hidden; }
-    [data-testid="stSidebar"] [data-testid="stExpander"] summary { background-color: #FF4B4B !important; }
-    [data-testid="stSidebar"] [data-testid="stExpander"] summary p { color: #FFFFFF !important; font-weight: 800 !important; font-size: 16px !important; }
-    [data-testid="stSidebar"] [data-testid="stExpander"] svg { fill: #FFFFFF !important; }
-    [data-testid="stSidebar"] [data-testid="stExpander"] [data-testid="stExpanderDetails"] { background-color: #1A202C !important; padding-top: 15px !important; }
-    [data-testid="stSidebar"] button { background-color: #333D4E !important; color: #FFFFFF !important; border: 1px solid #475569 !important; border-radius: 6px !important; transition: all 0.2s ease-in-out; }
-    [data-testid="stSidebar"] button:hover { background-color: #475569 !important; border-color: #cbd5e1 !important; color: #FFFFFF !important; }
-    [data-testid="stMetricValue"] { font-size: 28px !important; }
-    button[data-baseweb="tab"][aria-selected="true"] { background-color: rgba(255, 75, 75, 0.15) !important; border-radius: 6px 6px 0px 0px !important; }
-    button[data-baseweb="tab"][aria-selected="true"] p { font-weight: bold !important; }
-    button[data-baseweb="tab"]:hover { background-color: rgba(255, 75, 75, 0.05) !important; border-radius: 6px 6px 0px 0px !important; }
-    </style>
-""", unsafe_allow_html=True)
-
-st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.markdown("<br>", unsafe_allow_html=True)
-
-st.sidebar.markdown("### 🧭 Navegação")
-if "tela_atual" not in st.session_state: st.session_state["tela_atual"] = "dashboard"
-
-gov_usuario = st.session_state.get("governanca", "")
-tem_painel = "Painel Gerencial" in gov_usuario or "Mapa de Campo" in gov_usuario
-tem_dados = "Upload de Dados" in gov_usuario
-tem_governanca = "Gestão de Usuários" in gov_usuario or "Governança" in gov_usuario
-
-if tem_painel and tem_dados:
-    col_nav1, col_nav2 = st.sidebar.columns(2)
-    with col_nav1:
-        if st.button("📊 Painel", use_container_width=True): st.session_state["tela_atual"] = "dashboard"; st.rerun()
-    with col_nav2:
-        if st.button("⚙️ Dados", use_container_width=True): st.session_state["tela_atual"] = "admin"; st.rerun()
-elif tem_painel:
-    if st.sidebar.button("📊 Painel", use_container_width=True): st.session_state["tela_atual"] = "dashboard"; st.rerun()
-elif tem_dados:
-    if st.sidebar.button("⚙️ Dados", use_container_width=True): st.session_state["tela_atual"] = "admin"; st.rerun()
-
-if tem_governanca:
-    if st.sidebar.button("🛡️ Governança (Auditoria)", use_container_width=True): st.session_state["tela_atual"] = "governanca"; st.rerun()
+# ... (mantenha o seu CSS e a navegação dos botões de Painel/Dados)
 
 if st.session_state.get("tela_atual") == "admin":
     render_tela_admin()
     st.stop()
 
-if "Painel Gerencial" in gov_usuario:
-    visao_selecionada = st.sidebar.radio("Selecione a Visão:", ["Gerência", "Paranapiacaba", "Piaçaguera"], label_visibility="collapsed", key="radio_visao_gerencial")
+# --- CORREÇÃO AQUI: BLINDAGEM DO PERFIL TÉCNICO ---
+is_tecnico = st.session_state.get("perfil") == "Técnico"
+
+# Garantindo a declaração da variável antes do uso
+gov_usuario = st.session_state.get("governanca", "")
+
+#Só exibe o menu de visão gerencial se tiver a governança E NÃO for Técnico
+if "Painel Gerencial" in gov_usuario and not is_tecnico:
+    visao_selecionada = st.sidebar.radio(
+        "Selecione a Visão:", 
+        ["Gerência", "Paranapiacaba", "Piaçaguera"], 
+        label_visibility="collapsed", 
+        key="radio_visao_gerencial"
+    )
     filtro_visao = "Todas" if visao_selecionada == "Gerência" else visao_selecionada
 else:
     filtro_visao = st.session_state.get("escopo", "Todas")
-    st.sidebar.info(f"Visão Restrita: {filtro_visao}")
+    # Para deixar a tela do técnico 100% limpa, só mostra esse aviso se não for técnico
+    if not is_tecnico:
+        st.sidebar.info(f"Visão Restrita: {filtro_visao}")
 #endregion 7.1
 
 #region 7.2: Carregamento da Base Operacional
