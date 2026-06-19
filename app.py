@@ -4272,10 +4272,56 @@ if st.session_state.get("tela_atual") == "governanca":
             & (df_gov["Data_Real"] >= d_inicio)
             & (df_gov["Data_Real"] <= d_fim)
         ].copy()
-        if df_gov_f.empty: 
+        
+#region 11.3.1: Helper de Eixo Temporal da Governança
+        # Este bloco precisa ficar ANTES da Sessão 11.4.
+        # Ele cria as variáveis usadas pelos 3 gráficos acumulados da Governança.
+        data_ini_gov = pd.to_datetime(d_inicio).normalize()
+        data_fim_gov = pd.to_datetime(d_fim).normalize()
+
+        idx_gov = pd.date_range(
+            start=data_ini_gov,
+            end=data_fim_gov,
+            freq="D"
+        )
+
+        def serie_time_gov(serie):
+            """
+            Converte uma Series indexada por data em pares [YYYY-MM-DD, valor],
+            formato correto para ECharts com xAxis type='time'.
+            """
+            return [
+                [idx.strftime("%Y-%m-%d"), int(valor)]
+                for idx, valor in serie.items()
+            ]
+
+        eixo_time_gov = {
+            "type": "time",
+            "min": data_ini_gov.strftime("%Y-%m-%d"),
+            "max": data_fim_gov.strftime("%Y-%m-%d"),
+            "axisLabel": {
+                "formatter": JsCode(
+                    """
+                    function(value) {
+                        const d = new Date(value);
+                        const dia = String(d.getDate()).padStart(2, '0');
+                        const mes = String(d.getMonth() + 1).padStart(2, '0');
+                        return dia + '/' + mes;
+                    }
+                    """
+                )
+            }
+        }
+
+        chave_periodo_gov = (
+            f"{data_ini_gov.strftime('%Y%m%d')}_"
+            f"{data_fim_gov.strftime('%Y%m%d')}"
+        )
+        #endregion 11.3.1
+
+        if df_gov_f.empty:
             st.info("Nenhuma execução encontrada para os filtros selecionados.")
             return
-
         total_os_gov = len(df_gov_f)
         tme_minutos = df_gov_f["Tempo_Minutos"].fillna(0).mean() 
         taxa_gps = (df_gov_f["Via_GPS"].sum() / total_os_gov) * 100 if total_os_gov > 0 else 0
@@ -4292,21 +4338,6 @@ if st.session_state.get("tela_atual") == "governanca":
 #region 11.4: Volume Diário e Produtividade Acumulada
         col_l1_c1, col_l1_c2 = st.columns(2, gap="large")
 
-        # Datas do filtro da própria Governança.
-        # Importante: aqui o eixo dos gráficos fica travado exatamente
-        # no período selecionado em "📅 Período de Execução".
-        data_ini_gov = pd.to_datetime(d_inicio).normalize()
-        data_fim_gov = pd.to_datetime(d_fim).normalize()
-
-        # Índice diário canônico do gráfico.
-        # Nunca usar min/max das bases para montar o eixo, pois isso estica
-        # o gráfico para datas fora do filtro.
-        idx_gov = pd.date_range(
-            start=data_ini_gov,
-            end=data_fim_gov,
-            freq="D"
-        )
-
         # -----------------------------
         # REALIZADO DIÁRIO
         # -----------------------------
@@ -4322,12 +4353,12 @@ if st.session_state.get("tela_atual") == "governanca":
             & (df_real_base["Data_Real_DT"] <= data_fim_gov)
         ].copy()
 
-        df_real_dia = (
+        real_diario_gov = (
             df_real_base
             .groupby("Data_Real_DT")
             .size()
-            .rename("Realizado")
             .reindex(idx_gov, fill_value=0)
+            .rename("Realizado")
         )
 
         # -----------------------------
@@ -4335,43 +4366,28 @@ if st.session_state.get("tela_atual") == "governanca":
         # -----------------------------
         df_plan_base = df_os_base.copy()
 
-        df_plan_base["Data_Prog_Pure"] = pd.to_datetime(
+        df_plan_base["Data_Prog_DT"] = pd.to_datetime(
             df_plan_base["Data inicial programada"],
             errors="coerce"
         ).dt.normalize()
 
-        # Aplica o mesmo filtro de pátio da Governança, quando disponível.
-        # Não aplicamos filtro de colaborador no planejado porque OS planejada
-        # não pertence naturalmente a um apontador antes da execução.
-        if "patio_selecionado" in locals() and "Patio" in df_plan_base.columns:
+        if "Patio" in df_plan_base.columns and "patio_selecionado" in locals():
             df_plan_base = df_plan_base[
                 df_plan_base["Patio"].isin(patio_selecionado)
             ].copy()
 
         df_plan_base = df_plan_base[
-            (df_plan_base["Data_Prog_Pure"] >= data_ini_gov)
-            & (df_plan_base["Data_Prog_Pure"] <= data_fim_gov)
+            (df_plan_base["Data_Prog_DT"] >= data_ini_gov)
+            & (df_plan_base["Data_Prog_DT"] <= data_fim_gov)
         ].copy()
 
-        df_plan_dia = (
+        plan_diario_gov = (
             df_plan_base
-            .groupby("Data_Prog_Pure")
+            .groupby("Data_Prog_DT")
             .size()
-            .rename("Planejado_Backlog")
             .reindex(idx_gov, fill_value=0)
+            .rename("Planejado_Backlog")
         )
-
-        # DataFrame final com eixo controlado pelo filtro.
-        df_merge_vol = pd.DataFrame({
-            "Data_Real": idx_gov,
-            "Realizado": df_real_dia.values,
-            "Planejado_Backlog": df_plan_dia.values,
-        })
-
-        eixo_x_l1 = [
-            d.strftime("%d/%m")
-            for d in df_merge_vol["Data_Real"]
-        ]
 
         with col_l1_c1:
             st.markdown("#### 📈 Volume Diário")
@@ -4404,7 +4420,8 @@ if st.session_state.get("tela_atual") == "governanca":
                             "xAxisIndex": [0],
                             "start": 0,
                             "end": 100,
-                            "bottom": "5%"
+                            "bottom": "5%",
+                            "filterMode": "none"
                         }
                     ],
                     "grid": {
@@ -4414,22 +4431,19 @@ if st.session_state.get("tela_atual") == "governanca":
                         "top": "15%",
                         "containLabel": True
                     },
-                    "xAxis": {
-                        "type": "category",
-                        "data": eixo_x_l1
-                    },
+                    "xAxis": eixo_time_gov,
                     "yAxis": {"type": "value"},
                     "series": [
                         {
                             "name": "Volume Diário",
                             "type": "bar",
-                            "data": df_merge_vol["Realizado"].tolist(),
+                            "data": serie_time_gov(real_diario_gov),
                             "itemStyle": {"color": "#3B82F6"}
                         },
                         {
                             "name": "Planejado + Backlog",
                             "type": "line",
-                            "data": df_merge_vol["Planejado_Backlog"].tolist(),
+                            "data": serie_time_gov(plan_diario_gov),
                             "smooth": True,
                             "lineStyle": {
                                 "type": "dashed",
@@ -4442,23 +4456,14 @@ if st.session_state.get("tela_atual") == "governanca":
                 },
                 height="350px",
                 theme="streamlit",
-                key="gov_vol_diario"
+                key=f"gov_vol_diario_{chave_periodo_gov}"
             )
 
         with col_l1_c2:
             st.markdown("#### 📈 Produtividade Acumulada")
 
-            df_merge_vol["Real_Acum"] = (
-                df_merge_vol["Realizado"]
-                .fillna(0)
-                .cumsum()
-            )
-
-            df_merge_vol["Plan_Acum"] = (
-                df_merge_vol["Planejado_Backlog"]
-                .fillna(0)
-                .cumsum()
-            )
+            real_acum_gov = real_diario_gov.cumsum()
+            plan_acum_gov = plan_diario_gov.cumsum()
 
             st_echarts(
                 options={
@@ -4488,7 +4493,8 @@ if st.session_state.get("tela_atual") == "governanca":
                             "xAxisIndex": [0],
                             "start": 0,
                             "end": 100,
-                            "bottom": "5%"
+                            "bottom": "5%",
+                            "filterMode": "none"
                         }
                     ],
                     "grid": {
@@ -4498,17 +4504,14 @@ if st.session_state.get("tela_atual") == "governanca":
                         "top": "15%",
                         "containLabel": True
                     },
-                    "xAxis": {
-                        "type": "category",
-                        "data": eixo_x_l1
-                    },
+                    "xAxis": eixo_time_gov,
                     "yAxis": {"type": "value"},
                     "series": [
                         {
                             "name": "Realizado Acumulado",
                             "type": "line",
                             "smooth": True,
-                            "data": df_merge_vol["Real_Acum"].tolist(),
+                            "data": serie_time_gov(real_acum_gov),
                             "areaStyle": {
                                 "color": "rgba(59,130,246,0.15)"
                             },
@@ -4524,7 +4527,7 @@ if st.session_state.get("tela_atual") == "governanca":
                             "name": "Planejado Acumulado",
                             "type": "line",
                             "smooth": True,
-                            "data": df_merge_vol["Plan_Acum"].tolist(),
+                            "data": serie_time_gov(plan_acum_gov),
                             "lineStyle": {
                                 "type": "dashed",
                                 "color": "#64748B",
@@ -4538,7 +4541,7 @@ if st.session_state.get("tela_atual") == "governanca":
                 },
                 height="350px",
                 theme="streamlit",
-                key="gov_prod_acum"
+                key=f"gov_prod_acum_{chave_periodo_gov}"
             )
 #endregion 11.4
 
