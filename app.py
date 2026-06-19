@@ -352,6 +352,70 @@ def pick_first_existing(df: pd.DataFrame, candidates: list[str]) -> str | None:
     for c in candidates:
         if c in df.columns: return c
     return None
+def normalizar_chave_os(valor) -> str:
+    """
+    Normaliza a chave de OS para merge entre base SAP e tabela baixas.
+    Resolve casos comuns:
+    - 123.0 -> 123
+    - 000123 -> 123
+    - espaços invisíveis / NBSP / quebras -> removidos
+    - valores numéricos vindos do Excel -> string estável
+    """
+    if pd.isna(valor):
+        return ""
+
+    s = str(valor)
+    s = s.replace("\u00a0", " ")
+    s = re.sub(r"\s+", "", s).strip()
+
+    if not s or s.lower() in ("nan", "none", "null"):
+        return ""
+
+    # Remove sufixo .0 típico do Pandas/Excel.
+    if re.fullmatch(r"\d+\.0+", s):
+        s = s.split(".")[0]
+
+    # Trata número em notação decimal simples, sem quebrar OS alfanumérica.
+    elif re.fullmatch(r"\d+\.\d+", s):
+        try:
+            f = float(s)
+            if f.is_integer():
+                s = str(int(f))
+        except Exception:
+            pass
+
+    # Remove zeros à esquerda somente quando a OS é puramente numérica.
+    if re.fullmatch(r"\d+", s):
+        s = s.lstrip("0") or "0"
+
+    return s.upper()
+
+
+def normalizar_matricula(valor) -> str:
+    """
+    Normaliza matrícula/username para cruzamento com usuarios.username.
+    """
+    if pd.isna(valor):
+        return ""
+
+    s = str(valor)
+    s = s.replace("\u00a0", " ")
+    s = re.sub(r"\s+", "", s).strip()
+
+    if not s or s.lower() in ("nan", "none", "null"):
+        return ""
+
+    if re.fullmatch(r"\d+\.0+", s):
+        s = s.split(".")[0]
+    elif re.fullmatch(r"\d+\.\d+", s):
+        try:
+            f = float(s)
+            if f.is_integer():
+                s = str(int(f))
+        except Exception:
+            pass
+
+    return s
 #endregion 3.1.1
 
 #region 3.1.2: Classificação de Atividades e Criticidade
@@ -490,17 +554,76 @@ def upsert_baixa(os_id: str, status: str, realizado_em_str: str, coordenacao: st
 
 def carregar_baixas_df() -> pd.DataFrame:
     conn = get_connection()
-    try: 
-        # CORREÇÃO: Adicionamos a foto_evidencia na leitura do Neon!
-        df = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, foto_evidencia FROM baixas", conn)
-    except Exception:
-        # Fallback caso a coluna ainda não exista em algum ambiente
-        df = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa FROM baixas", conn)
-    finally: 
+    try:
+        try:
+            df_baixas = pd.read_sql_query(
+                """
+                SELECT
+                    os,
+                    status,
+                    realizado_em,
+                    coordenacao,
+                    concluido_por,
+                    geolocalizacao_baixa,
+                    foto_evidencia
+                FROM baixas
+                """,
+                conn
+            )
+        except Exception:
+            df_baixas = pd.read_sql_query(
+                """
+                SELECT
+                    os,
+                    status,
+                    realizado_em,
+                    coordenacao,
+                    concluido_por,
+                    geolocalizacao_baixa
+                FROM baixas
+                """,
+                conn
+            )
+
+        # Tenta trazer nome do técnico sem acoplar a segurança à operação.
+        try:
+            df_users = pd.read_sql_query(
+                "SELECT username, nome FROM usuarios",
+                conn
+            )
+        except Exception:
+            df_users = pd.DataFrame()
+
+    finally:
         release_connection(conn)
-        
-    if not df.empty: df["os"] = df["os"].astype(str)
-    return df
+
+    if df_baixas.empty:
+        return df_baixas
+
+    df_baixas["os"] = df_baixas["os"].apply(normalizar_chave_os)
+    df_baixas["concluido_por"] = df_baixas["concluido_por"].apply(normalizar_matricula)
+
+    if not df_users.empty and "username" in df_users.columns and "nome" in df_users.columns:
+        df_users = df_users.copy()
+        df_users["username_key"] = df_users["username"].apply(normalizar_matricula)
+        df_users["nome"] = df_users["nome"].astype(str).str.strip()
+
+        df_baixas = df_baixas.merge(
+            df_users[["username_key", "nome"]],
+            left_on="concluido_por",
+            right_on="username_key",
+            how="left"
+        )
+
+        df_baixas["concluido_por"] = np.where(
+            df_baixas["nome"].notna() & (df_baixas["nome"].astype(str).str.strip() != ""),
+            df_baixas["nome"],
+            df_baixas["concluido_por"]
+        )
+
+        df_baixas.drop(columns=["username_key", "nome"], inplace=True, errors="ignore")
+
+    return df_baixas
 #endregion
 
 #region 3.3: Supabase Storage (Evidências Fotográficas com Compressão)
@@ -1079,83 +1202,331 @@ def render_tela_admin():
     #endregion 3.8.4
 
 #region 3.8.5: Importação de Baixas em Massa (IW47)
-    st.markdown("---"); st.subheader("📥 Importação de Baixas em Massa (IW47)")
-    
-    arquivo_iw47 = st.file_uploader("Selecione a planilha IW47 (.csv ou .xlsx)", type=["xlsx", "csv"], key="upload_iw47")
+    st.markdown("---")
+    st.subheader("📥 Importação de Baixas em Massa (IW47)")
+
+    coord_baixa = st.selectbox(
+        "Coordenação fallback",
+        ["Paranapiacaba", "Piaçaguera"],
+        key="coord_baixa_iw47"
+    )
+
+    arquivo_iw47 = st.file_uploader(
+        "Selecione a planilha IW47 (.csv ou .xlsx)",
+        type=["xlsx", "csv"],
+        key="upload_iw47"
+    )
+
+    def _limpar_texto_sap(valor) -> str:
+        if pd.isna(valor):
+            return ""
+        s = str(valor).replace("\u00a0", " ")
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+
+    def _norm_os(valor) -> str:
+        s = _limpar_texto_sap(valor)
+        if not s or s.lower() in ("nan", "none", "null"):
+            return ""
+
+        # Remove .0 típico do Excel/Pandas.
+        if re.fullmatch(r"\d+\.0+", s):
+            s = s.split(".")[0]
+
+        # Se vier algo como 123456.0 em outro formato numérico.
+        elif re.fullmatch(r"\d+\.\d+", s):
+            try:
+                f = float(s)
+                if f.is_integer():
+                    s = str(int(f))
+            except Exception:
+                pass
+
+        # Mantém apenas dígitos para OS SAP numérica.
+        s = re.sub(r"\D", "", s)
+
+        # Remove zeros à esquerda, mantendo "0" se for tudo zero.
+        if s:
+            s = s.lstrip("0") or "0"
+
+        return s
+
+    def _norm_matricula(valor) -> str:
+        s = _limpar_texto_sap(valor)
+        if not s or s.lower() in ("nan", "none", "null"):
+            return ""
+
+        if re.fullmatch(r"\d+\.0+", s):
+            s = s.split(".")[0]
+        elif re.fullmatch(r"\d+\.\d+", s):
+            try:
+                f = float(s)
+                if f.is_integer():
+                    s = str(int(f))
+            except Exception:
+                pass
+
+        # Matrícula SAP costuma ser numérica.
+        s_num = re.sub(r"\D", "", s)
+        return s_num if s_num else s
+
+    def _valor_float_sap(valor):
+        s = _limpar_texto_sap(valor)
+        if not s:
+            return None
+
+        s = s.replace(",", ".")
+
+        try:
+            return float(s)
+        except Exception:
+            return None
+
+    def _parse_data_sap(valor) -> str:
+        """
+        Aceita:
+        - serial Excel/SAP: 46143
+        - string: 19/06/2026
+        - string: 19.06.2026
+        - Timestamp já interpretável pelo Pandas
+        """
+        if pd.isna(valor) or str(valor).strip() == "":
+            return ""
+
+        num = _valor_float_sap(valor)
+
+        if num is not None and num > 20000:
+            try:
+                dt = pd.Timestamp("1899-12-30") + pd.to_timedelta(num, unit="D")
+                return dt.strftime("%d/%m/%Y")
+            except Exception:
+                pass
+
+        s = _limpar_texto_sap(valor).replace(".", "/")
+        dt = pd.to_datetime(s, dayfirst=True, errors="coerce")
+
+        if pd.isna(dt):
+            return ""
+
+        return dt.strftime("%d/%m/%Y")
+
+    def _parse_hora_sap(valor) -> str:
+        """
+        Aceita:
+        - fração Excel/SAP: 0.4027
+        - string: 09:40
+        - string: 09:40:00
+        """
+        if pd.isna(valor) or str(valor).strip() == "":
+            return "00:00:00"
+
+        num = _valor_float_sap(valor)
+
+        if num is not None:
+            try:
+                # Hora SAP/Excel como fração do dia.
+                if 0 <= num < 1:
+                    total_seg = int(round(num * 86400))
+                    hh = (total_seg // 3600) % 24
+                    mm = (total_seg % 3600) // 60
+                    ss = total_seg % 60
+                    return f"{hh:02d}:{mm:02d}:{ss:02d}"
+
+                # Caso venha como 940, 0940, 94000 etc. Mantém conservador.
+                s_num = str(int(num)).zfill(4)
+                if len(s_num) in (4, 6):
+                    hh = int(s_num[:2])
+                    mm = int(s_num[2:4])
+                    ss = int(s_num[4:6]) if len(s_num) == 6 else 0
+                    if 0 <= hh <= 23 and 0 <= mm <= 59 and 0 <= ss <= 59:
+                        return f"{hh:02d}:{mm:02d}:{ss:02d}"
+            except Exception:
+                pass
+
+        s = _limpar_texto_sap(valor)
+
+        try:
+            dt = pd.to_datetime(s, errors="coerce")
+            if pd.notna(dt):
+                return dt.strftime("%H:%M:%S")
+        except Exception:
+            pass
+
+        m = re.search(r"(\d{1,2}):(\d{2})(?::(\d{2}))?", s)
+        if m:
+            hh = int(m.group(1))
+            mm = int(m.group(2))
+            ss = int(m.group(3) or 0)
+            if 0 <= hh <= 23 and 0 <= mm <= 59 and 0 <= ss <= 59:
+                return f"{hh:02d}:{mm:02d}:{ss:02d}"
+
+        return "00:00:00"
+
+    def _normalizar_coord_sap(valor) -> str:
+        s = _limpar_texto_sap(valor).upper()
+
+        if "IPG" in s or "PIACAGUERA" in s or "PIAÇAGUERA" in s or "E.SP.IPG" in s:
+            return "Piaçaguera"
+
+        if "IPA" in s or "PARANAPIACABA" in s or "E.SP.IPA" in s:
+            return "Paranapiacaba"
+
+        return coord_baixa
 
     if arquivo_iw47 and st.button("🚀 Processar Baixas em Massa", type="primary"):
         with st.spinner("Processando..."):
             try:
-                # 1. Leitura Dinâmica
+                # 1. Leitura dinâmica
                 if arquivo_iw47.name.lower().endswith(".csv"):
-                    df_iw = pd.read_csv(arquivo_iw47, sep=";", encoding="utf-8-sig", dtype=str)
-                else: 
+                    df_iw = pd.read_csv(
+                        arquivo_iw47,
+                        sep=None,
+                        engine="python",
+                        encoding="utf-8-sig",
+                        dtype=str
+                    )
+                else:
                     df_iw = pd.read_excel(arquivo_iw47, dtype=str)
-                
-                df_iw.columns = [str(c).strip() for c in df_iw.columns]
 
-                # 2. Caçador de colunas (NÃO ALTERE OS NOMES AQUI, O CÓDIGO PROCURA POR PARTES DO NOME)
+                df_iw.columns = [_limpar_texto_sap(c) for c in df_iw.columns]
+                df_iw = df_iw.fillna("")
+
+                # 2. Caçador de colunas
                 def find_col(candidatos):
-                    for c in candidatos:
+                    for cand in candidatos:
+                        cand_norm = _limpar_texto_sap(cand).upper()
                         for df_c in df_iw.columns:
-                            if str(c).upper() in str(df_c).upper(): return df_c
+                            df_c_norm = _limpar_texto_sap(df_c).upper()
+                            if cand_norm in df_c_norm:
+                                return df_c
                     return None
 
                 c_os = find_col(["Ordem", "OS"])
-                c_mat = find_col(["Nº pessoal", "Matrícula", "Nome"])
-                c_dt_fim = find_col(["Data real do fim", "Data real de fim"])
-                c_hr_fim = find_col(["Hora real do fim", "Hora real de fim"])
-                c_centro = find_col(["Centro trab", "Centro"])
+                c_mat = find_col(["Nº pessoal", "N° pessoal", "No pessoal", "Matrícula", "Matricula"])
+                c_dt_ini = find_col(["Data real início", "Data real inicio", "Data real do início", "Data real do inicio"])
+                c_hr_ini = find_col(["Hora real início", "Hora real inicio", "Hora real do início", "Hora real do inicio"])
+                c_dt_fim = find_col(["Data real do fim", "Data real de fim", "Data fim real"])
+                c_hr_fim = find_col(["Hora real do fim", "Hora real de fim", "Hora fim real"])
+                c_centro = find_col(["Centro trab", "Centro de Trabalho", "Centro"])
 
-                # 3. Processamento Blindado
+                obrigatorias = {
+                    "OS / Ordem": c_os,
+                    "Nº pessoal / Matrícula": c_mat,
+                    "Data real do fim": c_dt_fim,
+                    "Hora real do fim": c_hr_fim,
+                }
+
+                faltantes = [nome for nome, col in obrigatorias.items() if not col]
+
+                if faltantes:
+                    st.error(f"❌ Colunas obrigatórias não encontradas na IW47: {', '.join(faltantes)}")
+                    st.caption(f"Colunas lidas: {', '.join(df_iw.columns)}")
+                    return
+
+                # 3. Mapa de usuários
                 conn = get_connection()
-                cur = conn.cursor()
-                cur.execute("SELECT username, nome FROM usuarios")
-                mapa_usuarios = {str(row[0]).strip(): str(row[1] if row[1] else row[0]).strip() for row in cur.fetchall()}
-                cur.close(); release_connection(conn)
+                try:
+                    cur = conn.cursor()
+                    cur.execute("SELECT username, nome FROM usuarios")
+                    mapa_usuarios = {
+                        _norm_matricula(row[0]): _limpar_texto_sap(row[1] if row[1] else row[0])
+                        for row in cur.fetchall()
+                    }
+                    cur.close()
+                finally:
+                    release_connection(conn)
 
-                registros_lote = []
+                # 4. Processamento + deduplicação em memória
+                registros_dict = {}
+
                 for _, row in df_iw.iterrows():
-                    # Extração segura com tratamento de nulos
-                    os_val = "".join(filter(str.isdigit, str(row[c_os]))) if pd.notna(row.get(c_os)) else ""
-                    if not os_val: continue
-                    
-                    # Converte data/hora serial do Excel (46143...)
-                    val_dt = float(row[c_dt_fim]) if pd.notna(row.get(c_dt_fim)) else 0
-                    val_hr = float(row[c_hr_fim]) if pd.notna(row.get(c_hr_fim)) else 0
-                    
-                    data_obj = pd.to_datetime('1899-12-30') + pd.to_timedelta(val_dt, unit='D')
-                    hora_obj = pd.to_timedelta(val_hr, unit='D')
-                    
-                    dt_str = data_obj.strftime("%d/%m/%Y")
-                    hr_str = f"{hora_obj.components.hours:02d}:{hora_obj.components.minutes:02d}:00"
-                    
-                    # Técnico
-                    mat_crua = "".join(filter(str.isdigit, str(row.get(c_mat, ""))))
-                    tecnico = mapa_usuarios.get(mat_crua, "SAP (Massa)")
-                    
-                    registros_lote.append((
-                        os_val, "Realizado", f"{dt_str} {hr_str}", str(row.get(c_centro, coord_baixa)), 
-                        tecnico, "Baixa SAP", "Sozinho", dt_str, "00:00:00", dt_str, hr_str
-                    ))
+                    os_val = _norm_os(row.get(c_os, ""))
 
-                # 4. Gravação
-                if registros_lote:
-                    conn = get_connection()
+                    if not os_val:
+                        continue
+
+                    dt_fim = _parse_data_sap(row.get(c_dt_fim, ""))
+                    hr_fim = _parse_hora_sap(row.get(c_hr_fim, ""))
+
+                    if not dt_fim:
+                        continue
+
+                    dt_ini = _parse_data_sap(row.get(c_dt_ini, "")) if c_dt_ini else dt_fim
+                    hr_ini = _parse_hora_sap(row.get(c_hr_ini, "")) if c_hr_ini else "00:00:00"
+
+                    mat_crua = _norm_matricula(row.get(c_mat, ""))
+                    tecnico = mapa_usuarios.get(mat_crua, mat_crua if mat_crua else "SAP (Massa)")
+
+                    coord = _normalizar_coord_sap(row.get(c_centro, "")) if c_centro else coord_baixa
+
+                    realizado_em = f"{dt_fim} {hr_fim[:5]}"
+
+                    # Última ocorrência da OS prevalece.
+                    registros_dict[os_val] = (
+                        os_val,
+                        "Realizado",
+                        realizado_em,
+                        coord,
+                        tecnico,
+                        "Baixa SAP",
+                        "Sozinho",
+                        dt_ini,
+                        hr_ini,
+                        dt_fim,
+                        hr_fim
+                    )
+
+                registros_lote = list(registros_dict.values())
+
+                if not registros_lote:
+                    st.warning("⚠️ Nenhum registro válido encontrado na IW47.")
+                    return
+
+                # 5. Gravação em lote
+                conn = get_connection()
+                try:
                     cur = conn.cursor()
                     execute_values(cur, """
-                        INSERT INTO baixas (os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim)
+                        INSERT INTO baixas (
+                            os,
+                            status,
+                            realizado_em,
+                            coordenacao,
+                            concluido_por,
+                            geolocalizacao_baixa,
+                            equipe,
+                            data_inicio,
+                            hora_inicio,
+                            data_fim,
+                            hora_fim
+                        )
                         VALUES %s
-                        ON CONFLICT (os) DO UPDATE SET 
-                        status = EXCLUDED.status, realizado_em = EXCLUDED.realizado_em, concluido_por = EXCLUDED.concluido_por,
-                        data_inicio = EXCLUDED.data_inicio, hora_inicio = EXCLUDED.hora_inicio, 
-                        data_fim = EXCLUDED.data_fim, hora_fim = EXCLUDED.hora_fim;
+                        ON CONFLICT (os) DO UPDATE SET
+                            status = EXCLUDED.status,
+                            realizado_em = EXCLUDED.realizado_em,
+                            coordenacao = EXCLUDED.coordenacao,
+                            concluido_por = EXCLUDED.concluido_por,
+                            geolocalizacao_baixa = EXCLUDED.geolocalizacao_baixa,
+                            equipe = EXCLUDED.equipe,
+                            data_inicio = EXCLUDED.data_inicio,
+                            hora_inicio = EXCLUDED.hora_inicio,
+                            data_fim = EXCLUDED.data_fim,
+                            hora_fim = EXCLUDED.hora_fim;
                     """, registros_lote, page_size=500)
-                    conn.commit(); cur.close(); release_connection(conn)
-                    st.success(f"✅ Processadas {len(registros_lote)} OSs."); st.rerun()
+
+                    conn.commit()
+                    cur.close()
+                finally:
+                    release_connection(conn)
+
+                st.cache_data.clear()
+                st.success(f"✅ Processadas {len(registros_lote)} OS única(s) da IW47.")
+                time.sleep(1)
+                st.rerun()
+
             except Exception as e:
-                st.error(f"Erro ao processar: {e}")
-#endregion
+                st.error(f"❌ Erro ao processar a planilha IW47: {e}")
+#endregion 3.8.5
 #endregion
 #endregion 3.8
 
@@ -1779,35 +2150,113 @@ def debug_overlay_visual(df_base, df_baixas):
 @st.cache_data(show_spinner=False)
 def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, baixas_mtime: float) -> pd.DataFrame:
     df_base = df_base_bruto.copy()
-    if df_base.empty: return df_base
+
+    if df_base.empty:
+        return df_base
+
+    if "Status da Operação" in df_base.columns:
+        df_base["Status da Operação"] = df_base["Status da Operação"].replace(
+            ["", "nan", "NaN", "None"],
+            "Pendente"
+        )
 
     df_baixas = carregar_baixas_df()
-    if df_baixas.empty: return df_base
 
-    # --- FORÇAR COMPATIBILIDADE DE TIPOS (A "Cola" dos Dados) ---
-    # Convertemos ambas as colunas para string pura, removendo espaços e tratando zeros
-    df_base["Ordem servico"] = df_base["Ordem servico"].astype(str).str.strip()
-    df_baixas["os"] = df_baixas["os"].astype(str).str.strip()
+    if df_baixas.empty:
+        return df_base
 
-    if escopo_usuario != "Todas":
-        df_baixas = df_baixas[df_baixas["coordenacao"].str.contains(escopo_usuario, case=False, na=False, regex=False)]
+    if "Ordem servico" not in df_base.columns:
+        return df_base
 
-    # Seleção de colunas de overlay
-    colunas_overlay = ["Status da Operação", "Data/Hora Realizado", "Concluído por", "Geolocalização de Baixa"]
+    # Chave técnica canônica para eliminar divergências mínimas de string.
+    df_base["_OS_KEY"] = df_base["Ordem servico"].apply(normalizar_chave_os)
+    df_baixas["_OS_KEY"] = df_baixas["os"].apply(normalizar_chave_os)
+
+    # Remove baixas sem chave válida e evita duplicidade residual antes do merge.
+    df_baixas = df_baixas[df_baixas["_OS_KEY"] != ""].copy()
+    df_baixas = df_baixas.drop_duplicates(subset=["_OS_KEY"], keep="last")
+
+    if escopo_usuario != "Todas" and "coordenacao" in df_baixas.columns:
+        df_baixas = df_baixas[
+            df_baixas["coordenacao"].astype(str).str.contains(
+                escopo_usuario,
+                case=False,
+                na=False,
+                regex=False
+            )
+        ].copy()
+
+    colunas_overlay = [
+        "Status da Operação",
+        "Data/Hora Realizado",
+        "Concluído por",
+        "Geolocalização de Baixa"
+    ]
+
+    for col in colunas_overlay:
+        if col not in df_base.columns:
+            df_base[col] = ""
+
     df_baixas = df_baixas.rename(columns={
-        "os": "Ordem servico", "status": "Status da Operação", 
-        "realizado_em": "Data/Hora Realizado", "concluido_por": "Concluído por", "geolocalizacao_baixa": "Geolocalização de Baixa"
+        "status": "Status da Operação",
+        "realizado_em": "Data/Hora Realizado",
+        "concluido_por": "Concluído por",
+        "geolocalizacao_baixa": "Geolocalização de Baixa"
     })
 
-    # Merge forçado pelo tratamento de string realizado acima
-    df_base = df_base.merge(df_baixas[["Ordem servico"] + colunas_overlay], on="Ordem servico", how="left", suffixes=("", "_baixado"))
-    
-    # Aplicação do Overlay
+    cols_merge = ["_OS_KEY"] + colunas_overlay
+
+    if "foto_evidencia" in df_baixas.columns:
+        cols_merge.append("foto_evidencia")
+
+    # Diagnóstico opcional de overlay.
+    qtd_base = int(df_base["_OS_KEY"].nunique())
+    qtd_baixas = int(df_baixas["_OS_KEY"].nunique())
+    qtd_match = int(df_base["_OS_KEY"].isin(df_baixas["_OS_KEY"]).sum())
+
+    if st.session_state.get("debug_overlay_baixas", False):
+        with st.expander("🧪 Debug Overlay Baixas", expanded=False):
+            st.write({
+                "OS únicas na base": qtd_base,
+                "OS únicas em baixas": qtd_baixas,
+                "Linhas da base com match em baixas": qtd_match,
+            })
+
+            sem_match = df_baixas.loc[
+                ~df_baixas["_OS_KEY"].isin(df_base["_OS_KEY"]),
+                ["_OS_KEY", "Status da Operação", "Data/Hora Realizado", "Concluído por"]
+            ].head(30)
+
+            if not sem_match.empty:
+                st.caption("Amostra de baixas que não encontraram OS na base:")
+                st.dataframe(sem_match, use_container_width=True, hide_index=True)
+
+    df_base = df_base.merge(
+        df_baixas[cols_merge],
+        on="_OS_KEY",
+        how="left",
+        suffixes=("", "_baixado")
+    )
+
     for col in colunas_overlay:
-        col_baixada = f"{col}_baixado"
-        if col_baixada in df_base.columns:
-            df_base[col] = np.where(df_base[col_baixada].notna() & (df_base[col_baixada] != ""), df_base[col_baixada], df_base[col])
-            df_base.drop(columns=[col_baixada], inplace=True)
+        col_baixado = f"{col}_baixado"
+
+        if col_baixado not in df_base.columns:
+            continue
+
+        df_base[col] = np.where(
+            df_base[col_baixado].notna() & (df_base[col_baixado].astype(str).str.strip() != ""),
+            df_base[col_baixado],
+            df_base[col]
+        )
+
+        df_base.drop(columns=[col_baixado], inplace=True, errors="ignore")
+
+    if "foto_evidencia_baixado" in df_base.columns:
+        df_base["foto_evidencia"] = df_base["foto_evidencia_baixado"]
+        df_base.drop(columns=["foto_evidencia_baixado"], inplace=True, errors="ignore")
+
+    df_base.drop(columns=["_OS_KEY"], inplace=True, errors="ignore")
 
     return df_base
 #endregion 5.4
