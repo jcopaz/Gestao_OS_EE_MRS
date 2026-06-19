@@ -4825,9 +4825,13 @@ if st.session_state.get("tela_atual") == "governanca":
         with col_l3_c1:
             st.markdown("#### 🕒 Aderência: Login vs. Apontamento")
 
-            df_logs = df_logs.copy()
-            df_logs["Data_Real_Pure"] = pd.to_datetime(
-                df_logs["data_hora_login"],
+            # IMPORTANTE:
+            # Não use "df_logs = df_logs.copy()" dentro do fragmento.
+            # Isso cria uma variável local e quebra o acesso ao df_logs carregado na Sessão 11.2.
+            df_logs_local = df_logs.copy()
+
+            df_logs_local["Data_Real_Pure"] = pd.to_datetime(
+                df_logs_local["data_hora_login"],
                 errors="coerce"
             ).dt.date
 
@@ -4846,7 +4850,7 @@ if st.session_state.get("tela_atual") == "governanca":
                 .reset_index(name="dt_baixa_1os")
             )
 
-            df_aderencia = df_logs.merge(
+            df_aderencia = df_logs_local.merge(
                 df_primeira_baixa,
                 left_on=["username", "Data_Real_Pure"],
                 right_on=["concluido_por", "Data_Real"]
@@ -5231,7 +5235,6 @@ if st.session_state.get("tela_atual") == "governanca":
             hide_index=True
         )
 #endregion 11.7
-
     fragmento_governanca()
     st.stop()
 #endregion
