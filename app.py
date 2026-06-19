@@ -3173,13 +3173,37 @@ if st.session_state.get("tela_atual") == "governanca":
             if not df_aderencia.empty:
                 df_aderencia["x_date"] = pd.to_datetime(df_aderencia["data_hora_login"]).dt.strftime("%d/%m")
                 dt_login, dt_baixa = pd.to_datetime(df_aderencia["data_hora_login"]), pd.to_datetime(df_aderencia["dt_baixa_1os"])
+                
                 df_aderencia["y_login_frac"] = dt_login.dt.hour + dt_login.dt.minute / 60.0
                 df_aderencia["y_baixa_frac"] = dt_baixa.dt.hour + dt_baixa.dt.minute / 60.0
-                df_aderencia = df_aderencia.sort_values("Data_Real_Pure")
-                login_data = [[row["x_date"], round(row["y_login_frac"], 2), row["username"]] for _, row in df_aderencia.iterrows()]
-                baixa_data = [[row["x_date"], round(row["y_baixa_frac"], 2), row["username"]] for _, row in df_aderencia.iterrows()]
-                st_echarts(options={ "tooltip": { "trigger": "item", "formatter": JsCode("""function (p) { var hh = Math.floor(p.data[1]); var mm = Math.round((p.data[1] - hh) * 60); if (mm == 60) { hh += 1; mm = 0; } return '<b>' + p.data[2] + '</b><br>' + p.seriesName + ': ' + (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm + '<br>Data: ' + p.data[0]; }""") }, "legend": {"data": ["Login", "Primeira Baixa"], "bottom": "0%"}, "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}], "grid": {"top": "10%", "bottom": "25%", "left": "12%", "right": "5%"}, "xAxis": {"type": "category", "data": sorted(df_aderencia["x_date"].unique().tolist())}, "yAxis": { "type": "value", "name": "Horário", "min": 0, "max": 24, "interval": 4, "axisLabel": { "formatter": JsCode("""function(value) { var hh = Math.floor(value); return (hh < 10 ? '0' : '') + hh + ':00'; }""") } }, "series": [ {"name": "Login", "type": "scatter", "data": login_data, "symbolSize": 10, "itemStyle": {"color": "#3B82F6"}}, {"name": "Primeira Baixa", "type": "scatter", "data": baixa_data, "symbolSize": 10, "itemStyle": {"color": "#10B981"}} ] }, height="400px", theme="streamlit", key="gov_scatter_aderencia")
-            else: st.info("Dados insuficientes para cruzar login com apontamento.")
+                
+                # --- CORREÇÃO AQUI: Remove os NaNs antes de criar as listas do JSON ---
+                df_aderencia = df_aderencia.dropna(subset=["y_login_frac", "y_baixa_frac"]).sort_values("Data_Real_Pure")
+                
+                # Só monta o gráfico se ainda sobrar dados após a limpeza
+                if not df_aderencia.empty:
+                    login_data = [[row["x_date"], round(row["y_login_frac"], 2), row["username"]] for _, row in df_aderencia.iterrows()]
+                    baixa_data = [[row["x_date"], round(row["y_baixa_frac"], 2), row["username"]] for _, row in df_aderencia.iterrows()]
+                    
+                    st_echarts(options={ 
+                        "tooltip": { 
+                            "trigger": "item", 
+                            "formatter": JsCode("""function (p) { var hh = Math.floor(p.data[1]); var mm = Math.round((p.data[1] - hh) * 60); if (mm == 60) { hh += 1; mm = 0; } return '<b>' + p.data[2] + '</b><br>' + p.seriesName + ': ' + (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm + '<br>Data: ' + p.data[0]; }""") 
+                        }, 
+                        "legend": {"data": ["Login", "Primeira Baixa"], "bottom": "0%"}, 
+                        "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}], 
+                        "grid": {"top": "10%", "bottom": "25%", "left": "12%", "right": "5%"}, 
+                        "xAxis": {"type": "category", "data": sorted(df_aderencia["x_date"].unique().tolist())}, 
+                        "yAxis": { "type": "value", "name": "Horário", "min": 0, "max": 24, "interval": 4, "axisLabel": { "formatter": JsCode("""function(value) { var hh = Math.floor(value); return (hh < 10 ? '0' : '') + hh + ':00'; }""") } }, 
+                        "series": [ 
+                            {"name": "Login", "type": "scatter", "data": login_data, "symbolSize": 10, "itemStyle": {"color": "#3B82F6"}}, 
+                            {"name": "Primeira Baixa", "type": "scatter", "data": baixa_data, "symbolSize": 10, "itemStyle": {"color": "#10B981"}} 
+                        ] 
+                    }, height="400px", theme="streamlit", key="gov_scatter_aderencia")
+                else:
+                    st.info("Dados de horário insuficientes para plotar o gráfico de aderência.")
+            else: 
+                st.info("Dados insuficientes para cruzar login com apontamento.")
 
         with col_l3_c2:
             st.markdown("#### 🔝 Top Técnicos: OS por Pátio")
@@ -3190,7 +3214,6 @@ if st.session_state.get("tela_atual") == "governanca":
 
         with col_l3_c3:
             st.markdown("#### 📊 Variabilidade de Execução")
-            # FIX: Garantindo que valores nulos sejam limpos para evitar falha no e-charts
             df_var = df_gov_f.groupby("concluido_por")["Tempo_Minutos"].mean().fillna(0).reset_index().sort_values("Tempo_Minutos", ascending=True)
             st_echarts(options={ "tooltip": {"trigger": "axis"}, "grid": {"left": "5%", "right": "8%", "bottom": "10%", "top": "10%", "containLabel": True}, "xAxis": {"type": "value", "name": "Minutos"}, "yAxis": {"type": "category", "data": df_var["concluido_por"].tolist(), "axisLabel": {"fontSize": 10}}, "series": [{"type": "bar", "data": df_var["Tempo_Minutos"].round(1).tolist(), "itemStyle": {"color": "#8B5CF6"}, "label": {"show": True, "position": "right", "formatter": "{c} min", "fontSize": 10}}] }, height="400px", theme="streamlit", key="gov_variab")
 #endregion 11.6
