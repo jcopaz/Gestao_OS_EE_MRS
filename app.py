@@ -1225,7 +1225,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 #endregion 3.10
 
 #region 3.11: Gerador Offline - Lógica JS Core (Banco Local e Renderização)
-    # ATENÇÃO: A tag <script> abre aqui e SÓ vai fechar no final do js_sync
     js_core = f"""
 <script>
     const OS_DATA = {os_json};
@@ -1241,14 +1240,16 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 
     function abrirDB() {{
         return new Promise((resolve, reject) => {{
-            const req = indexedDB.open(DB_NAME, 1);
+            // Versão 2: Força o upgrade do banco para usar a OS como chave única
+            const req = indexedDB.open(DB_NAME, 2); 
             req.onupgradeneeded = (event) => {{
                 const database = event.target.result;
-                if (!database.objectStoreNames.contains(STORE_NAME)) {{
-                    const store = database.createObjectStore(STORE_NAME, {{ keyPath: "id", autoIncrement: true }});
-                    store.createIndex("os_id", "os_id", {{ unique: false }});
-                    store.createIndex("status_sync", "status_sync", {{ unique: false }});
+                if (database.objectStoreNames.contains(STORE_NAME)) {{
+                    database.deleteObjectStore(STORE_NAME);
                 }}
+                // Transforma o os_id na chave primária (Impede duplicações na fila)
+                const store = database.createObjectStore(STORE_NAME, {{ keyPath: "os_id" }});
+                store.createIndex("status_sync", "status_sync", {{ unique: false }});
             }};
             req.onsuccess = () => {{
                 db = req.result;
@@ -1350,6 +1351,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 
             const wrapper = document.createElement("div");
             wrapper.className = "os-item" + (locked ? " locked" : "");
+            // Adicionando um ID para podermos manipular o card depois
+            wrapper.id = `card_os_${{idx}}`;
 
             wrapper.innerHTML = `
                 <div class="os-header">
@@ -1416,7 +1419,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 #endregion 3.11
 
 #region 3.12: Gerador Offline - Lógica JS de Lote / Persistência
-    # REMOVIDO a tag <script> daqui, ele continua a execução do js_core diretamente
     js_lote = f"""
     function calcularDuracaoHoras(inicio, fim) {{
         if (!inicio || !fim) return null;
@@ -1437,6 +1439,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     async function salvarSelecionadasNoLote() {{
         const acompanhanteGlobal = document.getElementById("acompanhanteGlobal").value || "Sozinho (Nenhum)";
         const selecionadas = [];
+        const indicesParaLimpar = []; // Guarda quem devemos apagar da tela depois de salvar
 
         for (let i = 0; i < OS_DATA.length; i += 1) {{
             const elIni = document.getElementById(`ini_${{i}}`);
@@ -1472,6 +1475,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 foto_blob: foto,
                 criado_em: new Date().toISOString()
             }});
+            
+            indicesParaLimpar.push(i);
         }}
 
         if (!selecionadas.length) {{
@@ -1481,11 +1486,25 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 
         await Promise.all(
             selecionadas.map((item) => new Promise((resolve, reject) => {{
-                const req = txStore("readwrite").add(item);
+                // UPDATE: Usar .put() força um UPSERT (cria se não existe, atualiza se existe)
+                // Impede que a mesma OS entre duplicada na fila
+                const req = txStore("readwrite").put(item);
                 req.onsuccess = () => resolve(true);
                 req.onerror = () => reject(req.error);
             }}))
         );
+
+        // UPDATE: Limpeza Visual
+        // Esvazia os campos para que o técnico saiba que a OS já está na fila
+        indicesParaLimpar.forEach((i) => {{
+            const elIni = document.getElementById(`ini_${{i}}`);
+            const elFim = document.getElementById(`fim_${{i}}`);
+            const fileInput = document.getElementById(`foto_${{i}}`);
+            
+            if (elIni) elIni.value = "";
+            if (elFim) elFim.value = "";
+            if (fileInput) fileInput.value = "";
+        }});
 
         await atualizarFila();
         setSyncMsg(`${{selecionadas.length}} OS gravada(s) localmente com sucesso.`, "blue");
@@ -1757,7 +1776,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 </body>
 </html>
 """
-
     html_final = html_head + html_body + js_core + js_lote + js_sync
     return html_final.encode("utf-8")
 #endregion 3.13
