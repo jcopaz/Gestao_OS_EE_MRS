@@ -30,16 +30,23 @@ from psycopg2 import pool
 #region 1.2: Configurações Globais e Tela Inicial de Login
 st.set_page_config(page_title="Painel de OS Eletroeletrônica", layout="wide", initial_sidebar_state="collapsed")
 
-# --- CSS CONDICIONAL: IMAGEM APENAS NO LOGIN ---
 if not st.session_state.get("logged_in", False):
     st.markdown("""
         <style>
-        /* Imagem de Fundo aplicada apenas quando não estamos logados */
+        /* Imagem de Fundo (Altere o caminho abaixo para o seu arquivo) */
         .stApp {
             background: linear-gradient(rgba(15, 23, 42, 0.85), rgba(15, 23, 42, 0.85)), 
-                        url("fundo1.jpg");
+                        url("fundo1.jpg"); 
             background-size: cover;
             background-position: center;
+        }
+        
+        /* Ajuste do Formulário de Login */
+        .stForm {
+            background-color: rgba(255, 255, 255, 0.1) !important;
+            border: 1px solid rgba(255, 255, 255, 0.2) !important;
+            border-radius: 15px !important;
+            padding: 20px !important;
         }
         
         /* Botão Entrar Gradiente */
@@ -59,9 +66,8 @@ if not st.session_state.get("logged_in", False):
         </style>
     """, unsafe_allow_html=True)
 
-col_vazia1, col_centro, col_vazia2 = st.columns([1, 1, 1])
-with col_centro:
-    if not st.session_state.get("logged_in", False):
+    col_vazia1, col_centro, col_vazia2 = st.columns([1, 1, 1])
+    with col_centro:
         st.markdown("<h1 style='text-align: center; color: white;'>⚡ SGO MRS</h1>", unsafe_allow_html=True)
 #endregion 1.2
 
