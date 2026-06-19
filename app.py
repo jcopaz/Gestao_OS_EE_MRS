@@ -2777,7 +2777,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     df_lista = df_lista[mask]
 
                 if not df_lista.empty:
-                    # 1. Formatar a coluna de link para HTML nativo
+                    # 1. Formatar a coluna de link para HTML nativo (abre em nova aba)
                     def formatar_link(url):
                         if pd.notna(url) and str(url).startswith("http"):
                             return f'<a href="{url}" target="_blank" style="color: #3B82F6; font-weight: bold; text-decoration: none;">🔗 Abrir Foto</a>'
@@ -2788,19 +2788,48 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     df_html = df_lista[colunas_ordem].copy()
                     tabela_html = df_html.style.hide(axis="index").set_properties(**{'text-align': 'center'}).to_html(escape=False)
                     
-                    # 3. Injetar a tabela (SEM INDENTAÇÃO para não virar bloco de código)
-                    html_code = f"""<style>
-.scroll-dash {{ width: 100%; max-height: 450px; overflow: auto; border: 1px solid #E2E8F0; border-radius: 8px; }}
-.tabela-dash {{ width: 100%; border-collapse: collapse; font-family: "Source Sans Pro", sans-serif; font-size: 13px; background-color: #FFFFFF; color: #0F172A; }}
-.tabela-dash th {{ background-color: #1E293B; color: #F8FAFC; position: sticky; top: 0; z-index: 1; padding: 10px; text-align: center; border-bottom: 2px solid #3B82F6; white-space: nowrap; }}
-.tabela-dash td {{ padding: 8px 10px; border-bottom: 1px solid #E2E8F0; text-align: center; vertical-align: middle; white-space: nowrap; }}
-.tabela-dash td:nth-child(6) {{ text-align: left; min-width: 500px; white-space: pre-wrap; word-wrap: break-word; }}
-.tabela-dash td:nth-child(11) {{ text-align: left; min-width: 300px; white-space: pre-wrap; word-wrap: break-word; }}
-</style>
-<div class="scroll-dash">
-{tabela_html.replace('<table', '<table class="tabela-dash"')}
-</div>"""
-                    st.markdown(html_code, unsafe_allow_html=True)
+                    # 3. Injetar a tabela em um Iframe Interativo com Motor JS de Ordenação
+                    html_code = f"""
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                    <style>
+                    body {{ margin: 0; font-family: "Source Sans Pro", sans-serif; background-color: #FFFFFF; }}
+                    .tabela-dash {{ width: 100%; border-collapse: collapse; font-size: 13px; color: #0F172A; }}
+                    .tabela-dash th {{ 
+                        background-color: #1E293B; color: #F8FAFC; position: sticky; top: 0; z-index: 1; 
+                        padding: 10px; text-align: center; border-bottom: 2px solid #3B82F6; white-space: nowrap; 
+                        cursor: pointer; user-select: none; transition: background-color 0.2s;
+                    }}
+                    .tabela-dash th:hover {{ background-color: #333D4E; }}
+                    .tabela-dash th::after {{ content: ' ↕'; font-size: 11px; color: #94A3B8; padding-left: 5px; }}
+                    .tabela-dash td {{ padding: 8px 10px; border-bottom: 1px solid #E2E8F0; text-align: center; vertical-align: middle; white-space: nowrap; }}
+                    .tabela-dash td:nth-child(6) {{ text-align: left; min-width: 500px; white-space: pre-wrap; word-wrap: break-word; }}
+                    .tabela-dash td:nth-child(11) {{ text-align: left; min-width: 300px; white-space: pre-wrap; word-wrap: break-word; }}
+                    </style>
+                    </head>
+                    <body>
+                    {tabela_html.replace('<table', '<table class="tabela-dash"')}
+                    
+                    <script>
+                    // Motor de Ordenação JavaScript Vanilla
+                    const getCellValue = (tr, idx) => tr.children[idx].innerText || tr.children[idx].textContent;
+                    const comparer = (idx, asc) => (a, b) => ((v1, v2) => 
+                        v1 !== '' && v2 !== '' && !isNaN(v1) && !isNaN(v2) ? v1 - v2 : v1.toString().localeCompare(v2)
+                        )(getCellValue(asc ? a : b, idx), getCellValue(asc ? b : a, idx));
+                    document.querySelectorAll('th').forEach(th => th.addEventListener('click', function() {{
+                        const table = th.closest('table');
+                        const tbody = table.querySelector('tbody');
+                        Array.from(tbody.querySelectorAll('tr'))
+                            .sort(comparer(Array.from(th.parentNode.children).indexOf(th), this.asc = !this.asc))
+                            .forEach(tr => tbody.appendChild(tr));
+                    }}));
+                    </script>
+                    </body>
+                    </html>
+                    """
+                    import streamlit.components.v1 as components
+                    components.html(html_code, height=450, scrolling=True)
                 else:
                     st.info("Nenhuma OS encontrada para a pesquisa.")
 #endregion 10.2.4
@@ -3419,18 +3448,46 @@ if st.session_state.get("tela_atual") == "governanca":
         df_estilizado = df_auditoria.style.map(estilo_gps, subset=["Localização do Celular"]).hide(axis="index")
         tabela_html = df_estilizado.to_html(escape=False)
         
-        html_code = f"""<style>
-.scroll-gov {{ width: 100%; max-height: 400px; overflow: auto; border: 1px solid #E2E8F0; border-radius: 8px; }}
-.tabela-gov {{ width: 100%; border-collapse: collapse; font-family: "Source Sans Pro", sans-serif; font-size: 13px; background-color: #FFFFFF; color: #0F172A; }}
-.tabela-gov th {{ background-color: #1E293B; color: #F8FAFC; position: sticky; top: 0; z-index: 1; padding: 10px; text-align: left; border-bottom: 2px solid #3B82F6; white-space: nowrap; }}
-.tabela-gov td {{ padding: 8px 10px; vertical-align: middle; white-space: nowrap; border-bottom: 1px solid #E2E8F0; }}
-.tabela-gov td:nth-child(5) {{ min-width: 400px; white-space: pre-wrap; word-wrap: break-word; }}
-.tabela-gov td:nth-child(6) {{ min-width: 200px; white-space: pre-wrap; word-wrap: break-word; }}
-</style>
-<div class="scroll-gov">
-{tabela_html.replace('<table', '<table class="tabela-gov"')}
-</div>"""
-        st.markdown(html_code, unsafe_allow_html=True)
+        html_code = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <style>
+        body {{ margin: 0; font-family: "Source Sans Pro", sans-serif; background-color: #FFFFFF; }}
+        .tabela-gov {{ width: 100%; border-collapse: collapse; font-size: 13px; color: #0F172A; }}
+        .tabela-gov th {{ 
+            background-color: #1E293B; color: #F8FAFC; position: sticky; top: 0; z-index: 1; 
+            padding: 10px; text-align: left; border-bottom: 2px solid #3B82F6; white-space: nowrap; 
+            cursor: pointer; user-select: none; transition: background-color 0.2s;
+        }}
+        .tabela-gov th:hover {{ background-color: #333D4E; }}
+        .tabela-gov th::after {{ content: ' ↕'; font-size: 11px; color: #94A3B8; padding-left: 5px; }}
+        .tabela-gov td {{ padding: 8px 10px; vertical-align: middle; white-space: nowrap; border-bottom: 1px solid #E2E8F0; }}
+        .tabela-gov td:nth-child(5) {{ min-width: 400px; white-space: pre-wrap; word-wrap: break-word; }}
+        .tabela-gov td:nth-child(6) {{ min-width: 200px; white-space: pre-wrap; word-wrap: break-word; }}
+        </style>
+        </head>
+        <body>
+        {tabela_html.replace('<table', '<table class="tabela-gov"')}
+        
+        <script>
+        const getCellValue = (tr, idx) => tr.children[idx].innerText || tr.children[idx].textContent;
+        const comparer = (idx, asc) => (a, b) => ((v1, v2) => 
+            v1 !== '' && v2 !== '' && !isNaN(v1) && !isNaN(v2) ? v1 - v2 : v1.toString().localeCompare(v2)
+            )(getCellValue(asc ? a : b, idx), getCellValue(asc ? b : a, idx));
+        document.querySelectorAll('th').forEach(th => th.addEventListener('click', function() {{
+            const table = th.closest('table');
+            const tbody = table.querySelector('tbody');
+            Array.from(tbody.querySelectorAll('tr'))
+                .sort(comparer(Array.from(th.parentNode.children).indexOf(th), this.asc = !this.asc))
+                .forEach(tr => tbody.appendChild(tr));
+        }}));
+        </script>
+        </body>
+        </html>
+        """
+        import streamlit.components.v1 as components
+        components.html(html_code, height=400, scrolling=True)
 #endregion 11.7
         
     fragmento_governanca()
