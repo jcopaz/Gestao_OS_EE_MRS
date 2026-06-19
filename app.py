@@ -1724,6 +1724,60 @@ def render_tela_admin():
             except Exception as e:
                 st.error(f"❌ Erro ao processar a planilha IW47: {e}")
     #endregion 3.8.5
+
+#region 3.8.6: Danger Zone (Hard Reset)
+    if "Gestão de Usuários" in st.session_state.get("governanca", ""):
+        st.markdown("---")
+        st.markdown("### ⚠️ Danger Zone (Reset Físico do Banco)")
+        st.error("As ações abaixo apagam os registros definitivamente do banco de dados (Neon). Esta ação não pode ser desfeita.")
+
+        col_d1, col_d2, col_d3 = st.columns(3)
+        with col_d1:
+            if st.button("🗑️ Zerar Base Programada (Planejamento)", use_container_width=True):
+                conn = get_connection()
+                try:
+                    cur = conn.cursor()
+                    cur.execute("DELETE FROM os_programadas;")
+                    conn.commit()
+                    cur.close()
+                    st.cache_data.clear()
+                    st.success("✅ Base de OS Programadas zerada!")
+                except Exception as e:
+                    st.error(f"Erro: {e}")
+                finally:
+                    release_connection(conn)
+
+        with col_d2:
+            if st.button("🗑️ Zerar Histórico de Baixas (Execução)", use_container_width=True):
+                conn = get_connection()
+                try:
+                    cur = conn.cursor()
+                    cur.execute("DELETE FROM baixas;")
+                    conn.commit()
+                    cur.close()
+                    st.cache_data.clear()
+                    st.success("✅ Histórico de Baixas zerado!")
+                except Exception as e:
+                    st.error(f"Erro: {e}")
+                finally:
+                    release_connection(conn)
+                    
+        with col_d3:
+            if st.button("🗑️ Zerar Evidências (Fotos/Links)", use_container_width=True):
+                conn = get_connection()
+                try:
+                    cur = conn.cursor()
+                    cur.execute("DELETE FROM evidencias;")
+                    conn.commit()
+                    cur.close()
+                    st.cache_data.clear()
+                    st.success("✅ Registro de Evidências zerado!")
+                except Exception as e:
+                    st.error(f"Erro: {e}")
+                finally:
+                    release_connection(conn)
+#endregion 3.8.6
+
 #endregion 3.8
 
 #region 3.9: Gerador Offline - Produção (HTML/JS completo)
