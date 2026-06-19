@@ -4191,9 +4191,52 @@ if st.session_state.get("tela_atual") == "governanca":
                 return diff + (24 * 60) if diff < 0 else diff
             except: return 0.0
 
+        
         df_gov["Tempo_Minutos"] = df_gov.apply(calc_duracao, axis=1)
-        df_gov["Data_Real"] = pd.to_datetime(df_gov["data_inicio"], format="%d/%m/%Y", errors="coerce").dt.date
-        df_gov["Via_GPS"] = df_gov["geolocalizacao_baixa"].apply(lambda x: 0 if "Base" in str(x) or "Sede" in str(x) else 1)
+
+        def parse_data_br_gov(valor):
+            """
+            Parser único da Governança.
+            Garante padrão brasileiro DD/MM/AAAA e evita inversão 01/05 -> 05/01.
+            """
+            if pd.isna(valor):
+                return pd.NaT
+
+            texto = str(valor).strip()
+
+            if not texto or texto.lower() in ("nan", "none", "null"):
+                return pd.NaT
+
+            # Se vier com hora junto, mantém só a data.
+            texto = texto.split(" ")[0].strip()
+
+            # Normaliza separadores comuns.
+            texto = texto.replace(".", "/").replace("-", "/")
+
+            # Primeiro tenta o formato brasileiro explícito.
+            dt = pd.to_datetime(
+                texto,
+                format="%d/%m/%Y",
+                errors="coerce"
+            )
+
+            if pd.notna(dt):
+                return dt
+
+            # Fallback com dayfirst=True para variações não previstas.
+            return pd.to_datetime(
+                texto,
+                dayfirst=True,
+                errors="coerce"
+            )
+
+        df_gov["Data_Real_DT"] = df_gov["data_inicio"].apply(parse_data_br_gov)
+        df_gov["Data_Real"] = df_gov["Data_Real_DT"].dt.date
+
+        df_gov["Via_GPS"] = df_gov["geolocalizacao_baixa"].apply(
+            lambda x: 0 if "Base" in str(x) or "Sede" in str(x) else 1
+        )
+
         df_gov["Alta_Prioridade"] = df_gov["Criticidade_rank"].apply(lambda x: 1 if x in [1, 2] else 0)
     try:
         conn = get_connection()
