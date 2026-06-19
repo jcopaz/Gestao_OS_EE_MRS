@@ -1086,10 +1086,10 @@ def render_tela_admin():
     A planilha exportada do SAP deve conter os seguintes cabeçalhos para o apontamento correto de datas, horários e equipe:
     * **Ordem** (Número da OS)
     * **Nº pessoal**, **Matrícula** ou **Nome** (Identificação do técnico)
-    * **Data real do fim de execução**
-    * **Hora real do fim de execução**
-    * **Data real de início da execução** (Opcional)
-    * **Hora real do início da execução** (Opcional)
+    * **Data real do/de fim de execução**
+    * **Hora real do/de fim de execução**
+    * **Data real de/do início da execução** (Opcional)
+    * **Hora real de/do início da execução** (Opcional)
     """)
     
     coord_baixa = st.selectbox("Coordenação (Se não houver coluna na planilha)", ["Paranapiacaba", "Piaçaguera"])
@@ -1109,7 +1109,7 @@ def render_tela_admin():
                     
                 df_iw.columns = [str(c).strip().replace('\n', ' ') for c in df_iw.columns]
 
-                # 2. Caçador de Colunas
+                # 2. Caçador de Colunas (Atualizado com as nomenclaturas exatas do seu SAP)
                 def find_col(df, candidatos):
                     for c in candidatos:
                         for df_c in df.columns:
@@ -1118,17 +1118,17 @@ def render_tela_admin():
 
                 col_os = find_col(df_iw, ["Ordem", "OS", "Ordem servico"])
                 col_mat = find_col(df_iw, ["Nº pessoal", "N° pessoal", "No pessoal", "Matrícula", "Matricula", "Nome", "Técnico"])
-                col_dt_fim = find_col(df_iw, ["Data real do fim", "Data fim"])
-                col_hr_fim = find_col(df_iw, ["Hora real do fim", "Hora fim"])
-                col_dt_ini = find_col(df_iw, ["Data real de início", "Data real do inicio", "Data inicio"])
-                col_hr_ini = find_col(df_iw, ["Hora real de início", "Hora real do inicio", "Hora inicio"])
+                col_dt_fim = find_col(df_iw, ["Data real de fim", "Data real do fim", "Data fim"])
+                col_hr_fim = find_col(df_iw, ["Hora real de fim", "Hora real do fim", "Hora fim"])
+                col_dt_ini = find_col(df_iw, ["Data real de início", "Data real de inicio", "Data real do inicio", "Data inicio"])
+                col_hr_ini = find_col(df_iw, ["Hora real de início", "Hora real de inicio", "Hora real do inicio", "Hora inicio"])
                 col_centro = find_col(df_iw, ["Centro de Trabalho", "Centro", "Coordenação", "Local"])
 
                 if not col_os or not col_dt_fim or not col_hr_fim:
                     st.error("❌ Colunas obrigatórias não encontradas na planilha IW47.")
                     st.stop()
 
-                # 3. Formatadores Blindados (Aceita pontos do SAP CSV)
+                # 3. Formatadores Blindados
                 def formatar_data(val):
                     if pd.isna(val) or str(val).strip() in ("", "nan"): return ""
                     v = str(val).strip().replace('.', '/').replace('-', '/')
@@ -1141,7 +1141,7 @@ def render_tela_admin():
                     val_str = str(val).strip()
                     if ":" in val_str:
                         parts = val_str.split(":")
-                        return f"{parts[0].zfill(2)}:{parts[1].zfill(2)}:{parts[2] if len(parts)>2 else '00'}"
+                        return f"{parts[0].zfill(2)}:{parts[1].zfill(2)}:{parts[2][:2].zfill(2) if len(parts)>2 else '00'}"
                     try:
                         f = float(val_str)
                         if 0 <= f < 1: 
@@ -1172,10 +1172,13 @@ def render_tela_admin():
                 
                 # 5. Processamento das Linhas
                 for _, row in df_iw.iterrows():
-                    # Preserva a OS EXATAMENTE como é (mantém zeros à esquerda) e só tira .0
+                    # HIGIENIZAÇÃO 1: Esmaga o .0 da OS e transforma em string pura
                     os_bruto = str(row[col_os]).strip()
                     if not os_bruto or os_bruto == "nan": continue
-                    os_val = os_bruto[:-2] if os_bruto.endswith('.0') else os_bruto
+                    try:
+                        os_val = str(int(float(os_bruto)))
+                    except:
+                        os_val = os_bruto
                     
                     dt_fim_val = formatar_data(row[col_dt_fim])
                     hr_fim_val = formatar_hora(row[col_hr_fim])
@@ -1185,9 +1188,16 @@ def render_tela_admin():
                     dt_ini_val = formatar_data(row[col_dt_ini]) if col_dt_ini else dt_fim_val
                     hr_ini_val = formatar_hora(row[col_hr_ini]) if col_hr_ini else "00:00:00"
                     
-                    matricula_crua = str(row[col_mat]).strip() if col_mat else ""
-                    if matricula_crua.endswith('.0'): matricula_crua = matricula_crua[:-2]
-                    concluido_por_val = mapa_usuarios.get(matricula_crua, matricula_crua) if matricula_crua and matricula_crua != "nan" else "SAP (Massa)"
+                    # HIGIENIZAÇÃO 2: Esmaga o .0 da Matrícula
+                    mat_bruta = str(row[col_mat]).strip() if col_mat else ""
+                    if mat_bruta and mat_bruta != "nan":
+                        try:
+                            matricula_limpa = str(int(float(mat_bruta)))
+                        except:
+                            matricula_limpa = mat_bruta
+                        concluido_por_val = mapa_usuarios.get(matricula_limpa, matricula_limpa)
+                    else:
+                        concluido_por_val = "SAP (Massa)"
                     
                     coord_bruta = str(row[col_centro]).strip().upper() if col_centro else ""
                     coord_val = coord_baixa
@@ -1205,7 +1215,7 @@ def render_tela_admin():
 
                 registros_lote = list(registros_dict.values())
 
-                # 6. Gravação (Bulk Insert)
+                # 6. Gravação (Bulk Insert Seguro)
                 if registros_lote:
                     from psycopg2.extras import execute_values
                     conn = get_connection()
@@ -1233,7 +1243,7 @@ def render_tela_admin():
                 amostra = registros_lote[0] if registros_lote else None
                 st.success(f"✅ Sucesso! {len(registros_lote)} baixas únicas processadas e compatibilizadas.")
                 if amostra:
-                    st.caption(f"**Raio-X do Processamento (Amostra):** OS `{amostra[0]}` | Técnico `{amostra[4]}` | Data `{amostra[2]}`")
+                    st.caption(f"**Raio-X do Processamento (Amostra limpa):** OS `{amostra[0]}` | Técnico `{amostra[4]}` | Data `{amostra[2]}`")
                 time.sleep(3)
                 st.rerun()
 
