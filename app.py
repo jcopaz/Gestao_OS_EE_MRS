@@ -235,7 +235,7 @@ if "logged_in" not in st.session_state:
     st.session_state.update({"logged_in": False, "username": "", "perfil": "", "escopo": "", "governanca": "", "needs_reset": False, "validando_gps": False})
 
 if not st.session_state["logged_in"]:
-    st.markdown("<h3 style='text-align: center; color: #475569;'>Acesso Restrito</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align: center; color: ##FFFFFF;'>Acesso Restrito</h3>", unsafe_allow_html=True)
     col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
     
     with col_l2:
