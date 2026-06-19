@@ -2395,7 +2395,7 @@ with col_acoes:
 st.markdown("---")
 #endregion 9.2
 
-#region 9.3: Cálculo dos KPIs + CSS dos Cards
+#region 9.3: Cálculo dos KPIs + CSS dos Cards (Dark Mode)
 total_os = len(df_filtrado)
 realizado_prazo = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_prazo)])
 realizado_atraso = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_atraso)])
@@ -2409,20 +2409,23 @@ st.markdown("""
     .kpi-header-wrapper { font-family: "Source Sans Pro", sans-serif; }
     .kpi-header-card {
         font-family: "Source Sans Pro", sans-serif; border-radius: 12px; padding: 16px 20px;
-        box-shadow: 0 4px 6px rgba(15, 23, 42, 0.08); height: 140px; display: flex;
+        background-color: #1A202C; border: 1px solid #333D4E;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3); height: 140px; display: flex;
         flex-direction: column; justify-content: center; box-sizing: border-box; margin-bottom: 15px;
     }
-    .kpi-border-gray { border-left: 5px solid #64748B; background: linear-gradient(135deg, #F8FAFC 0%, #F1F5F9 100%); }
-    .kpi-border-red { border-left: 5px solid #FF4B4B; background: linear-gradient(135deg, #FEF2F2 0%, #FEE2E2 100%); }
-    .kpi-border-green { border-left: 5px solid #10B981; background: linear-gradient(135deg, #F0FDF4 0%, #D1FAE5 100%); }
-    .kpi-border-blue { border-left: 5px solid #3B82F6; background: linear-gradient(135deg, #EFF6FF 0%, #DBEAFE 100%); }
-    .kpi-header-title { font-size: 14px; font-weight: 700; color: #1E293B; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
-    .kpi-header-val { font-size: 32px; font-weight: 400; color: #0F172A; line-height: 1; }
-    .kpi-header-sub { font-size: 12px; font-weight: 400; margin-top: 8px; padding: 4px 10px; border-radius: 20px; display: inline-block; width: fit-content; }
-    .badge-gray { background-color: #E2E8F0; color: #475569; }
-    .badge-red { background-color: #FECACA; color: #991B1B; }
-    .badge-green { background-color: #A7F3D0; color: #065F46; }
-    .badge-blue { background-color: #DBEAFE; color: #1E40AF; }
+    .kpi-border-gray { border-left: 4px solid #64748B; }
+    .kpi-border-red { border-left: 4px solid #EF4444; }
+    .kpi-border-green { border-left: 4px solid #10B981; }
+    .kpi-border-blue { border-left: 4px solid #3B82F6; }
+    
+    .kpi-header-title { font-size: 14px; font-weight: 700; color: #94A3B8; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .kpi-header-val { font-size: 32px; font-weight: 600; color: #F8FAFC; line-height: 1; }
+    .kpi-header-sub { font-size: 12px; font-weight: 600; margin-top: 8px; padding: 4px 10px; border-radius: 20px; display: inline-block; width: fit-content; }
+    
+    .badge-gray { background-color: rgba(100, 116, 139, 0.2); color: #CBD5E1; }
+    .badge-red { background-color: rgba(239, 68, 68, 0.2); color: #FCA5A5; }
+    .badge-green { background-color: rgba(16, 185, 129, 0.2); color: #6EE7B7; }
+    .badge-blue { background-color: rgba(59, 130, 246, 0.2); color: #93C5FD; }
     </style>
 """, unsafe_allow_html=True)
 #endregion 9.3
@@ -2675,7 +2678,12 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     st.dataframe(
                         df_lista[colunas_ordem].style.set_properties(**{'text-align': 'center'}).set_table_styles([{'selector': 'th', 'props': [('text-align', 'center')]}]), 
                         use_container_width=True, height=400, hide_index=True, 
-                        column_config={"Evidência": st.column_config.LinkColumn("📷 Evidência", display_text="🔗 Abrir Foto")}
+                        column_config={
+                            "Evidência": st.column_config.LinkColumn("📷 Evidência", display_text="🔗 Abrir Foto"),
+                            # Força a largura grande e ativa o scroll horizontal
+                            "Descrição Longa": st.column_config.TextColumn("Descrição Longa", width="large"),
+                            "Geolocalização de Baixa": st.column_config.TextColumn("Geolocalização de Baixa", width="medium")
+                        }
                     )
                 else:
                     st.info("Nenhuma OS encontrada para a pesquisa.")
@@ -2692,17 +2700,19 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
             st.markdown("""
                 <style>
                 .kpi-wrapper { font-family: "Source Sans Pro", sans-serif; }
-                .kpi-card-blue { background: linear-gradient(135deg, #EFF6FF 0%, #DBEAFE 100%); border-left: 5px solid #3B82F6; border-radius: 12px; padding: 16px 20px; box-shadow: 0 4px 6px rgba(59, 130, 246, 0.15); height: 140px; margin-bottom: 16px; display: flex; flex-direction: column; justify-content: center; box-sizing: border-box; }
-                .kpi-title-blue { color: #1E3A8A; font-size: 14px; font-weight: 700; margin-bottom: 6px; text-transform: uppercase; }
-                .kpi-val-blue { color: #1E40AF; font-size: 32px; font-weight: 400; line-height: 1; }
-                .kpi-sub-blue { color: #3B82F6; font-size: 12px; font-weight: 400; margin-top: 8px;}
-                .kpi-card-green { background: linear-gradient(135deg, #F0FDF4 0%, #D1FAE5 100%); border-left: 5px solid #10B981; border-radius: 12px; padding: 16px 20px; box-shadow: 0 4px 6px rgba(16, 185, 129, 0.15); height: 140px; margin-bottom: 16px; display: flex; flex-direction: column; justify-content: center; box-sizing: border-box; }
-                .kpi-title-green { color: #064E3B; font-size: 14px; font-weight: 700; margin-bottom: 6px; text-transform: uppercase; }
-                .kpi-val-green { color: #065F46; font-size: 32px; font-weight: 400; line-height: 1; }
-                .kpi-card-red { background: linear-gradient(135deg, #FEF2F2 0%, #FEE2E2 100%); border-left: 5px solid #FF4B4B; border-radius: 12px; padding: 16px 20px; box-shadow: 0 4px 6px rgba(255, 75, 75, 0.15); height: 140px; margin-bottom: 16px; display: flex; flex-direction: column; justify-content: center; box-sizing: border-box; }
-                .kpi-title-red { color: #7F1D1D; font-size: 14px; font-weight: 700; margin-bottom: 6px; text-transform: uppercase; }
-                .kpi-val-red { color: #991B1B; font-size: 24px; font-weight: 400; line-height: 1.2; margin-top: 4px;} 
-                .kpi-sub-red { color: #EF4444; font-size: 12px; font-weight: 400; margin-top: 8px;}
+                .kpi-card-blue, .kpi-card-green, .kpi-card-red {
+                    background-color: #1A202C; border: 1px solid #333D4E; border-radius: 12px; padding: 16px 20px; 
+                    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3); height: 140px; margin-bottom: 16px; 
+                    display: flex; flex-direction: column; justify-content: center; box-sizing: border-box;
+                }
+                .kpi-card-blue { border-left: 4px solid #3B82F6; }
+                .kpi-card-green { border-left: 4px solid #10B981; }
+                .kpi-card-red { border-left: 4px solid #EF4444; }
+                
+                .kpi-title-blue, .kpi-title-green, .kpi-title-red { color: #94A3B8; font-size: 14px; font-weight: 700; margin-bottom: 6px; text-transform: uppercase; }
+                .kpi-val-blue, .kpi-val-green { color: #F8FAFC; font-size: 32px; font-weight: 600; line-height: 1; }
+                .kpi-val-red { color: #F8FAFC; font-size: 24px; font-weight: 600; line-height: 1.2; margin-top: 4px; } 
+                .kpi-sub-blue, .kpi-sub-green, .kpi-sub-red { color: #CBD5E1; font-size: 12px; font-weight: 600; margin-top: 8px;}
                 </style>
             """, unsafe_allow_html=True)
 
@@ -2750,26 +2760,16 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                 if st.button("🔓 Sem Intervalo", use_container_width=True, type="primary" if st.session_state["filtro_intervalo_campo"] == "Sem Intervalo" else "secondary"): st.session_state["filtro_intervalo_campo"] = "Sem Intervalo"; st.rerun()
             st.markdown("---")
 
-            # --- CORREÇÃO DA APLICAÇÃO DE FILTROS ---
             _filtro_int_campo = st.session_state.get("filtro_intervalo_campo", "Todas")
-            
-            # Se o df_filtrado existe (vindo da sidebar), usamos ele como base da Roteirização.
-            # Se não, usamos o df_visao (base geral).
             base_rota = df_filtrado.copy() if "df_filtrado" in locals() else df_visao.copy()
 
-            # Aplica o filtro dos botões de Intervalo
             if _filtro_int_campo != "Todas" and "Tipo_Intervalo" in base_rota.columns:
                 base_rota = base_rota[base_rota["Tipo_Intervalo"] == _filtro_int_campo].copy()
 
-            # Aqui passamos a base TOTALMENTE filtrada para o df_calendario
             df_calendario = base_rota.copy()
-            
-            # (Opcional, de segurança: O df_filtrado no escopo global também é atualizado)
             if "df_filtrado" in locals():
                 df_filtrado = base_rota.copy()
 
-            # --- PROTEÇÃO DO TOGGLE ---
-            # O Toggle não pode sumir. Ele é desenhado sempre!
             mostrar_calendario = st.toggle("📅 Mostrar Agenda Mensal de Demanda", value=False)
             
             if mostrar_calendario:
@@ -2794,7 +2794,18 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             ontem_total = serie_mes[dia_idx - 1] if dia_idx > 0 else hoje_total
                             delta_pct = ((hoje_total - ontem_total) / ontem_total) * 100 if ontem_total > 0 else 0.0
                             seta, sinal = ("↑", "+") if delta_pct > 0 else ("↓", "") if delta_pct < 0 else ("→", "")
-                            st_echarts(options={"graphic": [{"type": "rect", "shape": {"width": 320, "height": 140, "r": 18}, "style": {"fill": "#F0FDF4"}}, {"type": "rect", "shape": {"width": 5, "height": 140, "r": [18, 0, 0, 18]}, "style": {"fill": "#10B981"}}, {"type": "text", "left": "6%", "top": "16%", "style": {"text": "TOTAL DE OS DO DIA", "fill": "#064E3B", "font": "700 14px 'Source Sans Pro', sans-serif"}}, {"type": "text", "left": "6%", "top": "40%", "style": {"text": f"{hoje_total} 🎯", "fill": "#065F46", "font": "400 32px 'Source Sans Pro', sans-serif"}}, {"type": "text", "left": "6%", "top": "72%", "style": {"text": f"{seta} {sinal}{delta_pct:.1f}% vs ontem", "fill": "#10B981", "font": "400 12px 'Source Sans Pro', sans-serif"}}]}, height="140px", key="card_total_os_dia")
+                            
+                            # --- CARD DO ECHARTS NO MODO DARK ---
+                            st_echarts(options={
+                                "graphic": [
+                                    {"type": "rect", "shape": {"width": 320, "height": 140, "r": 12}, "style": {"fill": "#1A202C", "stroke": "#333D4E", "lineWidth": 1}}, 
+                                    {"type": "rect", "shape": {"width": 4, "height": 140, "r": [12, 0, 0, 12]}, "style": {"fill": "#10B981"}}, 
+                                    {"type": "text", "left": "6%", "top": "16%", "style": {"text": "TOTAL DE OS DO DIA", "fill": "#94A3B8", "font": "700 14px 'Source Sans Pro', sans-serif"}}, 
+                                    {"type": "text", "left": "6%", "top": "40%", "style": {"text": f"{hoje_total} 🎯", "fill": "#F8FAFC", "font": "600 32px 'Source Sans Pro', sans-serif"}}, 
+                                    {"type": "text", "left": "6%", "top": "72%", "style": {"text": f"{seta} {sinal}{delta_pct:.1f}% vs ontem", "fill": "#10B981" if delta_pct >= 0 else "#EF4444", "font": "600 12px 'Source Sans Pro', sans-serif"}}
+                                ]
+                            }, height="140px", key="card_total_os_dia")
+                            
                             st.markdown(f"<div style='margin-bottom: 16px;'></div><div class='kpi-wrapper kpi-card-red'><div class='kpi-title-red'>Pátio Prioritário</div><div class='kpi-val-red'>{resumo_card['patio_prioritario']}</div><div class='kpi-sub-red'>Critério: backlog + prioridade</div></div>", unsafe_allow_html=True)
 
                         with col_turno:
@@ -3046,7 +3057,8 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             styles, elementos = getSampleStyleSheet(), [Paragraph("📋 Cronograma de Execução de Campo", getSampleStyleSheet()["Title"]), Paragraph(f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')} | Origem: {st.session_state.get('local_nome', 'N/A')} | Raio: {raio_busca_km} km", getSampleStyleSheet()["Normal"]), Spacer(1, 6*mm)]
                             data_rows = [[str(c) for c in colunas]]
                             style_cell = styles["Normal"]; style_cell.fontSize, style_cell.leading = 7, 9
-                            for _, row in df_pdf[colunas].iterrows(): data_rows.append([Paragraph(str(v)[:80], style_cell) for v in row.values])
+                            # REMOVIDO o limite [:80]. Agora o texto da Descrição Longa vai inteiro!
+                            for _, row in df_pdf[colunas].iterrows(): data_rows.append([Paragraph(str(v), style_cell) for v in row.values])
                             col_widths = [45, 45, 35, 90, 45, 70, landscape(A4)[0] - 20*mm - 330]
                             tabela = Table(data_rows, colWidths=col_widths, repeatRows=1)
                             tabela.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E3A8A")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("FONTSIZE", (0, 0), (-1, 0), 8), ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("ALIGN", (0, 0), (-1, -1), "CENTER"), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")), ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]), ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]))
@@ -3059,29 +3071,33 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                 with col_tit_crono: 
                     st.markdown("#### 📋 Cronograma de Execução de Campo\n<small>OS Pendentes recomendadas no raio de atuação visual por prioridade</small>", unsafe_allow_html=True)
                 
-                # --- ESTILIZAÇÃO INTELIGENTE (CADEADO VISUAL DA TABELA) ---
                 def aplicar_cor_foco(row):
                     hoje_atual = datetime.now().date()
-                    # Verifica se no dataframe inteiro existe alguma OS Muito Alta
                     tem_critica_no_raio = (df_recomendado["Criticidade_rank"] == 1) & (df_recomendado["dt_prog_filtro"].dt.date <= hoje_atual)
                     
                     if tem_critica_no_raio.any():
                         if row["Criticidade"] == "Muito Alta":
                             return ["background-color: #FEF2F2; color: #991B1B; font-weight: bold;"] * len(row)
                         else:
-                            return ["background-color: #F8FAFC; color: #94A3B8;"] * len(row) # Fica cinza (bloqueada)
+                            return ["background-color: #F8FAFC; color: #94A3B8;"] * len(row) 
                     
-                    # Se não tiver crítica, aplica a regra normal de atraso
                     dt = row["dt_prog_filtro"]
                     if pd.isna(dt): return [""] * len(row)
                     if dt.date() < hoje_atual: return ["background-color: #FEE2E2; color: #7F1D1D; font-weight: 500;"] * len(row)
                     elif dt.date() == hoje_atual: return ["background-color: #FEF3C7; color: #78350F; font-weight: 500;"] * len(row)
                     return [""] * len(row)
                 
-                st.dataframe(df_tabela_campo.style.apply(aplicar_cor_foco, axis=1), use_container_width=True, height=350, hide_index=True, column_order=colunas_exibir)
+                st.dataframe(
+                    df_tabela_campo.style.apply(aplicar_cor_foco, axis=1), 
+                    use_container_width=True, height=350, hide_index=True, column_order=colunas_exibir,
+                    column_config={
+                        # Força a largura grande e ativa o scroll horizontal
+                        "Descrição Longa": st.column_config.TextColumn("Descrição Longa", width="large")
+                    }
+                )
             else: 
                 st.info("Nenhuma OS pendente localizada dentro do raio de atuação selecionado.")
-            #endregion 10.3.5
+#endregion 10.3.5
 #endregion 10.3
 #endregion SESSÃO 10
 
@@ -3261,7 +3277,16 @@ if st.session_state.get("tela_atual") == "governanca":
         st.markdown("#### 📍 Tabela de Auditoria de Apontamentos (GPS)")
         df_auditoria = df_gov_f[["Ordem servico", "concluido_por", "data_inicio", "hora_fim", "geolocalizacao_baixa", "equipe", "Tempo_Minutos"]].copy().sort_values(by=["data_inicio", "hora_fim"], ascending=[False, False]).rename(columns={"Ordem servico": "OS", "concluido_por": "Apontador Principal", "data_inicio": "Data", "hora_fim": "Hora Apontada", "geolocalizacao_baixa": "Localização do Celular", "equipe": "Co-Executantes", "Tempo_Minutos": "Tempo Gasto (min)"})
         df_auditoria["Tempo Gasto (min)"] = df_auditoria["Tempo Gasto (min)"].fillna(0).round(0).astype(int)
-        st.dataframe(df_auditoria.style.map(lambda v: 'background-color: #FEE2E2; color: #991B1B; font-weight: bold;' if pd.notna(v) and ('Base' in str(v) or 'Sede' in str(v)) else 'color: #065F46;', subset=["Localização do Celular"]), use_container_width=True, height=300, hide_index=True)
+        
+        st.dataframe(
+            df_auditoria.style.map(lambda v: 'background-color: #FEE2E2; color: #991B1B; font-weight: bold;' if pd.notna(v) and ('Base' in str(v) or 'Sede' in str(v)) else 'color: #065F46;', subset=["Localização do Celular"]), 
+            use_container_width=True, height=300, hide_index=True,
+            column_config={
+                # Força larguras específicas ativando o scroll horizontal
+                "Localização do Celular": st.column_config.TextColumn("Localização do Celular", width="large"),
+                "Co-Executantes": st.column_config.TextColumn("Co-Executantes", width="medium")
+            }
+        )
 #endregion 11.7
         
     fragmento_governanca()
