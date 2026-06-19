@@ -1096,22 +1096,18 @@ def render_tela_admin():
     arquivo_iw47 = st.file_uploader("Selecione a planilha IW47 exportada do SAP", type=["xlsx", "csv"], key="upload_iw47")
 
     if arquivo_iw47 and st.button("🚀 Processar Baixas em Massa", type="primary", key="btn_proc_iw47"):
-        with st.spinner("Deduplicando, cruzando usuários e enviando para o banco..."):
+        with st.spinner("Higienizando dados do SAP, cruzando usuários e enviando..."):
             try:
-                # Leitura mais rápida da planilha
+                # Leitura
                 if arquivo_iw47.name.lower().endswith(".csv"):
-                    # Força separador comum do SAP para evitar lentidão do engine python
-                    try:
-                        df_iw = pd.read_csv(arquivo_iw47, sep=";", encoding="utf-8-sig")
+                    try: df_iw = pd.read_csv(arquivo_iw47, sep=";", encoding="utf-8-sig")
                     except:
                         arquivo_iw47.seek(0)
                         df_iw = pd.read_csv(arquivo_iw47, sep=None, engine="python", encoding="utf-8-sig")
-                else:
-                    df_iw = pd.read_excel(arquivo_iw47)
+                else: df_iw = pd.read_excel(arquivo_iw47)
                     
                 df_iw.columns = [str(c).strip().replace('\n', ' ') for c in df_iw.columns]
 
-                # Função auxiliar de caça às colunas
                 def find_col(df, candidatos):
                     for c in candidatos:
                         for df_c in df.columns:
@@ -1130,7 +1126,6 @@ def render_tela_admin():
                     st.error("❌ Colunas obrigatórias não encontradas na planilha IW47.")
                     st.stop()
 
-                # Funções de higienização de datas/horas
                 def formatar_data(val):
                     if pd.isna(val) or str(val).strip() == "": return ""
                     try: return pd.to_datetime(val, format="%d/%m/%Y", errors="raise").strftime("%d/%m/%Y")
@@ -1150,7 +1145,6 @@ def render_tela_admin():
                     except: pass
                     return "00:00:00"
 
-                # === INÍCIO DO CRUZAMENTO DE USUÁRIOS ===
                 conn = get_connection()
                 mapa_usuarios = {}
                 try:
@@ -1161,21 +1155,24 @@ def render_tela_admin():
                         nome_str = str(row[1]).strip() if pd.notna(row[1]) and row[1] else username_str
                         mapa_usuarios[username_str] = nome_str
                     cur.close()
-                except Exception as e:
-                    st.warning(f"Aviso: Não foi possível carregar a lista de usuários ({e})")
-                finally:
-                    release_connection(conn)
-                # === FIM DO CRUZAMENTO ===
+                finally: release_connection(conn)
 
-                # === PREPARAÇÃO DO LOTE COM DEDUPLICAÇÃO NA MEMÓRIA ===
-                # Usamos um dicionário onde a CHAVE é a OS. Se o SAP mandar a mesma OS 3 vezes, 
-                # a última linha sobrescreve as anteriores em memória antes de ir pro banco.
+                # --- DICIONÁRIO DE TRADUÇÃO SAP -> SISTEMA ---
+                _mapa_sap_sistema = {
+                    "E.SP.IPG": "Piaçaguera", "CIPG": "Piaçaguera", "IPG": "Piaçaguera",
+                    "E.SP.IPA": "Paranapiacaba", "CIPA": "Paranapiacaba", "IPA": "Paranapiacaba"
+                }
+
                 registros_dict = {}
                 
                 for _, row in df_iw.iterrows():
-                    os_val = str(row[col_os]).strip()
-                    if os_val.endswith('.0'): os_val = os_val[:-2] 
-                    if not os_val or os_val == "nan": continue
+                    # 1. Higienização EXTREMA da OS (Mata zeros à esquerda e decimais)
+                    os_bruto = str(row[col_os]).strip()
+                    if not os_bruto or os_bruto == "nan": continue
+                    try:
+                        os_val = str(int(float(os_bruto))) # Ex: "0000123" ou "123.0" -> "123"
+                    except:
+                        os_val = os_bruto 
                     
                     dt_fim_val = formatar_data(row[col_dt_fim])
                     hr_fim_val = formatar_hora(row[col_hr_fim])
@@ -1187,25 +1184,27 @@ def render_tela_admin():
                     
                     matricula_crua = str(row[col_mat]).strip() if col_mat else ""
                     if matricula_crua.endswith('.0'): matricula_crua = matricula_crua[:-2]
-                    
                     if matricula_crua and matricula_crua != "nan":
                         concluido_por_val = mapa_usuarios.get(matricula_crua, matricula_crua)
                     else:
                         concluido_por_val = "SAP (Massa)"
                     
-                    coord_val = str(row[col_centro]).strip() if col_centro else coord_baixa
-                    if coord_val == "nan" or not coord_val: coord_val = coord_baixa
+                    # 4. Tradução do Centro de Trabalho do SAP para a linguagem do Painel
+                    coord_bruta = str(row[col_centro]).strip().upper() if col_centro else ""
+                    coord_val = coord_baixa # Assume o valor do selectbox por padrão (fallback)
+                    if coord_bruta and coord_bruta != "NAN":
+                        for chave_sap, coord_sistema in _mapa_sap_sistema.items():
+                            if chave_sap in coord_bruta:
+                                coord_val = coord_sistema
+                                break
                     
-                    # Salva no Dicionário para garantir unicidade da OS no Bulk Insert
                     registros_dict[os_val] = (
                         os_val, "Realizado", realizado_em_str, coord_val, concluido_por_val,
                         "Baixa SAP IW47", "Sozinho", dt_ini_val, hr_ini_val, dt_fim_val, hr_fim_val
                     )
 
-                # Converte o dicionário blindado de volta para lista
                 registros_lote = list(registros_dict.values())
 
-                # === INSERÇÃO EM MASSA (Bulk Insert Seguro) ===
                 if registros_lote:
                     from psycopg2.extras import execute_values
                     conn = get_connection()
@@ -1219,16 +1218,14 @@ def render_tela_admin():
                                 geolocalizacao_baixa = EXCLUDED.geolocalizacao_baixa, equipe = EXCLUDED.equipe, data_inicio = EXCLUDED.data_inicio,
                                 hora_inicio = EXCLUDED.hora_inicio, data_fim = EXCLUDED.data_fim, hora_fim = EXCLUDED.hora_fim;
                         """
-                        # Envia de 500 em 500 pacotes para o PostgreSQL
                         for i in range(0, len(registros_lote), 500):
                             execute_values(cur, query, registros_lote[i:i + 500], page_size=500)
-                        
                         conn.commit()
                         cur.close()
                     finally:
                         release_connection(conn)
 
-                st.success(f"✅ Sucesso! {len(registros_lote)} baixas únicas processadas e importadas em lote.")
+                st.success(f"✅ Sucesso! {len(registros_lote)} baixas únicas processadas e compatibilizadas.")
                 time.sleep(2)
                 st.rerun()
 
