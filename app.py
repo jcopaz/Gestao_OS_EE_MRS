@@ -1081,66 +1081,61 @@ def render_tela_admin():
 #region 3.8.5: Importação de Baixas em Massa (IW47)
     st.markdown("---"); st.subheader("📥 Importação de Baixas em Massa (IW47)")
     
-    arquivo_iw47 = st.file_uploader("Selecione a planilha IW47 exportada do SAP (.csv ou .xlsx)", type=["xlsx", "csv"], key="upload_iw47")
+    arquivo_iw47 = st.file_uploader("Selecione a planilha IW47 (.csv ou .xlsx)", type=["xlsx", "csv"], key="upload_iw47")
 
     if arquivo_iw47 and st.button("🚀 Processar Baixas em Massa", type="primary"):
-        with st.spinner("Decodificando formato SAP..."):
+        with st.spinner("Processando..."):
             try:
-                # 1. Leitura robusta
-                df_iw = pd.read_csv(arquivo_iw47, sep=";", encoding="latin1") if arquivo_iw47.name.lower().endswith(".csv") else pd.read_excel(arquivo_iw47)
+                # Leitura
+                if arquivo_iw47.name.lower().endswith(".csv"):
+                    df_iw = pd.read_csv(arquivo_iw47, sep=";", encoding="utf-8-sig", dtype=str)
+                else: 
+                    df_iw = pd.read_excel(arquivo_iw47, dtype=str)
+                    
                 df_iw.columns = [str(c).strip().replace('\n', ' ') for c in df_iw.columns]
 
-                # 2. Conversores inteligentes para o formato SAP (Número -> Data/Hora)
-                def converter_sap_data(val):
-                    try:
-                        # Se for número, converte serial do Excel para data
-                        if isinstance(val, (int, float)): return pd.to_datetime('1899-12-30') + pd.to_timedelta(val, unit='D')
-                        return pd.to_datetime(val, dayfirst=True)
-                    except: return pd.NaT
-
-                def converter_sap_hora(val):
-                    try:
-                        # Se for fração (0.40277...), converte para timedelta
-                        if isinstance(val, (float, int)): 
-                            return (pd.to_timedelta(val, unit='D')).components.hours, (pd.to_timedelta(val, unit='D')).components.minutes
-                        # Se for string com vírgula ou ponto
-                        val_str = str(val).replace(',', '.')
-                        f = float(val_str)
-                        t = int(round(f * 86400))
-                        return (t // 3600) % 24, (t % 3600) // 60
-                    except: return 0, 0
-
-                # 3. Cruzamento de Usuários
+                # Correção: Função de carga de usuários segura
                 conn = get_connection()
-                mapa_usuarios = {str(row[0]).strip(): str(row[1] if pd.notna(row[1]) else row[0]).strip() for row in conn.cursor().execute("SELECT username, nome FROM usuarios") or conn.cursor().fetchall()}
-                release_connection(conn)
+                mapa_usuarios = {}
+                try:
+                    cur = conn.cursor()
+                    cur.execute("SELECT username, nome FROM usuarios")
+                    resultados = cur.fetchall()
+                    for row in resultados:
+                        mapa_usuarios[str(row[0]).strip()] = str(row[1] if row[1] else row[0]).strip()
+                    cur.close()
+                finally: release_connection(conn)
 
-                registros_dict = {}
+                registros_lote = []
+                
                 for _, row in df_iw.iterrows():
-                    os_val = str(row['Ordem']).strip().replace('.0', '')
+                    # Higienização de OS: Remove qualquer coisa que não seja dígito (mantém zeros à esquerda)
+                    os_bruto = str(row['Ordem']).strip()
+                    os_val = "".join(filter(str.isdigit, os_bruto))
                     
-                    # Datas e Horas convertidas
-                    dt_fim = converter_sap_data(row['Data real do fim de execução'])
-                    h_fim, m_fim = converter_sap_hora(row['Hora real do fim de execução'])
+                    if not os_val: continue
                     
-                    dt_ini = converter_sap_data(row['Data de início de execução real'])
-                    h_ini, m_ini = converter_sap_hora(row['Hora de início de execução real'])
+                    # Datas e Horas (Tratando o formato numérico do Excel/SAP)
+                    dt_fim_raw = row['Data real do fim de execução']
+                    hr_fim_raw = row['Hora real do fim de execução']
                     
-                    if pd.isna(dt_fim): continue
+                    # Conversão serial Excel/SAP
+                    data_fim = (pd.to_datetime('1899-12-30') + pd.to_timedelta(float(dt_fim_raw), unit='D')).strftime("%d/%m/%Y")
+                    hora_fim = (pd.to_timedelta(float(hr_fim_raw), unit='D'))
+                    hora_fim_str = f"{hora_fim.components.hours:02d}:{hora_fim.components.minutes:02d}:00"
+                    
+                    realizado_em = f"{data_fim} {hora_fim_str}"
                     
                     # Nome do Técnico
-                    mat = str(row['Nº pessoal']).strip().replace('.0', '')
-                    tecnico = mapa_usuarios.get(mat, mat)
+                    mat_crua = "".join(filter(str.isdigit, str(row['Nº pessoal'])))
+                    tecnico = mapa_usuarios.get(mat_crua, mat_crua)
                     
-                    registros_dict[os_val] = (
-                        os_val, "Realizado", dt_fim.strftime("%d/%m/%Y %H:%M"), 
-                        str(row['Centro trab.(real)']), tecnico, "Baixa SAP", "Sozinho",
-                        dt_ini.strftime("%d/%m/%Y"), f"{h_ini:02d}:{m_ini:02d}:00",
-                        dt_fim.strftime("%d/%m/%Y"), f"{h_fim:02d}:{m_fim:02d}:00"
-                    )
+                    registros_lote.append((
+                        os_val, "Realizado", realizado_em, str(row['Centro trab.(real)']), 
+                        tecnico, "Baixa SAP", "Sozinho", data_fim, "00:00:00", data_fim, hora_fim_str
+                    ))
 
-                # 4. Inserção
-                registros_lote = list(registros_dict.values())
+                # Gravação
                 if registros_lote:
                     conn = get_connection()
                     cur = conn.cursor()
@@ -1148,15 +1143,17 @@ def render_tela_admin():
                         INSERT INTO baixas (os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim)
                         VALUES %s
                         ON CONFLICT (os) DO UPDATE SET 
-                        status = EXCLUDED.status, realizado_em = EXCLUDED.realizado_em, coordenacao = EXCLUDED.coordenacao, 
-                        concluido_por = EXCLUDED.concluido_por, data_inicio = EXCLUDED.data_inicio, 
-                        hora_inicio = EXCLUDED.hora_inicio, data_fim = EXCLUDED.data_fim, hora_fim = EXCLUDED.hora_fim;
+                        status = EXCLUDED.status, realizado_em = EXCLUDED.realizado_em, concluido_por = EXCLUDED.concluido_por,
+                        data_inicio = EXCLUDED.data_inicio, hora_inicio = EXCLUDED.hora_inicio, 
+                        data_fim = EXCLUDED.data_fim, hora_fim = EXCLUDED.hora_fim;
                     """, registros_lote, page_size=500)
                     conn.commit(); cur.close(); release_connection(conn)
-                
-                st.success(f"✅ Processado com sucesso: {len(registros_lote)} OSs.")
-                time.sleep(2); st.rerun()
-            except Exception as e: st.error(f"Erro: {e}")
+                    
+                    st.success(f"✅ Processadas {len(registros_lote)} OSs.")
+                    st.write(f"Exemplo processado: OS {registros_lote[0][0]} | Técnico {registros_lote[0][4]} | Data {registros_lote[0][2]}")
+                    time.sleep(2); st.rerun()
+            except Exception as e:
+                st.error(f"Erro ao processar: {e}")
 #endregion
 #endregion 3.8
 
