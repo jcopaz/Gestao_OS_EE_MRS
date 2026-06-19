@@ -1173,6 +1173,7 @@ def render_tela_admin():
         if pd.isna(valor) or str(valor).strip() == "":
             return ""
 
+        # 1. Trata números seriais exportados crus do Excel
         if isinstance(valor, (int, float)) and not isinstance(valor, bool):
             try:
                 numero = float(valor)
@@ -1182,85 +1183,66 @@ def render_tela_admin():
             except Exception:
                 pass
 
-        texto = _limpar_texto(valor).replace(".", "/")
+        # 2. Se o Excel já entregou como objeto Data (datetime nativo), extraímos no padrão BR
+        if hasattr(valor, "strftime"):
+            return valor.strftime("%d/%m/%Y")
+
+        texto = _limpar_texto(valor).replace(".", "/").replace("-", "/")
+
+        # 3. BLINDAGEM MÁXIMA: Tenta o formato Brasileiro EXPLICITAMENTE primeiro
+        try:
+            dt = pd.to_datetime(texto, format="%d/%m/%Y")
+            return dt.strftime("%d/%m/%Y")
+        except Exception:
+            pass
+
+        # 4. Fallback: Se for formato com nome de mês (Ex: 26-jun-2026), o Pandas resolve
         dt = pd.to_datetime(texto, dayfirst=True, errors="coerce")
+        if pd.notna(dt):
+            return dt.strftime("%d/%m/%Y")
 
-        if pd.isna(dt):
-            return ""
-
-        return dt.strftime("%d/%m/%Y")
+        return ""
 
     def _formatar_hora_iw47(valor):
+        # ... (Deixe a função _formatar_hora_iw47 exatamente como está no seu código)
         if pd.isna(valor) or str(valor).strip() == "":
             return ""
-
         if hasattr(valor, "hour") and hasattr(valor, "minute"):
-            return (
-                f"{int(valor.hour):02d}:"
-                f"{int(valor.minute):02d}:"
-                f"{int(getattr(valor, 'second', 0)):02d}"
-            )
-
+            return f"{int(valor.hour):02d}:{int(valor.minute):02d}:{int(getattr(valor, 'second', 0)):02d}"
         if isinstance(valor, pd.Timedelta):
             total_segundos = int(round(valor.total_seconds())) % 86400
-            return (
-                f"{total_segundos // 3600:02d}:"
-                f"{(total_segundos % 3600) // 60:02d}:"
-                f"{total_segundos % 60:02d}"
-            )
-
+            return f"{total_segundos // 3600:02d}:{(total_segundos % 3600) // 60:02d}:{total_segundos % 60:02d}"
         texto = _limpar_texto(valor).replace(",", ".")
-
         if ":" in texto:
             try:
                 partes = texto.split(":")
                 hora = int(float(partes[0])) % 24
                 minuto = int(float(partes[1])) if len(partes) > 1 else 0
                 segundo = int(float(partes[2])) if len(partes) > 2 else 0
-
                 if 0 <= minuto <= 59 and 0 <= segundo <= 59:
                     return f"{hora:02d}:{minuto:02d}:{segundo:02d}"
             except Exception:
                 return ""
-
         try:
             numero = float(texto)
-
-            # Fração de dia do Excel/SAP: 0.5 = 12:00:00
             if 0 <= numero < 1:
                 total_segundos = int(round(numero * 86400)) % 86400
-                return (
-                    f"{total_segundos // 3600:02d}:"
-                    f"{(total_segundos % 3600) // 60:02d}:"
-                    f"{total_segundos % 60:02d}"
-                )
-
-            # Hora decimal: 9.5 = 09:30:00
+                return f"{total_segundos // 3600:02d}:{(total_segundos % 3600) // 60:02d}:{total_segundos % 60:02d}"
             if 1 <= numero < 24:
                 total_segundos = int(round(numero * 3600)) % 86400
-                return (
-                    f"{total_segundos // 3600:02d}:"
-                    f"{(total_segundos % 3600) // 60:02d}:"
-                    f"{total_segundos % 60:02d}"
-                )
-
-            # Formato compacto: 940, 0940, 094000
+                return f"{total_segundos // 3600:02d}:{(total_segundos % 3600) // 60:02d}:{total_segundos % 60:02d}"
             inteiro = str(int(numero)).zfill(4)
             if len(inteiro) in (4, 6):
                 hora = int(inteiro[:2])
                 minuto = int(inteiro[2:4])
                 segundo = int(inteiro[4:6]) if len(inteiro) == 6 else 0
-
                 if 0 <= hora <= 23 and 0 <= minuto <= 59 and 0 <= segundo <= 59:
                     return f"{hora:02d}:{minuto:02d}:{segundo:02d}"
-
         except Exception:
             pass
-
         dt = pd.to_datetime(valor, errors="coerce")
         if pd.notna(dt):
             return dt.strftime("%H:%M:%S")
-
         return ""
 
     def _montar_datetime_iw47(data_valor, hora_valor):
@@ -1270,9 +1252,11 @@ def render_tela_admin():
         if not data_txt or not hora_txt:
             return pd.NaT
 
+        # BLINDAGEM MÁXIMA 2: Como sabemos que a data já saiu em DD/MM/YYYY, 
+        # nós amarramos o Pandas para NUNCA inverter!
         return pd.to_datetime(
             f"{data_txt} {hora_txt}",
-            dayfirst=True,
+            format="%d/%m/%Y %H:%M:%S",
             errors="coerce"
         )
 
