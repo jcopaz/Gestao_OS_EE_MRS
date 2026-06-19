@@ -36,7 +36,7 @@ if not st.session_state.get("logged_in", False):
         /* Imagem de Fundo (Altere o caminho abaixo para o seu arquivo) */
         .stApp {
             background: linear-gradient(rgba(15, 23, 42, 0.85), rgba(15, 23, 42, 0.85)), 
-                        url("fundo1.jpg"); 
+                        url("fundo.png"); 
             background-size: cover;
             background-position: center;
         }
