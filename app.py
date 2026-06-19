@@ -2710,8 +2710,6 @@ if _DEV_MODE:
 
 #region SESSÃO 7: Sidebar, Navegação, Carga e Filtro
 
-#region SESSÃO 7: Sidebar, Navegação, Carga e Filtro
-
 #region 7.1: Identidade visual, navegação e escopo
 st.markdown("""
     <style>
@@ -2944,7 +2942,7 @@ df_filtrado = aplicar_filtros_sidebar(
     start_date=start_date, end_date=end_date, status_sel=status_sel, intervalo_sel=intervalo_sel
 )
 #endregion 7.3
-#endregion SESSÃO 7
+#endregion
 
 #region SESSÃO 8: Sistema, Dados e Gestão de Usuários
 
@@ -4193,10 +4191,9 @@ if st.session_state.get("tela_atual") == "governanca":
             except: return 0.0
 
         df_gov["Tempo_Minutos"] = df_gov.apply(calc_duracao, axis=1)
-        
-        # O SEGREDO DO SUCESSO DA ABA 1: Conversão Nativa do Pandas
-        df_gov["Data_Real_DT"] = pd.to_datetime(df_gov["data_inicio"], dayfirst=True, errors="coerce")
+        df_gov["Data_Real_DT"] = pd.to_datetime(df_gov["data_fim"], dayfirst=True, errors="coerce")
         df_gov["Data_Real"] = df_gov["Data_Real_DT"].dt.date
+        
         df_gov["Via_GPS"] = df_gov["geolocalizacao_baixa"].apply(lambda x: 0 if "Base" in str(x) or "Sede" in str(x) else 1)
         df_gov["Alta_Prioridade"] = df_gov["Criticidade_rank"].apply(lambda x: 1 if x in [1, 2] else 0)
 
@@ -4861,8 +4858,8 @@ if st.session_state.get("tela_atual") == "governanca":
                 [
                     "Ordem servico",
                     "Apontador Principal",
-                    "data_inicio",
-                    "hora_fim",
+                    "data_fim",     # MUDANÇA: Usando Data do Fim de Execução (IW47)
+                    "hora_fim",     # Hora Apontada (IW47)
                     "geolocalizacao_baixa",
                     "Co-Executantes",
                     "Tempo_Minutos"
@@ -4871,11 +4868,11 @@ if st.session_state.get("tela_atual") == "governanca":
             .copy()
         )
 
-        # 1. Cria a coluna de ordenação cronológica com Pandas Nativo
-        df_auditoria["Data_Sort"] = pd.to_datetime(df_auditoria["data_inicio"], dayfirst=True, errors="coerce")
+        # 1. Cria a coluna de ordenação cronológica com Pandas Nativo usando data_fim
+        df_auditoria["Data_Sort"] = pd.to_datetime(df_auditoria["data_fim"], dayfirst=True, errors="coerce")
         
         # 2. Para exibição, garante o formato visual BR estrito (DD/MM/YYYY)
-        df_auditoria["data_inicio"] = df_auditoria["Data_Sort"].dt.strftime("%d/%m/%Y").fillna("N/D")
+        df_auditoria["data_fim"] = df_auditoria["Data_Sort"].dt.strftime("%d/%m/%Y").fillna("N/D")
 
         df_auditoria = (
             df_auditoria.sort_values(
@@ -4885,7 +4882,7 @@ if st.session_state.get("tela_atual") == "governanca":
             .drop(columns=["Data_Sort"])
             .rename(columns={
                 "Ordem servico": "OS",
-                "data_inicio": "Data",
+                "data_fim": "Data",
                 "hora_fim": "Hora Apontada",
                 "geolocalizacao_baixa": "Localização do Celular",
                 "Tempo_Minutos": "Tempo Gasto (min)"
