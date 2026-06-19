@@ -939,7 +939,7 @@ def render_tela_admin():
             st.info("Nenhum upload realizado até o momento.")
     #endregion 3.8.2
 
-    #region 3.8.3: Upload de Mapeamento de Pátios
+#region 3.8.3: Upload de Mapeamento de Pátios
     with st.expander("🗺️ Mapeamento de Ativos → Pátios", expanded=False):
         arquivo_mapa = st.file_uploader("Selecione a planilha de mapeamento", type=["xlsx"], key="upload_mapeamento_patios")
         if arquivo_mapa and st.button("🚀 Processar Mapeamento", use_container_width=True, type="primary"):
@@ -980,7 +980,7 @@ def render_tela_admin():
                 except Exception as e: st.error(f"❌ Erro: {e}")
     #endregion 3.8.3
 
-    #region 3.8.4: Exportação SAP
+#region 3.8.4: Exportação SAP
     if "Exportar SAP" in st.session_state.get("governanca", ""):
         st.markdown("---"); st.subheader("⬇️ Exportação SAP")
         if st.button("📦 Preparar Arquivo SAP (Massa)", use_container_width=False, type="primary"):
@@ -1003,7 +1003,7 @@ def render_tela_admin():
             st.download_button("⬇️ Baixar Arquivo SAP", data=st.session_state["sap_massa_bytes"], file_name=st.session_state["sap_massa_nome"], mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     #endregion 3.8.4
 
-    #region 3.8.5: Importação de Baixas em Massa (IW47)
+#region 3.8.5: Importação de Baixas em Massa (IW47)
     st.markdown("---"); st.subheader("📥 Importação de Baixas em Massa (IW47)")
     coord_baixa = st.selectbox("Coordenação", ["Paranapiacaba", "Piaçaguera"])
     arquivo_iw47 = st.file_uploader("Selecione a planilha IW47", type=["xlsx", "csv"])
@@ -1067,7 +1067,9 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         colunas_export.append("Descrição Longa")
 
     df_export = df_pendentes.head(100)[colunas_export].fillna("")
-    os_json = df_export.to_json(orient="records", force_ascii=False)
+    
+    # Sanitização crítica para evitar que o JS quebre caso haja a palavra </script> dentro da descrição de uma OS
+    os_json = df_export.to_json(orient="records", force_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
 
     usuarios_equipe = ["Sozinho (Nenhum)"]
     conn = get_connection()
@@ -1084,12 +1086,9 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     finally:
         release_connection(conn)
 
-    usuarios_json = json.dumps(usuarios_equipe, ensure_ascii=False)
+    usuarios_json = json.dumps(usuarios_equipe, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
 
-    api_url_fixa = st.secrets.get(
-        "OFFLINE_API_URL",
-        "https://gestao-os-ee-mrs-producao.onrender.com/sincronizar_baixa_offline"
-    )
+    api_url_fixa = st.secrets.get("OFFLINE_API_URL", "https://gestao-os-ee-mrs-producao.onrender.com/sincronizar_baixa_offline")
     api_key_fixa = st.secrets.get("OFFLINE_API_KEY", "")
 
     html_head = f"""<!DOCTYPE html>
@@ -1099,238 +1098,47 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SGO MRS - Modo Offline ({usuario})</title>
     <style>
-        * {{
-            box-sizing: border-box;
-        }}
-        body {{
-            margin: 0;
-            padding: 0;
-            font-family: Arial, sans-serif;
-            background: #F8FAFC;
-            color: #0F172A;
-        }}
-        .container {{
-            max-width: 1100px;
-            margin: 0 auto;
-            padding: 16px;
-        }}
-        .topbar {{
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            gap: 12px;
-            margin-bottom: 16px;
-            padding: 12px 16px;
-            border-radius: 12px;
-            background: #FFFFFF;
-            box-shadow: 0 2px 10px rgba(15, 23, 42, 0.08);
-        }}
-        .title {{
-            margin: 0;
-            font-size: 22px;
-            font-weight: 700;
-            color: #1E3A8A;
-        }}
-        .subtitle {{
-            margin: 4px 0 0 0;
-            font-size: 14px;
-            color: #475569;
-        }}
-        .status-badge {{
-            padding: 8px 12px;
-            border-radius: 999px;
-            font-size: 13px;
-            font-weight: 700;
-            color: #FFFFFF;
-            background: #64748B;
-            white-space: nowrap;
-        }}
-        .status-online {{
-            background: #16A34A;
-        }}
-        .status-offline {{
-            background: #DC2626;
-        }}
-        .grid {{
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 16px;
-        }}
-        .card {{
-            background: #FFFFFF;
-            border-radius: 12px;
-            padding: 16px;
-            box-shadow: 0 2px 10px rgba(15, 23, 42, 0.08);
-        }}
-        .card h2 {{
-            margin-top: 0;
-            margin-bottom: 10px;
-            font-size: 18px;
-            color: #1E293B;
-        }}
-        .toolbar {{
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 12px;
-        }}
-        .toolbar-3 {{
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 12px;
-        }}
-        .field {{
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-            margin-bottom: 12px;
-        }}
-        .field label {{
-            font-size: 13px;
-            color: #334155;
-            font-weight: 600;
-        }}
-        .field input,
-        .field select {{
-            width: 100%;
-            padding: 10px 12px;
-            border: 1px solid #CBD5E1;
-            border-radius: 10px;
-            font-size: 14px;
-            background: #FFFFFF;
-        }}
-        .field input[readonly] {{
-            background: #E2E8F0;
-            color: #475569;
-        }}
-        .btn {{
-            width: 100%;
-            border: none;
-            border-radius: 10px;
-            padding: 12px 14px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 700;
-        }}
-        .btn-primary {{
-            background: #1D4ED8;
-            color: #FFFFFF;
-        }}
-        .btn-success {{
-            background: #059669;
-            color: #FFFFFF;
-        }}
-        .btn-danger {{
-            background: #DC2626;
-            color: #FFFFFF;
-        }}
-        .btn-secondary {{
-            background: #E2E8F0;
-            color: #0F172A;
-        }}
-        .info-box {{
-            padding: 12px;
-            border-radius: 10px;
-            margin-bottom: 12px;
-            font-size: 14px;
-        }}
-        .info-blue {{
-            background: #EFF6FF;
-            color: #1D4ED8;
-            border: 1px solid #BFDBFE;
-        }}
-        .info-yellow {{
-            background: #FEF3C7;
-            color: #92400E;
-            border: 1px solid #FCD34D;
-        }}
-        .info-red {{
-            background: #FEF2F2;
-            color: #991B1B;
-            border: 1px solid #FECACA;
-        }}
-        .queue-counter {{
-            font-size: 28px;
-            font-weight: 800;
-            color: #0F172A;
-            margin: 0;
-        }}
-        .os-list {{
-            display: grid;
-            gap: 12px;
-        }}
-        .os-item {{
-            border: 1px solid #E2E8F0;
-            border-radius: 12px;
-            padding: 14px;
-            background: #FFFFFF;
-        }}
-        .os-item.locked {{
-            background: #F8FAFC;
-            color: #94A3B8;
-            border-color: #E2E8F0;
-            opacity: 0.75;
-        }}
-        .os-header {{
-            display: flex;
-            justify-content: space-between;
-            gap: 12px;
-            align-items: center;
-            margin-bottom: 10px;
-        }}
-        .os-title {{
-            font-size: 16px;
-            font-weight: 800;
-            color: #0F172A;
-        }}
-        .chip {{
-            display: inline-block;
-            padding: 4px 8px;
-            border-radius: 999px;
-            font-size: 12px;
-            font-weight: 700;
-            background: #E2E8F0;
-            color: #334155;
-        }}
-        .chip-critical {{
-            background: #FEE2E2;
-            color: #991B1B;
-        }}
-        .os-grid {{
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 12px;
-        }}
-        .os-meta {{
-            font-size: 13px;
-            color: #475569;
-            margin: 4px 0;
-        }}
-        .desc-box {{
-            padding: 10px;
-            background: #F8FAFC;
-            border-radius: 10px;
-            border: 1px solid #E2E8F0;
-            font-size: 13px;
-            color: #334155;
-        }}
-        .small {{
-            font-size: 12px;
-            color: #64748B;
-        }}
-        .footer-space {{
-            height: 24px;
-        }}
-        @media (max-width: 768px) {{
-            .toolbar,
-            .toolbar-3,
-            .os-grid {{
-                grid-template-columns: 1fr;
-            }}
-            .os-header {{
-                flex-direction: column;
-                align-items: flex-start;
-            }}
-        }}
+        * {{ box-sizing: border-box; }}
+        body {{ margin: 0; padding: 0; font-family: Arial, sans-serif; background: #F8FAFC; color: #0F172A; }}
+        .container {{ max-width: 1100px; margin: 0 auto; padding: 16px; }}
+        .topbar {{ display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; padding: 12px 16px; border-radius: 12px; background: #FFFFFF; box-shadow: 0 2px 10px rgba(15, 23, 42, 0.08); }}
+        .title {{ margin: 0; font-size: 22px; font-weight: 700; color: #1E3A8A; }}
+        .subtitle {{ margin: 4px 0 0 0; font-size: 14px; color: #475569; }}
+        .status-badge {{ padding: 8px 12px; border-radius: 999px; font-size: 13px; font-weight: 700; color: #FFFFFF; white-space: nowrap; }}
+        .status-online {{ background: #16A34A; }}
+        .status-offline {{ background: #DC2626; }}
+        .grid {{ display: grid; grid-template-columns: 1fr; gap: 16px; }}
+        .card {{ background: #FFFFFF; border-radius: 12px; padding: 16px; box-shadow: 0 2px 10px rgba(15, 23, 42, 0.08); }}
+        .card h2 {{ margin-top: 0; margin-bottom: 10px; font-size: 18px; color: #1E293B; }}
+        .toolbar {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
+        .toolbar-3 {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }}
+        .field {{ display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }}
+        .field label {{ font-size: 13px; color: #334155; font-weight: 600; }}
+        .field input, .field select {{ width: 100%; padding: 10px 12px; border: 1px solid #CBD5E1; border-radius: 10px; font-size: 14px; background: #FFFFFF; }}
+        .field input[readonly] {{ background: #E2E8F0; color: #475569; }}
+        .btn {{ width: 100%; border: none; border-radius: 10px; padding: 12px 14px; cursor: pointer; font-size: 14px; font-weight: 700; }}
+        .btn-primary {{ background: #1D4ED8; color: #FFFFFF; }}
+        .btn-success {{ background: #059669; color: #FFFFFF; }}
+        .btn-danger {{ background: #DC2626; color: #FFFFFF; }}
+        .btn-secondary {{ background: #E2E8F0; color: #0F172A; }}
+        .info-box {{ padding: 12px; border-radius: 10px; margin-bottom: 12px; font-size: 14px; }}
+        .info-blue {{ background: #EFF6FF; color: #1D4ED8; border: 1px solid #BFDBFE; }}
+        .info-yellow {{ background: #FEF3C7; color: #92400E; border: 1px solid #FCD34D; }}
+        .info-red {{ background: #FEF2F2; color: #991B1B; border: 1px solid #FECACA; }}
+        .queue-counter {{ font-size: 28px; font-weight: 800; color: #0F172A; margin: 0; }}
+        .os-list {{ display: grid; gap: 12px; }}
+        .os-item {{ border: 1px solid #E2E8F0; border-radius: 12px; padding: 14px; background: #FFFFFF; }}
+        .os-item.locked {{ background: #F8FAFC; color: #94A3B8; border-color: #E2E8F0; opacity: 0.75; }}
+        .os-header {{ display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 10px; }}
+        .os-title {{ font-size: 16px; font-weight: 800; color: #0F172A; }}
+        .chip {{ display: inline-block; padding: 4px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #E2E8F0; color: #334155; }}
+        .chip-critical {{ background: #FEE2E2; color: #991B1B; }}
+        .os-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
+        .os-meta {{ font-size: 13px; color: #475569; margin: 4px 0; }}
+        .desc-box {{ padding: 10px; background: #F8FAFC; border-radius: 10px; border: 1px solid #E2E8F0; font-size: 13px; color: #334155; }}
+        .small {{ font-size: 12px; color: #64748B; }}
+        .footer-space {{ height: 24px; }}
+        @media (max-width: 768px) {{ .toolbar, .toolbar-3, .os-grid {{ grid-template-columns: 1fr; }} .os-header {{ flex-direction: column; align-items: flex-start; }} }}
     </style>
 </head>
 <body>
@@ -1449,7 +1257,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         }});
     }}
 
-    function txStore(mode = "readonly") {{
+    function txStore(mode) {{
+        mode = mode || "readonly";
         const tx = db.transaction(STORE_NAME, mode);
         return tx.objectStore(STORE_NAME);
     }}
@@ -1465,13 +1274,15 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         }}
     }}
 
-    function setSyncMsg(texto, tipo = "blue") {{
+    function setSyncMsg(texto, tipo) {{
+        tipo = tipo || "blue";
         const el = document.getElementById("syncMsg");
         el.textContent = texto;
         el.className = "info-box " + (tipo === "red" ? "info-red" : tipo === "yellow" ? "info-yellow" : "info-blue");
     }}
 
-    function setGpsInfo(texto, tipo = "blue") {{
+    function setGpsInfo(texto, tipo) {{
+        tipo = tipo || "blue";
         const el = document.getElementById("gpsInfo");
         el.textContent = texto;
         el.className = "info-box " + (tipo === "red" ? "info-red" : tipo === "yellow" ? "info-yellow" : "info-blue");
@@ -1627,10 +1438,12 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         const selecionadas = [];
 
         for (let i = 0; i < OS_DATA.length; i += 1) {{
-            const inicio = document.getElementById(`ini_${{i}}`)?.value || "";
-            const fim = document.getElementById(`fim_${{i}}`)?.value || "";
+            const elIni = document.getElementById(`ini_${{i}}`);
+            const elFim = document.getElementById(`fim_${{i}}`);
+            const inicio = elIni ? elIni.value : "";
+            const fim = elFim ? elFim.value : "";
             const fileInput = document.getElementById(`foto_${{i}}`);
-            const foto = fileInput?.files?.[0] || null;
+            const foto = (fileInput && fileInput.files && fileInput.files.length > 0) ? fileInput.files[0] : null;
             const osItem = OS_DATA[i];
 
             if (!(inicio && fim && foto)) continue;
@@ -1749,8 +1562,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 formData.append("os_id", item.os_id);
                 formData.append("ativo_id", item.ativo_id);
                 formData.append("usuario", item.usuario);
-                formData.append("lat_browser", String(item.lat_browser ?? 0.0));
-                formData.append("lon_browser", String(item.lon_browser ?? 0.0));
+                formData.append("lat_browser", String(item.lat_browser || 0.0));
+                formData.append("lon_browser", String(item.lon_browser || 0.0));
                 formData.append("data_hora_local", item.data_hora_local);
                 formData.append("acompanhante", item.acompanhante || "");
                 formData.append("horario_inicio", item.horario_inicio);
