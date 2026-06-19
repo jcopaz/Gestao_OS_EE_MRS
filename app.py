@@ -1078,7 +1078,7 @@ def render_tela_admin():
             st.download_button("⬇️ Baixar Arquivo SAP", data=st.session_state["sap_massa_bytes"], file_name=st.session_state["sap_massa_nome"], mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     #endregion 3.8.4
 
-    #region 3.8.5: Importação de Baixas em Massa (IW47)
+#region 3.8.5: Importação de Baixas em Massa (IW47)
     st.markdown("---"); st.subheader("📥 Importação de Baixas em Massa (IW47)")
     
     st.info("""
@@ -1096,7 +1096,7 @@ def render_tela_admin():
     arquivo_iw47 = st.file_uploader("Selecione a planilha IW47 exportada do SAP", type=["xlsx", "csv"], key="upload_iw47")
 
     if arquivo_iw47 and st.button("🚀 Processar Baixas em Massa", type="primary", key="btn_proc_iw47"):
-        with st.spinner("Processando e cruzando dados de usuários (Alta Performance)..."):
+        with st.spinner("Deduplicando, cruzando usuários e enviando para o banco..."):
             try:
                 # Leitura mais rápida da planilha
                 if arquivo_iw47.name.lower().endswith(".csv"):
@@ -1167,8 +1167,11 @@ def render_tela_admin():
                     release_connection(conn)
                 # === FIM DO CRUZAMENTO ===
 
-                # === PREPARAÇÃO DO LOTE NA MEMÓRIA (Alta Performance) ===
-                registros_lote = []
+                # === PREPARAÇÃO DO LOTE COM DEDUPLICAÇÃO NA MEMÓRIA ===
+                # Usamos um dicionário onde a CHAVE é a OS. Se o SAP mandar a mesma OS 3 vezes, 
+                # a última linha sobrescreve as anteriores em memória antes de ir pro banco.
+                registros_dict = {}
+                
                 for _, row in df_iw.iterrows():
                     os_val = str(row[col_os]).strip()
                     if os_val.endswith('.0'): os_val = os_val[:-2] 
@@ -1193,13 +1196,16 @@ def render_tela_admin():
                     coord_val = str(row[col_centro]).strip() if col_centro else coord_baixa
                     if coord_val == "nan" or not coord_val: coord_val = coord_baixa
                     
-                    # Adiciona à lista de memória em vez de enviar pro banco
-                    registros_lote.append((
+                    # Salva no Dicionário para garantir unicidade da OS no Bulk Insert
+                    registros_dict[os_val] = (
                         os_val, "Realizado", realizado_em_str, coord_val, concluido_por_val,
                         "Baixa SAP IW47", "Sozinho", dt_ini_val, hr_ini_val, dt_fim_val, hr_fim_val
-                    ))
+                    )
 
-                # === INSERÇÃO EM MASSA (Bulk Insert) ===
+                # Converte o dicionário blindado de volta para lista
+                registros_lote = list(registros_dict.values())
+
+                # === INSERÇÃO EM MASSA (Bulk Insert Seguro) ===
                 if registros_lote:
                     from psycopg2.extras import execute_values
                     conn = get_connection()
@@ -1222,7 +1228,7 @@ def render_tela_admin():
                     finally:
                         release_connection(conn)
 
-                st.success(f"✅ Sucesso! {len(registros_lote)} baixas processadas, cruzadas e importadas em lote.")
+                st.success(f"✅ Sucesso! {len(registros_lote)} baixas únicas processadas e importadas em lote.")
                 time.sleep(2)
                 st.rerun()
 
