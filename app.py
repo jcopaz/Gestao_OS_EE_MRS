@@ -27,35 +27,41 @@ from psycopg2.extras import execute_values
 from psycopg2 import pool
 #endregion 1.1
 
-#region 1.2: Configurações Globais e Estilo Minimalista (Fundo Preto)
+#region 1.2: Configurações Globais e Estilo Corporativo (Com Imagem)
 st.set_page_config(page_title="Painel de OS Eletroeletrônica", layout="wide", initial_sidebar_state="collapsed")
 
 if not st.session_state.get("logged_in", False):
     st.markdown("""
         <style>
-        /* Fundo Preto Absoluto para leveza máxima */
+        /* Imagem de Fundo com filtro de escurecimento ajustado para legibilidade */
         [data-testid="stAppViewContainer"] {
-            background-color: #000000 !important;
+            background: linear-gradient(rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0.7)), 
+                        url("fundo.png") !important;
+            background-size: cover !important;
+            background-position: center !important;
+            background-repeat: no-repeat !important;
         }
         
-        /* Ajuste de fontes e campos para alto contraste */
-        h1, label, p {
-            color: #FFFFFF !important;
+        /* Título com sombra para destacar sobre a imagem */
+        .titulo-login {
+            text-align: center; 
+            color: #FFFFFF !important; 
+            text-shadow: 2px 2px 8px rgba(0,0,0,0.8);
+            font-size: 3rem !important;
+            font-weight: 800 !important;
         }
         
-        /* Estilo do container de Login (Card leve) */
+        /* Card de Login translúcido (Vidro) */
         .stForm {
-            background-color: #111111 !important;
-            border: 1px solid #333333 !important;
-            border-radius: 12px !important;
-            padding: 30px !important;
+            background-color: rgba(0, 0, 0, 0.5) !important;
+            border: 1px solid rgba(255, 255, 255, 0.1) !important;
+            border-radius: 16px !important;
+            padding: 40px !important;
+            backdrop-filter: blur(8px); /* Efeito Glassmorphism */
         }
         
-        /* Inputs de texto com texto branco */
-        input {
-            color: #FFFFFF !important;
-            background-color: #1A1A1A !important;
-        }
+        /* Labels e Inputs brancos e legíveis */
+        label { color: #FFFFFF !important; font-weight: 600 !important; text-shadow: 1px 1px 2px rgba(0,0,0,0.5); }
         
         /* Botão Gradiente MRS */
         div.stButton > button {
@@ -64,15 +70,14 @@ if not st.session_state.get("logged_in", False):
             border: none !important;
             border-radius: 8px !important;
             font-weight: 700 !important;
-            width: 100%;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.3) !important;
         }
         </style>
     """, unsafe_allow_html=True)
 
-    col_vazia1, col_centro, col_vazia2 = st.columns([1.5, 1, 1.5])
+    col_vazia1, col_centro, col_vazia2 = st.columns([1, 1, 1])
     with col_centro:
-        st.markdown("<h1 style='text-align: center; color: white;'>Acesso Restrito</h1>", unsafe_allow_html=True)
-        # O formulário que segue abaixo aparecerá com as fontes brancas automaticamente
+        st.markdown("<h1 class='titulo-login'>Acesso Restrito</h1>", unsafe_allow_html=True)
 #endregion 1.2
 
 #region 1.3: Conexão com Banco de Dados e Constantes de Status
