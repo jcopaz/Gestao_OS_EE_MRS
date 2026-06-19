@@ -260,7 +260,7 @@ if not st.session_state["logged_in"]:
                         release_connection(conn)
                         st.success("Concluído! Entre com sua nova senha."); st.session_state["needs_reset"] = False; st.rerun()
             if st.button("⬅️ Voltar"): st.session_state["needs_reset"] = False; st.rerun()
-#endregion 2.1
+#endregion
 
 #region 2.3: Etapa 2 — GPS Obrigatório
         elif st.session_state.get("validando_gps"):
@@ -297,7 +297,7 @@ if not st.session_state["logged_in"]:
                 if st.button("⬅️ Voltar para o Login"):
                     st.session_state["validando_gps"] = False
                     st.rerun()
-#endregion 2.2
+#endregion
 
 #region 2.4: Etapa 1 — Login Padrão
         else:
@@ -335,7 +335,7 @@ if not st.session_state["logged_in"]:
                         st.rerun()
                 else: st.error("❌ Usuário ou senha incorretos.")
     st.stop()
-#endregion 2.3
+#endregion
 
 #endregion SESSÃO 2
 
@@ -1085,7 +1085,7 @@ def render_tela_admin():
     💡 **Padrão Exigido para a Planilha IW47:**
     A planilha exportada do SAP deve conter os seguintes cabeçalhos para o apontamento correto de datas, horários e equipe:
     * **Ordem** (Número da OS)
-    * **Matrícula** ou **Nome** (Identificação do técnico executante)
+    * **Nº pessoal**, **Matrícula** ou **Nome** (Identificação do técnico)
     * **Data real do fim de execução**
     * **Hora real do fim de execução**
     * **Data real de início da execução** (Opcional)
@@ -1096,20 +1096,21 @@ def render_tela_admin():
     arquivo_iw47 = st.file_uploader("Selecione a planilha IW47 exportada do SAP", type=["xlsx", "csv"], key="upload_iw47")
 
     if arquivo_iw47 and st.button("🚀 Processar Baixas em Massa", type="primary", key="btn_proc_iw47"):
-        with st.spinner("Processando..."):
+        with st.spinner("Processando e cruzando dados de usuários..."):
             try:
                 df_iw = pd.read_csv(arquivo_iw47, sep=None, engine="python", encoding="utf-8-sig") if arquivo_iw47.name.lower().endswith(".csv") else pd.read_excel(arquivo_iw47)
                 df_iw.columns = [str(c).strip().replace('\n', ' ') for c in df_iw.columns]
 
-                # Função auxiliar para encontrar as colunas independentemente da posição
+                # Função auxiliar de caça às colunas
                 def find_col(df, candidatos):
                     for c in candidatos:
                         for df_c in df.columns:
                             if str(c).upper() in str(df_c).upper(): return df_c
                     return None
 
+                # Mapeamento dinâmico (incluindo o Nº pessoal)
                 col_os = find_col(df_iw, ["Ordem", "OS", "Ordem servico"])
-                col_mat = find_col(df_iw, ["Matrícula", "Matricula", "Nome", "Técnico"])
+                col_mat = find_col(df_iw, ["Nº pessoal", "N° pessoal", "No pessoal", "Matrícula", "Matricula", "Nome", "Técnico"])
                 col_dt_fim = find_col(df_iw, ["Data real do fim", "Data fim"])
                 col_hr_fim = find_col(df_iw, ["Hora real do fim", "Hora fim"])
                 col_dt_ini = find_col(df_iw, ["Data real de início", "Data real do inicio", "Data inicio"])
@@ -1117,38 +1118,103 @@ def render_tela_admin():
                 col_centro = find_col(df_iw, ["Centro de Trabalho", "Centro", "Coordenação", "Local"])
 
                 if not col_os or not col_dt_fim or not col_hr_fim:
-                    st.error("❌ Colunas obrigatórias não encontradas na planilha IW47. Verifique o padrão exigido acima.")
+                    st.error("❌ Colunas obrigatórias não encontradas na planilha IW47. Verifique se a planilha possui 'Ordem', 'Data real do fim' e 'Hora real do fim'.")
                     st.stop()
 
+                # Funções de higienização de datas/horas
                 def formatar_data(val):
                     if pd.isna(val) or str(val).strip() == "": return ""
                     try: 
-                        # Tenta ler o formato DD/MM/AAAA que você confirmou
                         return pd.to_datetime(val, format="%d/%m/%Y", errors="raise").strftime("%d/%m/%Y")
                     except:
-                        # Fallback caso o SAP mande em outro formato
                         return pd.to_datetime(val, errors="coerce").strftime("%d/%m/%Y")
 
                 def formatar_hora(val):
                     if pd.isna(val) or str(val).strip() == "": return "00:00:00"
                     val_str = str(val).strip()
-                    
-                    # 1. Se já estiver no formato HH:MM:SS ou HH:MM
                     if ":" in val_str:
                         parts = val_str.split(":")
                         return f"{parts[0].zfill(2)}:{parts[1].zfill(2)}:{parts[2] if len(parts)>2 else '00'}"
-                    
-                    # 2. Se for fração do Excel (ex: 0.5 -> 12:00:00)
                     try:
                         f = float(val_str)
                         if 0 <= f < 1: 
                             t = int(round(f * 86400))
                             return f"{(t // 3600) % 24:02d}:{(t % 3600) // 60:02d}:{t % 60:02d}"
                     except: pass
-                    
                     return "00:00:00"
+
+                # === INÍCIO DO CRUZAMENTO DE USUÁRIOS ===
+                conn = get_connection()
+                mapa_usuarios = {}
+                try:
+                    cur = conn.cursor()
+                    cur.execute("SELECT username, nome FROM usuarios")
+                    for row in cur.fetchall():
+                        username_str = str(row[0]).strip()
+                        # Se não tiver 'nome', usa o próprio username
+                        nome_str = str(row[1]).strip() if pd.notna(row[1]) and row[1] else username_str
+                        mapa_usuarios[username_str] = nome_str
+                    cur.close()
+                except Exception as e:
+                    st.warning(f"Aviso: Não foi possível carregar a lista de usuários ({e})")
+                finally:
+                    release_connection(conn)
+                # === FIM DO CRUZAMENTO ===
+
+                # LÓGICA DE INJEÇÃO E OVERLAY
+                registros_processados = 0
+                for _, row in df_iw.iterrows():
+                    # 1. Trata OS
+                    os_val = str(row[col_os]).strip()
+                    if os_val.endswith('.0'): os_val = os_val[:-2] # Evita 123456.0
+                    if not os_val or os_val == "nan": continue
+                    
+                    # 2. Concatena Datas e Horas (Colunas H + I)
+                    dt_fim_val = formatar_data(row[col_dt_fim])
+                    hr_fim_val = formatar_hora(row[col_hr_fim])
+                    if not dt_fim_val: continue
+                    realizado_em_str = f"{dt_fim_val} {hr_fim_val}" # O segredo está aqui!
+                    
+                    # Datas de Início (se houver, senão copia do Fim)
+                    dt_ini_val = formatar_data(row[col_dt_ini]) if col_dt_ini else dt_fim_val
+                    hr_ini_val = formatar_hora(row[col_hr_ini]) if col_hr_ini else "00:00:00"
+                    
+                    # 3. Cruzamento do 'Nº pessoal' com a base de Usuários (Nome)
+                    matricula_crua = str(row[col_mat]).strip() if col_mat else ""
+                    if matricula_crua.endswith('.0'): matricula_crua = matricula_crua[:-2]
+                    
+                    if matricula_crua and matricula_crua != "nan":
+                        # O get busca a chave. Se não achar, usa a própria matrícula como default
+                        concluido_por_val = mapa_usuarios.get(matricula_crua, matricula_crua)
+                    else:
+                        concluido_por_val = "SAP (Massa)"
+                    
+                    # 4. Trata Centro de Trabalho
+                    coord_val = str(row[col_centro]).strip() if col_centro else coord_baixa
+                    if coord_val == "nan" or not coord_val: coord_val = coord_baixa
+                    
+                    # Executa a gravação no banco
+                    upsert_baixa(
+                        os_id=os_val,
+                        status="Realizado", 
+                        realizado_em_str=realizado_em_str, 
+                        coordenacao=coord_val,
+                        concluido_por=concluido_por_val,
+                        geolocalizacao_baixa="Baixa SAP IW47",
+                        equipe="Sozinho", 
+                        data_inicio=dt_ini_val,
+                        hora_inicio=hr_ini_val,
+                        data_fim=dt_fim_val,
+                        hora_fim=hr_fim_val
+                    )
+                    registros_processados += 1
+                
+                st.success(f"✅ Sucesso! {registros_processados} baixas processadas, cruzadas e importadas.")
+                time.sleep(2)
+                st.rerun()
+
             except Exception as e:
-                st.error(f"❌ Erro ao processar arquivo IW47: {e}")
+                st.error(f"❌ Erro fatal ao processar arquivo IW47: {e}")
                 st.stop()
 #endregion 3.8.5
 #endregion 3.8
