@@ -4276,49 +4276,134 @@ if st.session_state.get("tela_atual") == "governanca":
 #endregion 11.2
 
 #region 11.3: Fragmento de Governança (@st.fragment)
-    
+
     @st.fragment
     def fragmento_governanca():
+        #region 11.3.0: Parser BR exclusivo da Governança
+        def parse_data_br_gov(valor):
+            """
+            Parser único da Governança.
+            Garante padrão brasileiro DD/MM/AAAA e evita inversão 01/05 -> 05/01.
+            Aceita também Timestamp/date já convertidos.
+            """
+            if pd.isna(valor):
+                return pd.NaT
+
+            # Se já vier como Timestamp/datetime/date, tenta converter direto sem inverter.
+            if isinstance(valor, (pd.Timestamp, datetime)):
+                return pd.to_datetime(valor, errors="coerce")
+
+            texto = str(valor).strip()
+
+            if not texto or texto.lower() in ("nan", "none", "null"):
+                return pd.NaT
+
+            # Se vier com hora junto, mantém só a data.
+            texto = texto.split(" ")[0].strip()
+
+            # Normaliza separadores comuns.
+            texto = texto.replace(".", "/").replace("-", "/")
+
+            # Primeiro tenta o formato brasileiro explícito.
+            dt = pd.to_datetime(
+                texto,
+                format="%d/%m/%Y",
+                errors="coerce"
+            )
+
+            if pd.notna(dt):
+                return dt
+
+            # Fallback para variações.
+            return pd.to_datetime(
+                texto,
+                dayfirst=True,
+                errors="coerce"
+            )
+        #endregion 11.3.0
+
+        # Base local da Governança com data corrigida em padrão BR.
+        df_gov_local = df_gov.copy()
+
+        if "data_inicio" in df_gov_local.columns:
+            df_gov_local["Data_Real_DT"] = (
+                df_gov_local["data_inicio"]
+                .apply(parse_data_br_gov)
+                .dt.normalize()
+            )
+            df_gov_local["Data_Real"] = df_gov_local["Data_Real_DT"].dt.date
+        else:
+            df_gov_local["Data_Real_DT"] = pd.NaT
+            df_gov_local["Data_Real"] = pd.NaT
+
+        # Garante que existe uma coluna de exibição para colaborador.
+        if "Colaborador" not in df_gov_local.columns:
+            df_gov_local["Colaborador"] = df_gov_local["concluido_por"].astype(str).str.strip()
+
         col_f1, col_f2, col_f3 = st.columns(3)
 
         with col_f1:
             tecnicos_disp = sorted(
-                df_gov["Colaborador"]
+                df_gov_local["Colaborador"]
                 .dropna()
                 .astype(str)
                 .unique()
                 .tolist()
             )
+
             tec_selecionado = st.multiselect(
                 "👤 Filtrar Colaborador(es):",
                 tecnicos_disp,
                 default=tecnicos_disp
             )
-        with col_f2: 
-            patios_gov = sorted(df_gov["Patio"].dropna().unique().tolist())
-            patio_selecionado = st.multiselect("📍 Filtrar Pátio(s):", patios_gov, default=patios_gov)
+
+        with col_f2:
+            patios_gov = sorted(
+                df_gov_local["Patio"]
+                .dropna()
+                .astype(str)
+                .unique()
+                .tolist()
+            )
+
+            patio_selecionado = st.multiselect(
+                "📍 Filtrar Pátio(s):",
+                patios_gov,
+                default=patios_gov
+            )
+
         with col_f3:
-            # --- CORREÇÃO AQUI: Remove os campos vazios antes de calcular min e max ---
-            datas_validas = df_gov["Data_Real"].dropna()
-            
+            datas_validas = df_gov_local["Data_Real"].dropna()
+
             if not datas_validas.empty:
-                min_d, max_d = datas_validas.min(), datas_validas.max()
+                min_d = datas_validas.min()
+                max_d = datas_validas.max()
             else:
                 min_d = max_d = datetime.now().date()
-                
-            data_gov = st.date_input("📅 Período de Execução:", value=(min_d, max_d), min_value=min_d, max_value=max_d, format="DD/MM/YYYY")
 
-        d_inicio, d_fim = data_gov if isinstance(data_gov, tuple) and len(data_gov) == 2 else (data_gov[0] if isinstance(data_gov, tuple) else data_gov, data_gov[0] if isinstance(data_gov, tuple) else data_gov)
-        df_gov_f = df_gov[
-            (df_gov["Colaborador"].isin(tec_selecionado))
-            & (df_gov["Patio"].isin(patio_selecionado))
-            & (df_gov["Data_Real"] >= d_inicio)
-            & (df_gov["Data_Real"] <= d_fim)
+            data_gov = st.date_input(
+                "📅 Período de Execução:",
+                value=(min_d, max_d),
+                min_value=min_d,
+                max_value=max_d,
+                format="DD/MM/YYYY"
+            )
+
+        if isinstance(data_gov, tuple) and len(data_gov) == 2:
+            d_inicio, d_fim = data_gov
+        elif isinstance(data_gov, tuple) and len(data_gov) == 1:
+            d_inicio = d_fim = data_gov[0]
+        else:
+            d_inicio = d_fim = data_gov
+
+        df_gov_f = df_gov_local[
+            (df_gov_local["Colaborador"].isin(tec_selecionado))
+            & (df_gov_local["Patio"].isin(patio_selecionado))
+            & (df_gov_local["Data_Real"] >= d_inicio)
+            & (df_gov_local["Data_Real"] <= d_fim)
         ].copy()
-        
-#region 11.3.1: Helper de Eixo Temporal da Governança
-        # Este bloco precisa ficar ANTES da Sessão 11.4.
-        # Ele cria as variáveis usadas pelos 3 gráficos acumulados da Governança.
+
+        #region 11.3.1: Helper de Eixo Temporal da Governança
         data_ini_gov = pd.to_datetime(d_inicio).normalize()
         data_fim_gov = pd.to_datetime(d_fim).normalize()
 
@@ -4365,18 +4450,24 @@ if st.session_state.get("tela_atual") == "governanca":
         if df_gov_f.empty:
             st.info("Nenhuma execução encontrada para os filtros selecionados.")
             return
+
         total_os_gov = len(df_gov_f)
-        tme_minutos = df_gov_f["Tempo_Minutos"].fillna(0).mean() 
+        tme_minutos = df_gov_f["Tempo_Minutos"].fillna(0).mean()
         taxa_gps = (df_gov_f["Via_GPS"].sum() / total_os_gov) * 100 if total_os_gov > 0 else 0
         taxa_prio = (df_gov_f["Alta_Prioridade"].sum() / total_os_gov) * 100 if total_os_gov > 0 else 0
 
         c_k1, c_k2, c_k3, c_k4 = st.columns(4)
         c_k1.metric("🔧 Volume de Execução", f"{total_os_gov} OS")
-        c_k2.metric("⏱️ Tempo Médio / OS (TME)", f"{int(tme_minutos // 60)}h {int(tme_minutos % 60):02d}m" if not pd.isna(tme_minutos) else "0h 00m")
+        c_k2.metric(
+            "⏱️ Tempo Médio / OS (TME)",
+            f"{int(tme_minutos // 60)}h {int(tme_minutos % 60):02d}m"
+            if not pd.isna(tme_minutos)
+            else "0h 00m"
+        )
         c_k3.metric("🎯 Aderência à Prioridade", f"{taxa_prio:.1f}%")
         c_k4.metric("📍 Integridade de GPS", f"{taxa_gps:.1f}%")
         st.markdown("---")
-#endregion
+#endregion 11.3
 
 #region 11.4: Volume Diário e Produtividade Acumulada
         col_l1_c1, col_l1_c2 = st.columns(2, gap="large")
@@ -4386,10 +4477,11 @@ if st.session_state.get("tela_atual") == "governanca":
         # -----------------------------
         df_real_base = df_gov_f.copy()
 
-        df_real_base["Data_Real_DT"] = pd.to_datetime(
-            df_real_base["Data_Real"],
-            errors="coerce"
-        ).dt.normalize()
+        df_real_base["Data_Real_DT"] = (
+            df_real_base["data_inicio"]
+            .apply(parse_data_br_gov)
+            .dt.normalize()
+        )
 
         df_real_base = df_real_base[
             (df_real_base["Data_Real_DT"] >= data_ini_gov)
@@ -4409,14 +4501,15 @@ if st.session_state.get("tela_atual") == "governanca":
         # -----------------------------
         df_plan_base = df_os_base.copy()
 
-        df_plan_base["Data_Prog_DT"] = pd.to_datetime(
-            df_plan_base["Data inicial programada"],
-            errors="coerce"
-        ).dt.normalize()
+        df_plan_base["Data_Prog_DT"] = (
+            df_plan_base["Data inicial programada"]
+            .apply(parse_data_br_gov)
+            .dt.normalize()
+        )
 
-        if "Patio" in df_plan_base.columns and "patio_selecionado" in locals():
+        if "Patio" in df_plan_base.columns:
             df_plan_base = df_plan_base[
-                df_plan_base["Patio"].isin(patio_selecionado)
+                df_plan_base["Patio"].astype(str).isin([str(p) for p in patio_selecionado])
             ].copy()
 
         df_plan_base = df_plan_base[
@@ -4589,97 +4682,422 @@ if st.session_state.get("tela_atual") == "governanca":
 #endregion 11.4
 
 #region 11.5: Produtividade Individual, Esforço e Heatmap
-        st.markdown("<br>", unsafe_allow_html=True); st.markdown("---")
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("---")
         col_l2_c1, col_l2_c2, col_l2_c3 = st.columns(3, gap="medium")
 
         with col_l2_c1:
             st.markdown("#### 👥 Produtividade Individual")
             df_crit = df_gov_f.groupby("Criticidade").size().reset_index(name="Volume")
-            st_echarts(options={ "tooltip": {"trigger": "item"}, "legend": {"orient": "horizontal", "bottom": "0%"}, "series": [{ "type": "pie", "radius": ["40%", "70%"], "data": [{"value": int(r["Volume"]), "name": str(r["Criticidade"])} for _, r in df_crit.iterrows()], "label": {"show": True, "formatter": "{c}"} }] }, height="320px", key="gov_donut_criticidade")
+
+            st_echarts(
+                options={
+                    "tooltip": {"trigger": "item"},
+                    "legend": {"orient": "horizontal", "bottom": "0%"},
+                    "series": [
+                        {
+                            "type": "pie",
+                            "radius": ["40%", "70%"],
+                            "data": [
+                                {
+                                    "value": int(r["Volume"]),
+                                    "name": str(r["Criticidade"])
+                                }
+                                for _, r in df_crit.iterrows()
+                            ],
+                            "label": {"show": True, "formatter": "{c}"}
+                        }
+                    ]
+                },
+                height="320px",
+                key="gov_donut_criticidade"
+            )
 
         with col_l2_c2:
             st.markdown("#### ⏱️ Esforço x Classificação")
-            df_classif = df_gov_f.groupby("Classificacao").agg(Tempo_Medio=("Tempo_Minutos", "mean")).fillna(0).reset_index().sort_values("Tempo_Medio", ascending=True)
-            st_echarts(options={ "tooltip": {"trigger": "axis"}, "xAxis": {"type": "value"}, "yAxis": {"type": "category", "data": df_classif["Classificacao"].tolist()}, "series": [{"type": "bar", "data": df_classif["Tempo_Medio"].round(1).tolist(), "itemStyle": {"color": "#F59E0B"}}] }, height="320px", key="gov_esforco_classe")
+
+            df_classif = (
+                df_gov_f
+                .groupby("Classificacao")
+                .agg(Tempo_Medio=("Tempo_Minutos", "mean"))
+                .fillna(0)
+                .reset_index()
+                .sort_values("Tempo_Medio", ascending=True)
+            )
+
+            st_echarts(
+                options={
+                    "tooltip": {"trigger": "axis"},
+                    "xAxis": {"type": "value"},
+                    "yAxis": {
+                        "type": "category",
+                        "data": df_classif["Classificacao"].tolist()
+                    },
+                    "series": [
+                        {
+                            "type": "bar",
+                            "data": df_classif["Tempo_Medio"].round(1).tolist(),
+                            "itemStyle": {"color": "#F59E0B"}
+                        }
+                    ]
+                },
+                height="320px",
+                key="gov_esforco_classe"
+            )
 
         with col_l2_c3:
             st.markdown("#### 🔁 Tipo de OS x Frequência")
-            agg_heatmap = df_gov_f.groupby(["Patio", "Classificacao"]).size().reset_index(name="Total")
-            p_list, c_list = sorted(df_gov_f["Patio"].unique().tolist()), ["Confiabilidade e Segurança", "Segurança", "Confiabilidade"]
-            h_data, max_v = [], 0
+
+            agg_heatmap = (
+                df_gov_f
+                .groupby(["Patio", "Classificacao"])
+                .size()
+                .reset_index(name="Total")
+            )
+
+            p_list = sorted(df_gov_f["Patio"].dropna().unique().tolist())
+            c_list = ["Confiabilidade e Segurança", "Segurança", "Confiabilidade"]
+
+            h_data = []
+            max_v = 0
+
             for yi, c_n in enumerate(c_list):
                 for xi, p_n in enumerate(p_list):
-                    val = int(agg_heatmap[(agg_heatmap["Patio"] == p_n) & (agg_heatmap["Classificacao"] == c_n)]["Total"].iloc[0]) if not agg_heatmap[(agg_heatmap["Patio"] == p_n) & (agg_heatmap["Classificacao"] == c_n)].empty else 0
-                    h_data.append([xi, yi, val]); max_v = max(max_v, val)
-            st_echarts(options={ "tooltip": {"position": "top"}, "grid": {"height": "65%", "top": "5%", "bottom": "20%", "left": "20%"}, "xAxis": {"type": "category", "data": p_list, "axisLabel": {"interval": 0, "rotate": 45}}, "yAxis": {"type": "category", "data": c_list}, "visualMap": {"min": 0, "max": max_v if max_v > 0 else 5, "orient": "horizontal", "left": "center", "bottom": "0%", "inRange": {"color": ["#F8FAFC", "#93C5FD", "#1D4ED8"]}}, "series": [{"type": "heatmap", "data": h_data, "label": {"show": True}, "itemStyle": {"borderColor": "#FFFFFF", "borderWidth": 1.5}}] }, height="320px", key="gov_heatmap_freq")
+                    filtro_h = agg_heatmap[
+                        (agg_heatmap["Patio"] == p_n)
+                        & (agg_heatmap["Classificacao"] == c_n)
+                    ]
+
+                    val = int(filtro_h["Total"].iloc[0]) if not filtro_h.empty else 0
+                    h_data.append([xi, yi, val])
+                    max_v = max(max_v, val)
+
+            st_echarts(
+                options={
+                    "tooltip": {"position": "top"},
+                    "grid": {
+                        "height": "65%",
+                        "top": "5%",
+                        "bottom": "20%",
+                        "left": "20%"
+                    },
+                    "xAxis": {
+                        "type": "category",
+                        "data": p_list,
+                        "axisLabel": {"interval": 0, "rotate": 45}
+                    },
+                    "yAxis": {
+                        "type": "category",
+                        "data": c_list
+                    },
+                    "visualMap": {
+                        "min": 0,
+                        "max": max_v if max_v > 0 else 5,
+                        "orient": "horizontal",
+                        "left": "center",
+                        "bottom": "0%",
+                        "inRange": {
+                            "color": ["#F8FAFC", "#93C5FD", "#1D4ED8"]
+                        }
+                    },
+                    "series": [
+                        {
+                            "type": "heatmap",
+                            "data": h_data,
+                            "label": {"show": True},
+                            "itemStyle": {
+                                "borderColor": "#FFFFFF",
+                                "borderWidth": 1.5
+                            }
+                        }
+                    ]
+                },
+                height="320px",
+                key="gov_heatmap_freq"
+            )
 #endregion 11.5
 
 #region 11.6: Aderência, Top Técnicos e Variabilidade
-        st.markdown("<br>", unsafe_allow_html=True); st.markdown("---")
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("---")
         col_l3_c1, col_l3_c2, col_l3_c3 = st.columns(3, gap="medium")
 
         with col_l3_c1:
             st.markdown("#### 🕒 Aderência: Login vs. Apontamento")
-            df_logs["Data_Real_Pure"] = pd.to_datetime(df_logs["data_hora_login"]).dt.date
-            df_gov_f["dt_baixa_calc"] = pd.to_datetime(df_gov_f["data_fim"] + " " + df_gov_f["hora_fim"], format="%d/%m/%Y %H:%M:%S", errors="coerce")
-            df_primeira_baixa = df_gov_f.groupby(["concluido_por", "Data_Real"])["dt_baixa_calc"].min().reset_index(name="dt_baixa_1os")
-            df_aderencia = df_logs.merge(df_primeira_baixa, left_on=["username", "Data_Real_Pure"], right_on=["concluido_por", "Data_Real"])
+
+            df_logs = df_logs.copy()
+            df_logs["Data_Real_Pure"] = pd.to_datetime(
+                df_logs["data_hora_login"],
+                errors="coerce"
+            ).dt.date
+
+            df_gov_f["dt_baixa_calc"] = pd.to_datetime(
+                df_gov_f["data_fim"].astype(str).str.strip()
+                + " "
+                + df_gov_f["hora_fim"].astype(str).str.strip(),
+                format="%d/%m/%Y %H:%M:%S",
+                errors="coerce"
+            )
+
+            df_primeira_baixa = (
+                df_gov_f
+                .groupby(["concluido_por", "Data_Real"])["dt_baixa_calc"]
+                .min()
+                .reset_index(name="dt_baixa_1os")
+            )
+
+            df_aderencia = df_logs.merge(
+                df_primeira_baixa,
+                left_on=["username", "Data_Real_Pure"],
+                right_on=["concluido_por", "Data_Real"]
+            )
 
             if not df_aderencia.empty:
-                df_aderencia["x_date"] = pd.to_datetime(df_aderencia["data_hora_login"]).dt.strftime("%d/%m")
-                dt_login, dt_baixa = pd.to_datetime(df_aderencia["data_hora_login"]), pd.to_datetime(df_aderencia["dt_baixa_1os"])
-                
+                df_aderencia["x_date"] = pd.to_datetime(
+                    df_aderencia["data_hora_login"],
+                    errors="coerce"
+                ).dt.strftime("%d/%m")
+
+                dt_login = pd.to_datetime(
+                    df_aderencia["data_hora_login"],
+                    errors="coerce"
+                )
+
+                dt_baixa = pd.to_datetime(
+                    df_aderencia["dt_baixa_1os"],
+                    errors="coerce"
+                )
+
                 df_aderencia["y_login_frac"] = dt_login.dt.hour + dt_login.dt.minute / 60.0
                 df_aderencia["y_baixa_frac"] = dt_baixa.dt.hour + dt_baixa.dt.minute / 60.0
-                
-                # --- CORREÇÃO AQUI: Remove os NaNs antes de criar as listas do JSON ---
-                df_aderencia = df_aderencia.dropna(subset=["y_login_frac", "y_baixa_frac"]).sort_values("Data_Real_Pure")
-                
-                # Só monta o gráfico se ainda sobrar dados após a limpeza
+
+                df_aderencia = (
+                    df_aderencia
+                    .dropna(subset=["y_login_frac", "y_baixa_frac", "x_date"])
+                    .sort_values("Data_Real_Pure")
+                )
+
                 if not df_aderencia.empty:
-                    login_data = [[row["x_date"], round(row["y_login_frac"], 2), row["username"]] for _, row in df_aderencia.iterrows()]
-                    baixa_data = [[row["x_date"], round(row["y_baixa_frac"], 2), row["username"]] for _, row in df_aderencia.iterrows()]
-                    
-                    st_echarts(options={ 
-                        "tooltip": { 
-                            "trigger": "item", 
-                            "formatter": JsCode("""function (p) { var hh = Math.floor(p.data[1]); var mm = Math.round((p.data[1] - hh) * 60); if (mm == 60) { hh += 1; mm = 0; } return '<b>' + p.data[2] + '</b><br>' + p.seriesName + ': ' + (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm + '<br>Data: ' + p.data[0]; }""") 
-                        }, 
-                        "legend": {"data": ["Login", "Primeira Baixa"], "bottom": "0%"}, 
-                        "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}], 
-                        "grid": {"top": "10%", "bottom": "25%", "left": "12%", "right": "5%"}, 
-                        "xAxis": {"type": "category", "data": sorted(df_aderencia["x_date"].unique().tolist())}, 
-                        "yAxis": { "type": "value", "name": "Horário", "min": 0, "max": 24, "interval": 4, "axisLabel": { "formatter": JsCode("""function(value) { var hh = Math.floor(value); return (hh < 10 ? '0' : '') + hh + ':00'; }""") } }, 
-                        "series": [ 
-                            {"name": "Login", "type": "scatter", "data": login_data, "symbolSize": 10, "itemStyle": {"color": "#3B82F6"}}, 
-                            {"name": "Primeira Baixa", "type": "scatter", "data": baixa_data, "symbolSize": 10, "itemStyle": {"color": "#10B981"}} 
-                        ] 
-                    }, height="400px", theme="streamlit", key="gov_scatter_aderencia")
+                    login_data = [
+                        [row["x_date"], round(row["y_login_frac"], 2), row["username"]]
+                        for _, row in df_aderencia.iterrows()
+                    ]
+
+                    baixa_data = [
+                        [row["x_date"], round(row["y_baixa_frac"], 2), row["username"]]
+                        for _, row in df_aderencia.iterrows()
+                    ]
+
+                    st_echarts(
+                        options={
+                            "tooltip": {
+                                "trigger": "item",
+                                "formatter": JsCode(
+                                    """
+                                    function (p) {
+                                        var hh = Math.floor(p.data[1]);
+                                        var mm = Math.round((p.data[1] - hh) * 60);
+                                        if (mm == 60) { hh += 1; mm = 0; }
+                                        return '<b>' + p.data[2] + '</b><br>'
+                                            + p.seriesName + ': '
+                                            + (hh < 10 ? '0' : '') + hh + ':'
+                                            + (mm < 10 ? '0' : '') + mm
+                                            + '<br>Data: ' + p.data[0];
+                                    }
+                                    """
+                                )
+                            },
+                            "legend": {
+                                "data": ["Login", "Primeira Baixa"],
+                                "bottom": "0%"
+                            },
+                            "dataZoom": [
+                                {
+                                    "type": "slider",
+                                    "show": True,
+                                    "xAxisIndex": [0],
+                                    "start": 0,
+                                    "end": 100,
+                                    "bottom": "5%"
+                                }
+                            ],
+                            "grid": {
+                                "top": "10%",
+                                "bottom": "25%",
+                                "left": "12%",
+                                "right": "5%"
+                            },
+                            "xAxis": {
+                                "type": "category",
+                                "data": sorted(df_aderencia["x_date"].unique().tolist())
+                            },
+                            "yAxis": {
+                                "type": "value",
+                                "name": "Horário",
+                                "min": 0,
+                                "max": 24,
+                                "interval": 4,
+                                "axisLabel": {
+                                    "formatter": JsCode(
+                                        """
+                                        function(value) {
+                                            var hh = Math.floor(value);
+                                            return (hh < 10 ? '0' : '') + hh + ':00';
+                                        }
+                                        """
+                                    )
+                                }
+                            },
+                            "series": [
+                                {
+                                    "name": "Login",
+                                    "type": "scatter",
+                                    "data": login_data,
+                                    "symbolSize": 10,
+                                    "itemStyle": {"color": "#3B82F6"}
+                                },
+                                {
+                                    "name": "Primeira Baixa",
+                                    "type": "scatter",
+                                    "data": baixa_data,
+                                    "symbolSize": 10,
+                                    "itemStyle": {"color": "#10B981"}
+                                }
+                            ]
+                        },
+                        height="400px",
+                        theme="streamlit",
+                        key=f"gov_scatter_aderencia_{chave_periodo_gov}"
+                    )
                 else:
                     st.info("Dados de horário insuficientes para plotar o gráfico de aderência.")
-            else: 
+            else:
                 st.info("Dados insuficientes para cruzar login com apontamento.")
 
         with col_l3_c2:
             st.markdown("#### 🔝 Top Técnicos: OS por Pátio")
-            df_freq = df_gov_f.groupby(["concluido_por", "Patio"]).size().reset_index(name="Qtd")
-            tecnicos_top, patios_top = df_freq["concluido_por"].unique().tolist(), sorted(df_freq["Patio"].unique().tolist())
-            series_top = [{"name": patio, "type": "bar", "stack": "total", "data": [int(df_freq[(df_freq["concluido_por"] == tec) & (df_freq["Patio"] == patio)]["Qtd"].iloc[0]) if not df_freq[(df_freq["concluido_por"] == tec) & (df_freq["Patio"] == patio)].empty else 0 for tec in tecnicos_top], "label": {"show": False}} for patio in patios_top]
-            st_echarts(options={ "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}}, "legend": {"bottom": "0%", "textStyle": {"fontSize": 10}}, "grid": {"left": "5%", "right": "5%", "bottom": "18%", "top": "10%", "containLabel": True}, "xAxis": {"type": "category", "data": tecnicos_top, "axisLabel": {"interval": 0, "rotate": 30, "fontSize": 10}}, "yAxis": {"type": "value"}, "series": series_top }, height="400px", theme="streamlit", key="gov_top_tec")
+
+            df_freq = (
+                df_gov_f
+                .groupby(["Colaborador", "Patio"])
+                .size()
+                .reset_index(name="Qtd")
+            )
+
+            tecnicos_top = df_freq["Colaborador"].unique().tolist()
+            patios_top = sorted(df_freq["Patio"].unique().tolist())
+
+            series_top = []
+
+            for patio in patios_top:
+                dados_patio = []
+
+                for tec in tecnicos_top:
+                    filtro_tp = df_freq[
+                        (df_freq["Colaborador"] == tec)
+                        & (df_freq["Patio"] == patio)
+                    ]
+
+                    qtd = int(filtro_tp["Qtd"].iloc[0]) if not filtro_tp.empty else 0
+                    dados_patio.append(qtd)
+
+                series_top.append({
+                    "name": patio,
+                    "type": "bar",
+                    "stack": "total",
+                    "data": dados_patio,
+                    "label": {"show": False}
+                })
+
+            st_echarts(
+                options={
+                    "tooltip": {
+                        "trigger": "axis",
+                        "axisPointer": {"type": "shadow"}
+                    },
+                    "legend": {
+                        "bottom": "0%",
+                        "textStyle": {"fontSize": 10}
+                    },
+                    "grid": {
+                        "left": "5%",
+                        "right": "5%",
+                        "bottom": "18%",
+                        "top": "10%",
+                        "containLabel": True
+                    },
+                    "xAxis": {
+                        "type": "category",
+                        "data": tecnicos_top,
+                        "axisLabel": {
+                            "interval": 0,
+                            "rotate": 30,
+                            "fontSize": 10
+                        }
+                    },
+                    "yAxis": {"type": "value"},
+                    "series": series_top
+                },
+                height="400px",
+                theme="streamlit",
+                key="gov_top_tec"
+            )
 
         with col_l3_c3:
             st.markdown("#### 📊 Variabilidade de Execução")
-            df_var = df_gov_f.groupby("concluido_por")["Tempo_Minutos"].mean().fillna(0).reset_index().sort_values("Tempo_Minutos", ascending=True)
-            st_echarts(options={ "tooltip": {"trigger": "axis"}, "grid": {"left": "5%", "right": "8%", "bottom": "10%", "top": "10%", "containLabel": True}, "xAxis": {"type": "value", "name": "Minutos"}, "yAxis": {"type": "category", "data": df_var["concluido_por"].tolist(), "axisLabel": {"fontSize": 10}}, "series": [{"type": "bar", "data": df_var["Tempo_Minutos"].round(1).tolist(), "itemStyle": {"color": "#8B5CF6"}, "label": {"show": True, "position": "right", "formatter": "{c} min", "fontSize": 10}}] }, height="400px", theme="streamlit", key="gov_variab")
+
+            df_var = (
+                df_gov_f
+                .groupby("Colaborador")["Tempo_Minutos"]
+                .mean()
+                .fillna(0)
+                .reset_index()
+                .sort_values("Tempo_Minutos", ascending=True)
+            )
+
+            st_echarts(
+                options={
+                    "tooltip": {"trigger": "axis"},
+                    "grid": {
+                        "left": "5%",
+                        "right": "8%",
+                        "bottom": "10%",
+                        "top": "10%",
+                        "containLabel": True
+                    },
+                    "xAxis": {
+                        "type": "value",
+                        "name": "Minutos"
+                    },
+                    "yAxis": {
+                        "type": "category",
+                        "data": df_var["Colaborador"].tolist(),
+                        "axisLabel": {"fontSize": 10}
+                    },
+                    "series": [
+                        {
+                            "type": "bar",
+                            "data": df_var["Tempo_Minutos"].round(1).tolist(),
+                            "itemStyle": {"color": "#8B5CF6"},
+                            "label": {
+                                "show": True,
+                                "position": "right",
+                                "formatter": "{c} min",
+                                "fontSize": 10
+                            }
+                        }
+                    ]
+                },
+                height="400px",
+                theme="streamlit",
+                key="gov_variab"
+            )
 #endregion 11.6
 
 #region 11.7: Tabela de Auditoria GPS
         st.markdown("---")
         st.markdown("#### 📍 Tabela de Auditoria de Apontamentos (GPS)")
 
-        # Mapa de exibição de colaboradores:
-        # username/matrícula -> Nome (matrícula)
-        # Mantém os dados originais preservados em concluido_por/equipe.
         try:
             conn = get_connection()
             df_users_auditoria = pd.read_sql_query(
@@ -4723,8 +5141,6 @@ if st.session_state.get("tela_atual") == "governanca":
             if nome:
                 return f"{nome} ({matricula})"
 
-            # Fallback: mantém o valor original caso não exista cadastro
-            # ou caso a origem já tenha enviado nome em vez de matrícula.
             return matricula
 
         def label_equipe_coexecutantes(valor):
@@ -4747,30 +5163,31 @@ if st.session_state.get("tela_atual") == "governanca":
                 if nome:
                     nomes_formatados.append(f"{nome} ({item})")
                 else:
-                    # Fallback: mantém matrícula/texto original.
                     nomes_formatados.append(item)
 
             return ", ".join(nomes_formatados) if nomes_formatados else "Sozinho"
 
-        # Cria colunas apenas de exibição para a tabela.
-        # Não altera concluido_por/equipe originais.
-        df_gov_f["Colaborador"] = df_gov_f["concluido_por"].apply(
-            label_apontador_principal
+        df_auditoria_base = df_gov_f.copy()
+
+        df_auditoria_base["Apontador Principal"] = (
+            df_auditoria_base["concluido_por"]
+            .apply(label_apontador_principal)
         )
 
-        df_gov_f["Equipe_Nomes"] = df_gov_f["equipe"].apply(
-            label_equipe_coexecutantes
+        df_auditoria_base["Co-Executantes"] = (
+            df_auditoria_base["equipe"]
+            .apply(label_equipe_coexecutantes)
         )
 
         df_auditoria = (
-            df_gov_f[
+            df_auditoria_base[
                 [
                     "Ordem servico",
-                    "Colaborador",
+                    "Apontador Principal",
                     "data_inicio",
                     "hora_fim",
                     "geolocalizacao_baixa",
-                    "Equipe_Nomes",
+                    "Co-Executantes",
                     "Tempo_Minutos"
                 ]
             ]
@@ -4781,11 +5198,9 @@ if st.session_state.get("tela_atual") == "governanca":
             )
             .rename(columns={
                 "Ordem servico": "OS",
-                "Colaborador": "Apontador Principal",
                 "data_inicio": "Data",
                 "hora_fim": "Hora Apontada",
                 "geolocalizacao_baixa": "Localização do Celular",
-                "Equipe_Nomes": "Co-Executantes",
                 "Tempo_Minutos": "Tempo Gasto (min)"
             })
         )
@@ -4802,126 +5217,21 @@ if st.session_state.get("tela_atual") == "governanca":
                 return (
                     "background-color: #FEE2E2; "
                     "color: #991B1B; "
-                    "font-weight: bold; "
-                    "border-bottom: 1px solid #FECACA;"
+                    "font-weight: bold;"
                 )
 
-            return "color: #065F46; border-bottom: 1px solid #E2E8F0;"
+            return "color: #065F46;"
 
-        df_estilizado = (
+        st.dataframe(
             df_auditoria
             .style
-            .map(estilo_gps, subset=["Localização do Celular"])
-            .hide(axis="index")
+            .map(estilo_gps, subset=["Localização do Celular"]),
+            use_container_width=True,
+            height=400,
+            hide_index=True
         )
-
-        tabela_html = df_estilizado.to_html(escape=False)
-
-        html_code = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-        <style>
-        body {{
-            margin: 0;
-            font-family: "Source Sans Pro", sans-serif;
-            background-color: #FFFFFF;
-        }}
-
-        .tabela-gov {{
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 13px;
-            color: #0F172A;
-        }}
-
-        .tabela-gov th {{
-            background-color: #1E293B;
-            color: #F8FAFC;
-            position: sticky;
-            top: 0;
-            z-index: 1;
-            padding: 10px;
-            text-align: left;
-            border-bottom: 2px solid #3B82F6;
-            white-space: nowrap;
-            cursor: pointer;
-            user-select: none;
-            transition: background-color 0.2s;
-        }}
-
-        .tabela-gov th:hover {{
-            background-color: #333D4E;
-        }}
-
-        .tabela-gov th::after {{
-            content: ' ↕';
-            font-size: 11px;
-            color: #94A3B8;
-            padding-left: 5px;
-        }}
-
-        .tabela-gov td {{
-            padding: 8px 10px;
-            vertical-align: middle;
-            white-space: nowrap;
-            border-bottom: 1px solid #E2E8F0;
-        }}
-
-        .tabela-gov td:nth-child(2) {{
-            min-width: 260px;
-            white-space: pre-wrap;
-            word-wrap: break-word;
-        }}
-
-        .tabela-gov td:nth-child(5) {{
-            min-width: 400px;
-            white-space: pre-wrap;
-            word-wrap: break-word;
-        }}
-
-        .tabela-gov td:nth-child(6) {{
-            min-width: 260px;
-            white-space: pre-wrap;
-            word-wrap: break-word;
-        }}
-        </style>
-        </head>
-        <body>
-        {tabela_html.replace("<table", "<table class='tabela-gov'")}
-
-        <script>
-        const getCellValue = (tr, idx) =>
-            tr.children[idx].innerText || tr.children[idx].textContent;
-
-        const comparer = (idx, asc) => (a, b) => ((v1, v2) =>
-            v1 !== '' && v2 !== '' && !isNaN(v1) && !isNaN(v2)
-                ? v1 - v2
-                : v1.toString().localeCompare(v2)
-        )(getCellValue(asc ? a : b, idx), getCellValue(asc ? b : a, idx));
-
-        document.querySelectorAll('th').forEach(th =>
-            th.addEventListener('click', function() {{
-                const table = th.closest('table');
-                const tbody = table.querySelector('tbody');
-
-                Array.from(tbody.querySelectorAll('tr'))
-                    .sort(
-                        comparer(
-                            Array.from(th.parentNode.children).indexOf(th),
-                            this.asc = !this.asc
-                        )
-                    )
-                    .forEach(tr => tbody.appendChild(tr));
-            }})
-        );
-        </script>
-        </body>
-        </html>
-        """
-        import streamlit.components.v1 as components
-        components.html(html_code, height=400, scrolling=True)
 #endregion 11.7
+
     fragmento_governanca()
     st.stop()
 #endregion
