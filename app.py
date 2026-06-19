@@ -228,8 +228,6 @@ for _key, _val in _defaults_session.items():
 #endregion
 #endregion SESSÃO 1
 
-#region SESSÃO 2: Barreira de Login com Governança e GPS Obrigatório
-
 #region 2.1: Barreira de Login com Governança e GPS Obrigatório
 if "logged_in" not in st.session_state:
     st.session_state.update({"logged_in": False, "username": "", "perfil": "", "escopo": "", "governanca": "", "needs_reset": False, "validando_gps": False})
@@ -260,7 +258,7 @@ if not st.session_state["logged_in"]:
                         release_connection(conn)
                         st.success("Concluído! Entre com sua nova senha."); st.session_state["needs_reset"] = False; st.rerun()
             if st.button("⬅️ Voltar"): st.session_state["needs_reset"] = False; st.rerun()
-#endregion 2.1
+#endregion
 
 #region 2.3: Etapa 2 — GPS Obrigatório
         elif st.session_state.get("validando_gps"):
@@ -297,7 +295,7 @@ if not st.session_state["logged_in"]:
                 if st.button("⬅️ Voltar para o Login"):
                     st.session_state["validando_gps"] = False
                     st.rerun()
-#endregion 2.2
+#endregion
 
 #region 2.4: Etapa 1 — Login Padrão
         else:
@@ -335,7 +333,7 @@ if not st.session_state["logged_in"]:
                         st.rerun()
                 else: st.error("❌ Usuário ou senha incorretos.")
     st.stop()
-#endregion 2.3
+#endregion
 
 #endregion SESSÃO 2
 
