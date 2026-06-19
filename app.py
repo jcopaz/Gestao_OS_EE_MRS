@@ -815,6 +815,8 @@ def resumir_conclusoes_por_turno_data(df_base_cal: pd.DataFrame, data_ref) -> di
 #endregion 3.7
 
 #region 3.8: Administração de Dados (render_tela_admin)
+
+#region 3.8.0: Renderização da Tela de Administração
 def render_tela_admin():
     col_adm_t1, col_adm_t2 = st.columns([8, 2])
     with col_adm_t1: st.title("⚙️ Administração de Dados")
@@ -825,22 +827,50 @@ def render_tela_admin():
     if "msg_upload_os" in st.session_state: st.success(st.session_state["msg_upload_os"]); del st.session_state["msg_upload_os"]
     if "msg_upload_mapa" in st.session_state: st.success(st.session_state["msg_upload_mapa"]); del st.session_state["msg_upload_mapa"]
 
+    # --- MANUAL DE PADRONIZAÇÃO DE DADOS (GOVERNANÇA) ---
+    with st.expander("📖 MANUAL DE IMPORTAÇÃO (Padrão Exigido para Planilhas)", expanded=True):
+        st.markdown("""
+        #### 1. Planilha de **OS Programadas** (Carga Inicial)
+        Para que o sistema consiga gerar a roteirização e os painéis gerenciais, a planilha deve conter estas colunas (a ordem não importa):
+        * `Ordem servico` ou `OS` *(Ex: 23568082)*
+        * `Ativo` ou `Equipamento` *(Ex: ICG 30DT N)*
+        * `Atividade ativo` ou `Atividade` *(Ex: EE_INS_SEG_...)*
+        * `Prioridade` ou `Criticidade` *(Ex: 1-Muito Alta)*
+        * `Data inicial programada` *(Formato: DD/MM/AAAA)*
+        * `Código Departamento` ou `Concatenar` *(Usado para definir se é Piaçaguera ou Paranapiacaba)*
+        * `Descrição Longa` *(Opcional - Texto detalhado do serviço)*
+
+        #### 2. Planilha de **Baixas em Massa (SAP - IW47)**
+        Ao exportar do SAP, garanta que o layout da IW47 possua as seguintes colunas visíveis:
+        * `Ordem` *(Número da OS)*
+        * `Matrícula` ou `Nome` *(Identificação de quem executou)*
+        * `Data real do fim de execução` *(Formato: DD/MM/AAAA)*
+        * `Hora real do fim de execução` *(Formato: HH:MM)*
+        * `Data real de início da execução` *(Opcional)*
+        * `Hora real do início da execução` *(Opcional)*
+        
+        ⚠️ **Atenção:** O sistema é inteligente e ignora as letras das colunas (A, B, C...). Ele procura pelo **nome do cabeçalho**. Portanto, não altere o nome das colunas geradas pelo SAP.
+        """)
+    st.markdown("---")
+#endregion
+
 #region 3.8.1: Upload e Processamento de OS Programadas
-    st.markdown("Faça o upload da base de **OS Programadas** para atualizar o sistema central.")
+    st.markdown("### 📥 Carga de OS Programadas")
     col_up1, col_up2 = st.columns(2)
     with col_up1: mes_ref = st.text_input("Mês de Referência (ex: Junho/2026)", placeholder="Mês/Ano")
-    with col_up2: coord_upload_fallback = st.selectbox("Coordenação (fallback)", ["Paranapiacaba", "Piaçaguera"])
+    with col_up2: coord_upload_fallback = st.selectbox("Coordenação (fallback caso a planilha não informe)", ["Paranapiacaba", "Piaçaguera"])
 
-    arquivo_upload = st.file_uploader("Selecione a planilha Excel ou CSV", type=["csv", "xlsx"])
+    arquivo_upload = st.file_uploader("Selecione a planilha Excel ou CSV", type=["csv", "xlsx"], key="upload_os_prog")
     if arquivo_upload is not None and mes_ref:
         if st.button("🚀 Processar e Salvar no Banco", use_container_width=True, type="primary"):
             escopo_user = st.session_state.get("escopo", "Todas")
             with st.spinner("Lendo e processando dados..."):
                 try:
                     df = pd.read_csv(arquivo_upload, sep=';', encoding='utf-8-sig') if arquivo_upload.name.endswith('.csv') else pd.read_excel(arquivo_upload)
-                    if "Ordem servico" not in df.columns: st.error("❌ Coluna 'Ordem servico' não encontrada."); return
-                    df = df.fillna("")
+                    if "Ordem servico" not in df.columns and "OS" not in [str(c).upper() for c in df.columns]: 
+                        st.error("❌ Coluna 'Ordem servico' não encontrada."); return
                     
+                    df = df.fillna("")
                     col_depto = next((c for c in df.columns if str(c).strip().upper().replace(" ", "") in ("CODIGODEPARTAMENTO", "CÓDIGODEPARTAMENTO", "CODIGO_DEPARTAMENTO")), None)
                     if not col_depto: col_depto = next((c for c in df.columns if str(c).strip().upper() == "CONCATENAR"), None)
 
@@ -853,7 +883,8 @@ def render_tela_admin():
 
                     barra, registros_por_coord = st.progress(0, text="Preparando dados..."), {}
                     for idx, (_, row) in enumerate(df.iterrows()):
-                        os_num, coord_linha = str(row["Ordem servico"]).strip(), row["_coord_auto"]
+                        col_os_real = "Ordem servico" if "Ordem servico" in df.columns else df.columns[[str(c).upper() == "OS" for c in df.columns]][0]
+                        os_num, coord_linha = str(row[col_os_real]).strip(), row["_coord_auto"]
                         if os_num and coord_linha:
                             registros_por_coord.setdefault(coord_linha, []).append((os_num, mes_ref, coord_linha, json.dumps(row.drop(labels=["_coord_auto"], errors="ignore").to_dict(), default=lambda x: x.strftime('%d/%m/%Y') if isinstance(x, (pd.Timestamp, datetime)) else str(x))))
                         if (idx + 1) % 200 == 0: barra.progress(min((idx + 1) / len(df), 0.5), text=f"Preparando... {idx + 1}/{len(df)} linhas")
@@ -872,7 +903,7 @@ def render_tela_admin():
                     st.session_state["msg_upload_os"] = f"✅ Sucesso! {len(todos_registros)} OS processadas."
                     st.cache_data.clear(); st.rerun()
                 except Exception as e: st.error(f"❌ Erro ao processar o arquivo: {e}")
-    #endregion 3.8.1
+#endregion 3.8.1
     
 #region 3.8.2: Histórico de Uploads
     with st.expander("📋 Histórico de Uploads", expanded=False):
@@ -1005,56 +1036,77 @@ def render_tela_admin():
 
     #region 3.8.5: Importação de Baixas em Massa (IW47)
     st.markdown("---"); st.subheader("📥 Importação de Baixas em Massa (IW47)")
-    coord_baixa = st.selectbox("Coordenação", ["Paranapiacaba", "Piaçaguera"])
-    arquivo_iw47 = st.file_uploader("Selecione a planilha IW47", type=["xlsx", "csv"])
+    
+    st.info("""
+    💡 **Padrão Exigido para a Planilha IW47:**
+    A planilha exportada do SAP deve conter os seguintes cabeçalhos para o apontamento correto de datas, horários e equipe:
+    * **Ordem** (Número da OS)
+    * **Matrícula** ou **Nome** (Identificação do técnico executante)
+    * **Data real do fim de execução**
+    * **Hora real do fim de execução**
+    * **Data real de início da execução** (Opcional)
+    * **Hora real do início da execução** (Opcional)
+    """)
+    
+    coord_baixa = st.selectbox("Coordenação (Se não houver coluna na planilha)", ["Paranapiacaba", "Piaçaguera"])
+    arquivo_iw47 = st.file_uploader("Selecione a planilha IW47 exportada do SAP", type=["xlsx", "csv"], key="upload_iw47")
 
-    if arquivo_iw47 and st.button("🚀 Processar Baixas em Massa", type="primary"):
+    if arquivo_iw47 and st.button("🚀 Processar Baixas em Massa", type="primary", key="btn_proc_iw47"):
         with st.spinner("Processando..."):
             try:
                 df_iw = pd.read_csv(arquivo_iw47, sep=None, engine="python", encoding="utf-8-sig") if arquivo_iw47.name.lower().endswith(".csv") else pd.read_excel(arquivo_iw47)
-                df_iw.columns = [str(c).strip() for c in df_iw.columns]
+                df_iw.columns = [str(c).strip().replace('\n', ' ') for c in df_iw.columns]
 
-                def dec_to_hms(val):
+                # Função auxiliar para encontrar as colunas independentemente da posição
+                def find_col(df, candidatos):
+                    for c in candidatos:
+                        for df_c in df.columns:
+                            if str(c).upper() in str(df_c).upper(): return df_c
+                    return None
+
+                col_os = find_col(df_iw, ["Ordem", "OS", "Ordem servico"])
+                col_mat = find_col(df_iw, ["Matrícula", "Matricula", "Nome", "Técnico"])
+                col_dt_fim = find_col(df_iw, ["Data real do fim", "Data fim"])
+                col_hr_fim = find_col(df_iw, ["Hora real do fim", "Hora fim"])
+                col_dt_ini = find_col(df_iw, ["Data real de início", "Data real do inicio", "Data inicio"])
+                col_hr_ini = find_col(df_iw, ["Hora real de início", "Hora real do inicio", "Hora inicio"])
+                col_centro = find_col(df_iw, ["Centro de Trabalho", "Centro", "Coordenação", "Local"])
+
+                if not col_os or not col_dt_fim or not col_hr_fim:
+                    st.error("❌ Colunas obrigatórias não encontradas na planilha IW47. Verifique o padrão exigido acima.")
+                    st.stop()
+
+                def formatar_data(val):
+                    if pd.isna(val) or str(val).strip() == "": return ""
                     try: 
-                        t = int(round(max(float(val), 0) * 86400)); return f"{(t // 3600) % 24:02d}:{(t % 3600) // 60:02d}:{t % 60:02d}"
-                    except: return "00:00:00"
+                        # Tenta ler o formato DD/MM/AAAA que você confirmou
+                        return pd.to_datetime(val, format="%d/%m/%Y", errors="raise").strftime("%d/%m/%Y")
+                    except:
+                        # Fallback caso o SAP mande em outro formato
+                        return pd.to_datetime(val, errors="coerce").strftime("%d/%m/%Y")
 
-                df_iw["_hr_ini"] = df_iw.iloc[:, 6].apply(dec_to_hms); df_iw["_hr_fim"] = df_iw.iloc[:, 8].apply(dec_to_hms)
-                df_iw["_dt_ini"] = df_iw.iloc[:, 5].apply(lambda x: pd.to_datetime(x, errors="coerce").strftime("%d/%m/%Y") if pd.notna(pd.to_datetime(x, errors="coerce")) else "")
-                df_iw["_dt_fim"] = df_iw.iloc[:, 7].apply(lambda x: pd.to_datetime(x, errors="coerce").strftime("%d/%m/%Y") if pd.notna(pd.to_datetime(x, errors="coerce")) else "")
-                df_iw["_coord"] = df_iw.iloc[:, 14].apply(lambda x: "Piaçaguera" if "IPG" in str(x).upper() or "PIACAGUERA" in str(x).upper() else "Paranapiacaba")
-
-                registros_baixa = []
-                for os_id, grp in df_iw.groupby(df_iw.columns[3]):
-                    if str(os_id) == "nan": continue
-                    f = grp.iloc[0]; execs = grp[[df_iw.columns[0], df_iw.columns[1]]].drop_duplicates(subset=[df_iw.columns[0]])
-                    eqp_str = ", ".join([str(r[df_iw.columns[0]]).strip() for _, r in execs.iloc[1:].iterrows()]) if len(execs) > 1 else "Sozinho"
-                    registros_baixa.append({"os": str(os_id).strip(), "concluido_por": str(execs.iloc[0][df_iw.columns[0]]).strip(), "equipe": eqp_str, "realizado_em": f"{f['_dt_fim']} {f['_hr_fim'][:5]}" if f['_dt_fim'] else "", "coordenacao": f["_coord"], "data_inicio": f["_dt_ini"], "hora_inicio": f["_hr_ini"], "data_fim": f["_dt_fim"], "hora_fim": f["_hr_fim"]})
-
-                conn = get_connection()
-                try: 
-                    mapa_dt_prog = {str(r["os"]).strip(): pd.to_datetime(r["dt_prog"], dayfirst=True, errors="coerce") for _, r in pd.read_sql_query("SELECT os, dados_completos->>'Data inicial programada' AS dt_prog FROM os_programadas", conn).iterrows()}
-                    os_ja_baixadas = set(pd.read_sql_query("SELECT os FROM baixas", conn)["os"].astype(str).str.strip().tolist())
-                finally: release_connection(conn)
-
-                novos_regs = [r for r in registros_baixa if r["os"] not in os_ja_baixadas]
-                
-                if novos_regs:
-                    lote_valores = []
-                    for r in novos_regs:
-                        dt_prog, dt_exec = mapa_dt_prog.get(r["os"], pd.NaT), pd.to_datetime(r["data_fim"], format="%d/%m/%Y", errors="coerce")
-                        status = "Realizado Fora da Data de Programação" if pd.notna(dt_prog) and pd.notna(dt_exec) and dt_exec.date() > dt_prog.date() else "Realizado"
-                        lote_valores.append((r["os"], status, r["realizado_em"], r["coordenacao"], r["concluido_por"], "Baixa Manual", r["equipe"], r["data_inicio"], r["hora_inicio"], r["data_fim"], r["hora_fim"]))
-
-                    conn = get_connection()
+                def formatar_hora(val):
+                    if pd.isna(val) or str(val).strip() == "": return "00:00:00"
+                    val_str = str(val).strip()
+                    
+                    # 1. Se já estiver no formato HH:MM:SS ou HH:MM
+                    if ":" in val_str:
+                        parts = val_str.split(":")
+                        return f"{parts[0].zfill(2)}:{parts[1].zfill(2)}:{parts[2] if len(parts)>2 else '00'}"
+                    
+                    # 2. Se for fração do Excel (ex: 0.5 -> 12:00:00)
                     try:
-                        cur = conn.cursor()
-                        execute_values(cur, "INSERT INTO baixas (os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim) VALUES %s ON CONFLICT (os) DO UPDATE SET status = EXCLUDED.status, realizado_em = EXCLUDED.realizado_em, concluido_por = EXCLUDED.concluido_por, geolocalizacao_baixa = EXCLUDED.geolocalizacao_baixa, equipe = EXCLUDED.equipe, data_inicio = EXCLUDED.data_inicio, hora_inicio = EXCLUDED.hora_inicio, data_fim = EXCLUDED.data_fim, hora_fim = EXCLUDED.hora_fim", lote_valores, page_size=500)
-                        conn.commit(); cur.close(); st.success(f"✅ {len(lote_valores)} OS gravadas!"); st.cache_data.clear(); time.sleep(1); st.rerun()
-                    finally: release_connection(conn)
-                else: st.warning("⚠️ Nenhuma OS nova para gravar (já possuem baixa ou planilha vazia).")
-            except Exception as e: st.error(f"❌ Erro ao processar a planilha IW47: {e}")
-    #endregion 3.8.5
+                        f = float(val_str)
+                        if 0 <= f < 1: 
+                            t = int(round(f * 86400))
+                            return f"{(t // 3600) % 24:02d}:{(t % 3600) // 60:02d}:{t % 60:02d}"
+                    except: pass
+                    
+                    return "00:00:00"
+            except Exception as e:
+                st.error(f"❌ Erro ao processar arquivo IW47: {e}")
+                st.stop()
+#endregion 3.8.5
 #endregion 3.8
 
 #region 3.9: Gerador Offline - Extração de Dados e CSS (Estilos)
