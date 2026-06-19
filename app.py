@@ -30,10 +30,39 @@ from psycopg2 import pool
 #region 1.2: Configurações Globais e Tela Inicial de Login
 st.set_page_config(page_title="Painel de OS Eletroeletrônica", layout="wide", initial_sidebar_state="collapsed")
 
+# --- CSS CONDICIONAL: IMAGEM APENAS NO LOGIN ---
 if not st.session_state.get("logged_in", False):
-    col_vazia1, col_centro, col_vazia2 = st.columns([1, 6, 1])
-    with col_centro:
-        st.markdown("<h1 style='text-align: center;'>⚡ Sistema de Gestão de Ordens de Serviço</h1>", unsafe_allow_html=True)
+    st.markdown("""
+        <style>
+        /* Imagem de Fundo aplicada apenas quando não estamos logados */
+        .stApp {
+            background: linear-gradient(rgba(15, 23, 42, 0.85), rgba(15, 23, 42, 0.85)), 
+                        url("fundo1.jpg");
+            background-size: cover;
+            background-position: center;
+        }
+        
+        /* Botão Entrar Gradiente */
+        div.stButton > button {
+            background: linear-gradient(135deg, #1E3A8A 0%, #3B82F6 100%) !important;
+            color: #FFFFFF !important;
+            border: none !important;
+            border-radius: 8px !important;
+            font-weight: 700 !important;
+            transition: all 0.3s ease !important;
+        }
+        div.stButton > button:hover {
+            background: linear-gradient(135deg, #2563EB 0%, #60A5FA 100%) !important;
+            transform: translateY(-2px) !important;
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4) !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+col_vazia1, col_centro, col_vazia2 = st.columns([1, 1, 1])
+with col_centro:
+    if not st.session_state.get("logged_in", False):
+        st.markdown("<h1 style='text-align: center; color: white;'>⚡ SGO MRS</h1>", unsafe_allow_html=True)
 #endregion 1.2
 
 #region 1.3: Conexão com Banco de Dados e Constantes de Status
