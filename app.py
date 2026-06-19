@@ -1419,6 +1419,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 #endregion 3.11
 
 #region 3.12: Gerador Offline - Lógica JS de Lote / Persistência
+    # REMOVIDO a tag <script> daqui, ele continua a execução do js_core diretamente
     js_lote = f"""
     function calcularDuracaoHoras(inicio, fim) {{
         if (!inicio || !fim) return null;
@@ -1486,29 +1487,24 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 
         await Promise.all(
             selecionadas.map((item) => new Promise((resolve, reject) => {{
-                // UPDATE: Usar .put() força um UPSERT (cria se não existe, atualiza se existe)
-                // Impede que a mesma OS entre duplicada na fila
                 const req = txStore("readwrite").put(item);
                 req.onsuccess = () => resolve(true);
                 req.onerror = () => reject(req.error);
             }}))
         );
 
-        // UPDATE: Limpeza Visual
-        // Esvazia os campos para que o técnico saiba que a OS já está na fila
+        // UPDATE: Remoção Visual do Card (A OS sai da lista!)
+        // Assim o técnico sabe visualmente que aquela OS já foi para a fila.
         indicesParaLimpar.forEach((i) => {{
-            const elIni = document.getElementById(`ini_${{i}}`);
-            const elFim = document.getElementById(`fim_${{i}}`);
-            const fileInput = document.getElementById(`foto_${{i}}`);
-            
-            if (elIni) elIni.value = "";
-            if (elFim) elFim.value = "";
-            if (fileInput) fileInput.value = "";
+            const cardOS = document.getElementById(`card_os_${{i}}`);
+            if (cardOS) {{
+                cardOS.style.display = "none";
+            }}
         }});
 
         await atualizarFila();
         setSyncMsg(`${{selecionadas.length}} OS gravada(s) localmente com sucesso.`, "blue");
-        alert(`✅ ${{selecionadas.length}} OS gravada(s) na fila offline.`);
+        alert(`✅ ${{selecionadas.length}} OS movida(s) para a fila de envio.`);
     }}
 
     async function atualizarFila() {{
