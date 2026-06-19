@@ -1852,45 +1852,56 @@ def carregar_base_sem_overlay(usar_sim: bool, qtd_sim: int, seed_sim: int, escop
 
     return df_base_final
 
+def debug_overlay_visual(df_base, df_baixas):
+    st.write("--- 🔍 DEBUG DE DADOS ---")
+    st.write(f"OSs na base original: {len(df_base)}")
+    st.write(f"OSs baixadas no banco (Neon): {len(df_baixas)}")
+    
+    # Verifica se há match de OS
+    df_base['OS_STR'] = df_base['Ordem servico'].astype(str).str.strip()
+    df_baixas['OS_STR'] = df_baixas['os'].astype(str).str.strip()
+    
+    match = df_base[df_base['OS_STR'].isin(df_baixas['OS_STR'])]
+    st.write(f"OSs que CASARAM entre planilha e banco: {len(match)}")
+    
+    if len(match) > 0:
+        st.write("Exemplo de OS que casou:", match['OS_STR'].iloc[0])
+    else:
+        st.error("Nenhuma OS casou. Verifique se o número da OS na planilha original contém zeros à esquerda que não existem no banco.")
+    st.write("-------------------------")
+
 @st.cache_data(show_spinner=False)
 def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, baixas_mtime: float) -> pd.DataFrame:
     df_base = df_base_bruto.copy()
     if df_base.empty: return df_base
 
-    if "Status da Operação" in df_base.columns:
-        df_base["Status da Operação"] = df_base["Status da Operação"].replace(["", "nan", "NaN", "None"], "Pendente")
-
     df_baixas = carregar_baixas_df()
     if df_baixas.empty: return df_base
-    df_base["Ordem servico"] = df_base["Ordem servico"].astype(str)
+
+    # --- FORÇAR COMPATIBILIDADE DE TIPOS (A "Cola" dos Dados) ---
+    # Convertemos ambas as colunas para string pura, removendo espaços e tratando zeros
+    df_base["Ordem servico"] = df_base["Ordem servico"].astype(str).str.strip()
+    df_baixas["os"] = df_baixas["os"].astype(str).str.strip()
 
     if escopo_usuario != "Todas":
         df_baixas = df_baixas[df_baixas["coordenacao"].str.contains(escopo_usuario, case=False, na=False, regex=False)]
 
+    # Seleção de colunas de overlay
     colunas_overlay = ["Status da Operação", "Data/Hora Realizado", "Concluído por", "Geolocalização de Baixa"]
-    for col in colunas_overlay:
-        if col not in df_base.columns: df_base[col] = ""
-
     df_baixas = df_baixas.rename(columns={
         "os": "Ordem servico", "status": "Status da Operação", 
         "realizado_em": "Data/Hora Realizado", "concluido_por": "Concluído por", "geolocalizacao_baixa": "Geolocalização de Baixa"
     })
 
-    # CORREÇÃO: Adiciona a foto_evidencia na lista de coisas que serão mescladas
-    cols_merge = ["Ordem servico"] + colunas_overlay
-    if "foto_evidencia" in df_baixas.columns:
-        cols_merge.append("foto_evidencia")
-
-    df_base = df_base.merge(df_baixas[cols_merge], on="Ordem servico", how="left", suffixes=("", "_baixado"))
+    # Merge forçado pelo tratamento de string realizado acima
+    df_base = df_base.merge(df_baixas[["Ordem servico"] + colunas_overlay], on="Ordem servico", how="left", suffixes=("", "_baixado"))
     
+    # Aplicação do Overlay
     for col in colunas_overlay:
-        df_base[col] = np.where(df_base[f"{col}_baixado"].notna() & (df_base[f"{col}_baixado"] != ""), df_base[f"{col}_baixado"], df_base[col])
-        df_base.drop(columns=[f"{col}_baixado"], inplace=True)
-        
-    # Salva a foto na base final limpa
-    if "foto_evidencia_baixado" in df_base.columns:
-        df_base["foto_evidencia"] = df_base["foto_evidencia_baixado"]
-        df_base.drop(columns=["foto_evidencia_baixado"], inplace=True)
+        col_baixada = f"{col}_baixado"
+        if col_baixada in df_base.columns:
+            df_base[col] = np.where(df_base[col_baixada].notna() & (df_base[col_baixada] != ""), df_base[col_baixada], df_base[col])
+            df_base.drop(columns=[col_baixada], inplace=True)
 
     return df_base
 #endregion 5.4
