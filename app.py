@@ -1081,176 +1081,83 @@ def render_tela_admin():
 #region 3.8.5: Importação de Baixas em Massa (IW47)
     st.markdown("---"); st.subheader("📥 Importação de Baixas em Massa (IW47)")
     
-    st.info("""
-    💡 **Padrão Exigido para a Planilha IW47:**
-    A planilha exportada do SAP deve conter os seguintes cabeçalhos para o apontamento correto de datas, horários e equipe:
-    * **Ordem** (Número da OS)
-    * **Nº pessoal**, **Matrícula** ou **Nome** (Identificação do técnico)
-    * **Data real do/de fim de execução**
-    * **Hora real do/de fim de execução**
-    * **Data real de/do início da execução** (Opcional)
-    * **Hora real de/do início da execução** (Opcional)
-    """)
-    
-    coord_baixa = st.selectbox("Coordenação (Se não houver coluna na planilha)", ["Paranapiacaba", "Piaçaguera"])
-    arquivo_iw47 = st.file_uploader("Selecione a planilha IW47 exportada do SAP", type=["xlsx", "csv"], key="upload_iw47")
+    arquivo_iw47 = st.file_uploader("Selecione a planilha IW47 exportada do SAP (.csv ou .xlsx)", type=["xlsx", "csv"], key="upload_iw47")
 
-    if arquivo_iw47 and st.button("🚀 Processar Baixas em Massa", type="primary", key="btn_proc_iw47"):
-        with st.spinner("Lendo SAP, higienizando dados e cruzando usuários..."):
+    if arquivo_iw47 and st.button("🚀 Processar Baixas em Massa", type="primary"):
+        with st.spinner("Decodificando formato SAP..."):
             try:
-                # 1. Leitura Inteligente do Arquivo
-                if arquivo_iw47.name.lower().endswith(".csv"):
-                    try: df_iw = pd.read_csv(arquivo_iw47, sep=";", encoding="utf-8-sig", dtype=str)
-                    except:
-                        arquivo_iw47.seek(0)
-                        df_iw = pd.read_csv(arquivo_iw47, sep=None, engine="python", encoding="utf-8-sig", dtype=str)
-                else: 
-                    df_iw = pd.read_excel(arquivo_iw47, dtype=str)
-                    
+                # 1. Leitura robusta
+                df_iw = pd.read_csv(arquivo_iw47, sep=";", encoding="latin1") if arquivo_iw47.name.lower().endswith(".csv") else pd.read_excel(arquivo_iw47)
                 df_iw.columns = [str(c).strip().replace('\n', ' ') for c in df_iw.columns]
 
-                # 2. Caçador de Colunas (Atualizado com as nomenclaturas exatas do seu SAP)
-                def find_col(df, candidatos):
-                    for c in candidatos:
-                        for df_c in df.columns:
-                            if str(c).upper() in str(df_c).upper(): return df_c
-                    return None
-
-                col_os = find_col(df_iw, ["Ordem", "OS", "Ordem servico"])
-                col_mat = find_col(df_iw, ["Nº pessoal", "N° pessoal", "No pessoal", "Matrícula", "Matricula", "Nome", "Técnico"])
-                col_dt_fim = find_col(df_iw, ["Data real de fim", "Data real do fim", "Data fim"])
-                col_hr_fim = find_col(df_iw, ["Hora real de fim", "Hora real do fim", "Hora fim"])
-                col_dt_ini = find_col(df_iw, ["Data real de início", "Data real de inicio", "Data real do inicio", "Data inicio"])
-                col_hr_ini = find_col(df_iw, ["Hora real de início", "Hora real de inicio", "Hora real do inicio", "Hora inicio"])
-                col_centro = find_col(df_iw, ["Centro de Trabalho", "Centro", "Coordenação", "Local"])
-
-                if not col_os or not col_dt_fim or not col_hr_fim:
-                    st.error("❌ Colunas obrigatórias não encontradas na planilha IW47.")
-                    st.stop()
-
-                # 3. Formatadores Blindados
-                def formatar_data(val):
-                    if pd.isna(val) or str(val).strip() in ("", "nan"): return ""
-                    v = str(val).strip().replace('.', '/').replace('-', '/')
-                    try: 
-                        return pd.to_datetime(v, dayfirst=True).strftime("%d/%m/%Y")
-                    except: return ""
-
-                def formatar_hora(val):
-                    if pd.isna(val) or str(val).strip() in ("", "nan"): return "00:00:00"
-                    val_str = str(val).strip()
-                    if ":" in val_str:
-                        parts = val_str.split(":")
-                        return f"{parts[0].zfill(2)}:{parts[1].zfill(2)}:{parts[2][:2].zfill(2) if len(parts)>2 else '00'}"
+                # 2. Conversores inteligentes para o formato SAP (Número -> Data/Hora)
+                def converter_sap_data(val):
                     try:
+                        # Se for número, converte serial do Excel para data
+                        if isinstance(val, (int, float)): return pd.to_datetime('1899-12-30') + pd.to_timedelta(val, unit='D')
+                        return pd.to_datetime(val, dayfirst=True)
+                    except: return pd.NaT
+
+                def converter_sap_hora(val):
+                    try:
+                        # Se for fração (0.40277...), converte para timedelta
+                        if isinstance(val, (float, int)): 
+                            return (pd.to_timedelta(val, unit='D')).components.hours, (pd.to_timedelta(val, unit='D')).components.minutes
+                        # Se for string com vírgula ou ponto
+                        val_str = str(val).replace(',', '.')
                         f = float(val_str)
-                        if 0 <= f < 1: 
-                            t = int(round(f * 86400))
-                            return f"{(t // 3600) % 24:02d}:{(t % 3600) // 60:02d}:{t % 60:02d}"
-                    except: pass
-                    return "00:00:00"
+                        t = int(round(f * 86400))
+                        return (t // 3600) % 24, (t % 3600) // 60
+                    except: return 0, 0
 
-                # 4. Cruzamento de Usuários
+                # 3. Cruzamento de Usuários
                 conn = get_connection()
-                mapa_usuarios = {}
-                try:
-                    cur = conn.cursor()
-                    cur.execute("SELECT username, nome FROM usuarios")
-                    for row in cur.fetchall():
-                        username_str = str(row[0]).strip()
-                        nome_str = str(row[1]).strip() if pd.notna(row[1]) and row[1] else username_str
-                        mapa_usuarios[username_str] = nome_str
-                    cur.close()
-                finally: release_connection(conn)
-
-                _mapa_sap_sistema = {
-                    "E.SP.IPG": "Piaçaguera", "CIPG": "Piaçaguera", "IPG": "Piaçaguera",
-                    "E.SP.IPA": "Paranapiacaba", "CIPA": "Paranapiacaba", "IPA": "Paranapiacaba"
-                }
+                mapa_usuarios = {str(row[0]).strip(): str(row[1] if pd.notna(row[1]) else row[0]).strip() for row in conn.cursor().execute("SELECT username, nome FROM usuarios") or conn.cursor().fetchall()}
+                release_connection(conn)
 
                 registros_dict = {}
-                
-                # 5. Processamento das Linhas
                 for _, row in df_iw.iterrows():
-                    # HIGIENIZAÇÃO 1: Esmaga o .0 da OS e transforma em string pura
-                    os_bruto = str(row[col_os]).strip()
-                    if not os_bruto or os_bruto == "nan": continue
-                    try:
-                        os_val = str(int(float(os_bruto)))
-                    except:
-                        os_val = os_bruto
+                    os_val = str(row['Ordem']).strip().replace('.0', '')
                     
-                    dt_fim_val = formatar_data(row[col_dt_fim])
-                    hr_fim_val = formatar_hora(row[col_hr_fim])
-                    if not dt_fim_val: continue
-                    realizado_em_str = f"{dt_fim_val} {hr_fim_val}"
+                    # Datas e Horas convertidas
+                    dt_fim = converter_sap_data(row['Data real do fim de execução'])
+                    h_fim, m_fim = converter_sap_hora(row['Hora real do fim de execução'])
                     
-                    dt_ini_val = formatar_data(row[col_dt_ini]) if col_dt_ini else dt_fim_val
-                    hr_ini_val = formatar_hora(row[col_hr_ini]) if col_hr_ini else "00:00:00"
+                    dt_ini = converter_sap_data(row['Data de início de execução real'])
+                    h_ini, m_ini = converter_sap_hora(row['Hora de início de execução real'])
                     
-                    # HIGIENIZAÇÃO 2: Esmaga o .0 da Matrícula
-                    mat_bruta = str(row[col_mat]).strip() if col_mat else ""
-                    if mat_bruta and mat_bruta != "nan":
-                        try:
-                            matricula_limpa = str(int(float(mat_bruta)))
-                        except:
-                            matricula_limpa = mat_bruta
-                        concluido_por_val = mapa_usuarios.get(matricula_limpa, matricula_limpa)
-                    else:
-                        concluido_por_val = "SAP (Massa)"
+                    if pd.isna(dt_fim): continue
                     
-                    coord_bruta = str(row[col_centro]).strip().upper() if col_centro else ""
-                    coord_val = coord_baixa
-                    if coord_bruta and coord_bruta != "NAN":
-                        for chave_sap, coord_sistema in _mapa_sap_sistema.items():
-                            if chave_sap in coord_bruta:
-                                coord_val = coord_sistema
-                                break
+                    # Nome do Técnico
+                    mat = str(row['Nº pessoal']).strip().replace('.0', '')
+                    tecnico = mapa_usuarios.get(mat, mat)
                     
-                    # Salva no dict usando a OS higienizada como chave para evitar duplicidade do SAP
                     registros_dict[os_val] = (
-                        os_val, "Realizado", realizado_em_str, coord_val, concluido_por_val,
-                        "Baixa SAP IW47", "Sozinho", dt_ini_val, hr_ini_val, dt_fim_val, hr_fim_val
+                        os_val, "Realizado", dt_fim.strftime("%d/%m/%Y %H:%M"), 
+                        str(row['Centro trab.(real)']), tecnico, "Baixa SAP", "Sozinho",
+                        dt_ini.strftime("%d/%m/%Y"), f"{h_ini:02d}:{m_ini:02d}:00",
+                        dt_fim.strftime("%d/%m/%Y"), f"{h_fim:02d}:{m_fim:02d}:00"
                     )
 
+                # 4. Inserção
                 registros_lote = list(registros_dict.values())
-
-                # 6. Gravação (Bulk Insert Seguro)
                 if registros_lote:
-                    from psycopg2.extras import execute_values
                     conn = get_connection()
-                    try:
-                        cur = conn.cursor()
-                        query = """
-                            INSERT INTO baixas (os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim)
-                            VALUES %s
-                            ON CONFLICT (os) DO UPDATE SET
-                                status = EXCLUDED.status, realizado_em = EXCLUDED.realizado_em, concluido_por = EXCLUDED.concluido_por,
-                                geolocalizacao_baixa = EXCLUDED.geolocalizacao_baixa, equipe = EXCLUDED.equipe, data_inicio = EXCLUDED.data_inicio,
-                                hora_inicio = EXCLUDED.hora_inicio, data_fim = EXCLUDED.data_fim, hora_fim = EXCLUDED.hora_fim;
-                        """
-                        for i in range(0, len(registros_lote), 500):
-                            execute_values(cur, query, registros_lote[i:i + 500], page_size=500)
-                        conn.commit()
-                        cur.close()
-                    finally:
-                        release_connection(conn)
-                else:
-                    st.warning("⚠️ O arquivo foi lido, mas nenhuma data válida de fim foi encontrada.")
-                    st.stop()
-
-                # 7. Feedback Analítico para garantir que está lendo certo
-                amostra = registros_lote[0] if registros_lote else None
-                st.success(f"✅ Sucesso! {len(registros_lote)} baixas únicas processadas e compatibilizadas.")
-                if amostra:
-                    st.caption(f"**Raio-X do Processamento (Amostra limpa):** OS `{amostra[0]}` | Técnico `{amostra[4]}` | Data `{amostra[2]}`")
-                time.sleep(3)
-                st.rerun()
-
-            except Exception as e:
-                st.error(f"❌ Erro fatal ao processar arquivo IW47: {e}")
-                st.stop()
-#endregion 3.8.5
+                    cur = conn.cursor()
+                    execute_values(cur, """
+                        INSERT INTO baixas (os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim)
+                        VALUES %s
+                        ON CONFLICT (os) DO UPDATE SET 
+                        status = EXCLUDED.status, realizado_em = EXCLUDED.realizado_em, coordenacao = EXCLUDED.coordenacao, 
+                        concluido_por = EXCLUDED.concluido_por, data_inicio = EXCLUDED.data_inicio, 
+                        hora_inicio = EXCLUDED.hora_inicio, data_fim = EXCLUDED.data_fim, hora_fim = EXCLUDED.hora_fim;
+                    """, registros_lote, page_size=500)
+                    conn.commit(); cur.close(); release_connection(conn)
+                
+                st.success(f"✅ Processado com sucesso: {len(registros_lote)} OSs.")
+                time.sleep(2); st.rerun()
+            except Exception as e: st.error(f"Erro: {e}")
+#endregion
 #endregion 3.8
 
 #region 3.9: Gerador Offline - Extração de Dados e CSS (Estilos)
