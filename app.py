@@ -4193,10 +4193,12 @@ if st.session_state.get("tela_atual") == "governanca":
 
         # --- PARSER UNIVERSAL ROBUSTO (Blindagem ISO vs BR) ---
         def parse_data_br_gov(valor):
-            import re
             if pd.isna(valor): return pd.NaT
             if isinstance(valor, (pd.Timestamp, datetime)): return pd.to_datetime(valor)
-            texto = str(valor).split(" ")[0].strip()
+            # Pega só a data e remove horas
+            texto = str(valor).split(" ")[0].strip() 
+            # O dayfirst=True entende sozinho dd/mm/yyyy, ISO e dd-mmm-yyyy (26-jun-2026)
+            return pd.to_datetime(texto, dayfirst=True, errors="coerce")
             
             # 1. Se for formato ISO nativo do Banco (YYYY-MM-DD)
             if re.match(r"^\d{4}-\d{2}-\d{2}$", texto):
@@ -4755,16 +4757,18 @@ if st.session_state.get("tela_atual") == "governanca":
 
         with col_l3_c1:
             st.markdown("#### 🕒 Aderência: Login vs. Apontamento")
-
+            
             df_logs_local = df_logs.copy()
+            # Logins costumam vir do banco (timestamps). Garantimos que viram datas absolutas.
             df_logs_local["Data_Real_Pure"] = pd.to_datetime(df_logs_local["data_hora_login"], errors="coerce").dt.date
 
-            # Junta Data e Hora com segurança absoluta usando o Parser
+            # Junta Data e Hora com segurança absoluta usando dayfirst=True (como na Aba 1)
             def parse_dt_aderencia(d, h):
-                dt_base = parse_data_br_gov(d)
-                if pd.isna(dt_base): return pd.NaT
-                try: return pd.to_datetime(f"{dt_base.strftime('%Y-%m-%d')} {str(h).strip()}")
-                except: return dt_base
+                if pd.isna(d) or pd.isna(h): return pd.NaT
+                d_str = str(d).split(" ")[0].strip()
+                h_str = str(h).strip()
+                # Tenta formatar dd/mm/yyyy hh:mm:ss forçando o dia primeiro
+                return pd.to_datetime(f"{d_str} {h_str}", dayfirst=True, errors="coerce")
 
             df_gov_f["dt_baixa_calc"] = df_gov_f.apply(lambda r: parse_dt_aderencia(r["data_fim"], r["hora_fim"]), axis=1)
 
@@ -4775,256 +4779,55 @@ if st.session_state.get("tela_atual") == "governanca":
                 .reset_index(name="dt_baixa_1os")
             )
 
+            # >> AQUI ESTÁ A VARIÁVEL RESTAURADA <<
+            df_aderencia = df_logs_local.merge(df_primeira_baixa, left_on=["username", "Data_Real_Pure"], right_on=["concluido_por", "Data_Real"])
+
             if not df_aderencia.empty:
-                # CORREÇÃO APLICADA: dayfirst=True
-                df_aderencia["x_date"] = pd.to_datetime(df_aderencia["data_hora_login"], dayfirst=True, errors="coerce").dt.strftime("%d/%m")
-                dt_login, dt_baixa = pd.to_datetime(df_aderencia["data_hora_login"], dayfirst=True, errors="coerce"), pd.to_datetime(df_aderencia["dt_baixa_1os"], errors="coerce")
+                # Usa datetime puro para extrair o eixo X
+                dt_login = pd.to_datetime(df_aderencia["data_hora_login"], errors="coerce")
+                dt_baixa = pd.to_datetime(df_aderencia["dt_baixa_1os"], errors="coerce")
                 
+                df_aderencia["x_date"] = dt_login.dt.strftime("%d/%m")
                 df_aderencia["y_login_frac"] = dt_login.dt.hour + dt_login.dt.minute / 60.0
                 df_aderencia["y_baixa_frac"] = dt_baixa.dt.hour + dt_baixa.dt.minute / 60.0
                 
                 df_aderencia = df_aderencia.dropna(subset=["y_login_frac", "y_baixa_frac"]).sort_values("Data_Real_Pure")
                 
                 if not df_aderencia.empty:
-                    df_aderencia["x_date"] = pd.to_datetime(
-                        df_aderencia["data_hora_login"],
-                        errors="coerce"
-                    ).dt.strftime("%d/%m")
-
-                    dt_login = pd.to_datetime(
-                        df_aderencia["data_hora_login"],
-                        errors="coerce"
-                    )
-
-                    dt_baixa = pd.to_datetime(
-                        df_aderencia["dt_baixa_1os"],
-                        errors="coerce"
-                    )
-
-                    df_aderencia["y_login_frac"] = dt_login.dt.hour + dt_login.dt.minute / 60.0
-                    df_aderencia["y_baixa_frac"] = dt_baixa.dt.hour + dt_baixa.dt.minute / 60.0
-
-                    df_aderencia = (
-                        df_aderencia
-                        .dropna(subset=["y_login_frac", "y_baixa_frac", "x_date"])
-                        .sort_values("Data_Real_Pure")
-                    )
-
-                if not df_aderencia.empty:
-                    login_data = [
-                        [row["x_date"], round(row["y_login_frac"], 2), row["username"]]
-                        for _, row in df_aderencia.iterrows()
-                    ]
-
-                    baixa_data = [
-                        [row["x_date"], round(row["y_baixa_frac"], 2), row["username"]]
-                        for _, row in df_aderencia.iterrows()
-                    ]
-
-                    st_echarts(
-                        options={
-                            "tooltip": {
-                                "trigger": "item",
-                                "formatter": JsCode(
-                                    """
-                                    function (p) {
-                                        var hh = Math.floor(p.data[1]);
-                                        var mm = Math.round((p.data[1] - hh) * 60);
-                                        if (mm == 60) { hh += 1; mm = 0; }
-                                        return '<b>' + p.data[2] + '</b><br>'
-                                            + p.seriesName + ': '
-                                            + (hh < 10 ? '0' : '') + hh + ':'
-                                            + (mm < 10 ? '0' : '') + mm
-                                            + '<br>Data: ' + p.data[0];
-                                    }
-                                    """
-                                )
-                            },
-                            "legend": {
-                                "data": ["Login", "Primeira Baixa"],
-                                "bottom": "0%"
-                            },
-                            "dataZoom": [
-                                {
-                                    "type": "slider",
-                                    "show": True,
-                                    "xAxisIndex": [0],
-                                    "start": 0,
-                                    "end": 100,
-                                    "bottom": "5%"
-                                }
-                            ],
-                            "grid": {
-                                "top": "10%",
-                                "bottom": "25%",
-                                "left": "12%",
-                                "right": "5%"
-                            },
-                            "xAxis": {
-                                "type": "category",
-                                "data": sorted(df_aderencia["x_date"].unique().tolist())
-                            },
-                            "yAxis": {
-                                "type": "value",
-                                "name": "Horário",
-                                "min": 0,
-                                "max": 24,
-                                "interval": 4,
-                                "axisLabel": {
-                                    "formatter": JsCode(
-                                        """
-                                        function(value) {
-                                            var hh = Math.floor(value);
-                                            return (hh < 10 ? '0' : '') + hh + ':00';
-                                        }
-                                        """
-                                    )
-                                }
-                            },
-                            "series": [
-                                {
-                                    "name": "Login",
-                                    "type": "scatter",
-                                    "data": login_data,
-                                    "symbolSize": 10,
-                                    "itemStyle": {"color": "#3B82F6"}
-                                },
-                                {
-                                    "name": "Primeira Baixa",
-                                    "type": "scatter",
-                                    "data": baixa_data,
-                                    "symbolSize": 10,
-                                    "itemStyle": {"color": "#10B981"}
-                                }
-                            ]
-                        },
-                        height="400px",
-                        theme="streamlit",
-                        key=f"gov_scatter_aderencia_{chave_periodo_gov}"
-                    )
+                    login_data = [[row["x_date"], round(row["y_login_frac"], 2), row["username"]] for _, row in df_aderencia.iterrows()]
+                    baixa_data = [[row["x_date"], round(row["y_baixa_frac"], 2), row["username"]] for _, row in df_aderencia.iterrows()]
+                    
+                    st_echarts(options={ 
+                        "tooltip": { 
+                            "trigger": "item", 
+                            "formatter": JsCode("""function (p) { var hh = Math.floor(p.data[1]); var mm = Math.round((p.data[1] - hh) * 60); if (mm == 60) { hh += 1; mm = 0; } return '<b>' + p.data[2] + '</b><br>' + p.seriesName + ': ' + (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm + '<br>Data: ' + p.data[0]; }""") 
+                        }, 
+                        "legend": {"data": ["Login", "Primeira Baixa"], "bottom": "0%"}, 
+                        "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}], 
+                        "grid": {"top": "10%", "bottom": "25%", "left": "12%", "right": "5%"}, 
+                        "xAxis": {"type": "category", "data": sorted(df_aderencia["x_date"].unique().tolist())}, 
+                        "yAxis": { "type": "value", "name": "Horário", "min": 0, "max": 24, "interval": 4, "axisLabel": { "formatter": JsCode("""function(value) { var hh = Math.floor(value); return (hh < 10 ? '0' : '') + hh + ':00'; }""") } }, 
+                        "series": [ 
+                            {"name": "Login", "type": "scatter", "data": login_data, "symbolSize": 10, "itemStyle": {"color": "#3B82F6"}}, 
+                            {"name": "Primeira Baixa", "type": "scatter", "data": baixa_data, "symbolSize": 10, "itemStyle": {"color": "#10B981"}} 
+                        ] 
+                    }, height="400px", theme="streamlit", key="gov_scatter_aderencia")
                 else:
                     st.info("Dados de horário insuficientes para plotar o gráfico de aderência.")
-            else:
+            else: 
                 st.info("Dados insuficientes para cruzar login com apontamento.")
 
         with col_l3_c2:
             st.markdown("#### 🔝 Top Técnicos: OS por Pátio")
-
-            df_freq = (
-                df_gov_f
-                .groupby(["Colaborador", "Patio"])
-                .size()
-                .reset_index(name="Qtd")
-            )
-
-            tecnicos_top = df_freq["Colaborador"].unique().tolist()
-            patios_top = sorted(df_freq["Patio"].unique().tolist())
-
-            series_top = []
-
-            for patio in patios_top:
-                dados_patio = []
-
-                for tec in tecnicos_top:
-                    filtro_tp = df_freq[
-                        (df_freq["Colaborador"] == tec)
-                        & (df_freq["Patio"] == patio)
-                    ]
-
-                    qtd = int(filtro_tp["Qtd"].iloc[0]) if not filtro_tp.empty else 0
-                    dados_patio.append(qtd)
-
-                series_top.append({
-                    "name": patio,
-                    "type": "bar",
-                    "stack": "total",
-                    "data": dados_patio,
-                    "label": {"show": False}
-                })
-
-            st_echarts(
-                options={
-                    "tooltip": {
-                        "trigger": "axis",
-                        "axisPointer": {"type": "shadow"}
-                    },
-                    "legend": {
-                        "bottom": "0%",
-                        "textStyle": {"fontSize": 10}
-                    },
-                    "grid": {
-                        "left": "5%",
-                        "right": "5%",
-                        "bottom": "18%",
-                        "top": "10%",
-                        "containLabel": True
-                    },
-                    "xAxis": {
-                        "type": "category",
-                        "data": tecnicos_top,
-                        "axisLabel": {
-                            "interval": 0,
-                            "rotate": 30,
-                            "fontSize": 10
-                        }
-                    },
-                    "yAxis": {"type": "value"},
-                    "series": series_top
-                },
-                height="400px",
-                theme="streamlit",
-                key="gov_top_tec"
-            )
+            df_freq = df_gov_f.groupby(["concluido_por", "Patio"]).size().reset_index(name="Qtd")
+            tecnicos_top, patios_top = df_freq["concluido_por"].unique().tolist(), sorted(df_freq["Patio"].unique().tolist())
+            series_top = [{"name": patio, "type": "bar", "stack": "total", "data": [int(df_freq[(df_freq["concluido_por"] == tec) & (df_freq["Patio"] == patio)]["Qtd"].iloc[0]) if not df_freq[(df_freq["concluido_por"] == tec) & (df_freq["Patio"] == patio)].empty else 0 for tec in tecnicos_top], "label": {"show": False}} for patio in patios_top]
+            st_echarts(options={ "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}}, "legend": {"bottom": "0%", "textStyle": {"fontSize": 10}}, "grid": {"left": "5%", "right": "5%", "bottom": "18%", "top": "10%", "containLabel": True}, "xAxis": {"type": "category", "data": tecnicos_top, "axisLabel": {"interval": 0, "rotate": 30, "fontSize": 10}}, "yAxis": {"type": "value"}, "series": series_top }, height="400px", theme="streamlit", key="gov_top_tec")
 
         with col_l3_c3:
             st.markdown("#### 📊 Variabilidade de Execução")
-
-            df_var = (
-                df_gov_f
-                .groupby("Colaborador")["Tempo_Minutos"]
-                .mean()
-                .fillna(0)
-                .reset_index()
-                .sort_values("Tempo_Minutos", ascending=True)
-            )
-
-            st_echarts(
-                options={
-                    "tooltip": {"trigger": "axis"},
-                    "grid": {
-                        "left": "5%",
-                        "right": "8%",
-                        "bottom": "10%",
-                        "top": "10%",
-                        "containLabel": True
-                    },
-                    "xAxis": {
-                        "type": "value",
-                        "name": "Minutos"
-                    },
-                    "yAxis": {
-                        "type": "category",
-                        "data": df_var["Colaborador"].tolist(),
-                        "axisLabel": {"fontSize": 10}
-                    },
-                    "series": [
-                        {
-                            "type": "bar",
-                            "data": df_var["Tempo_Minutos"].round(1).tolist(),
-                            "itemStyle": {"color": "#8B5CF6"},
-                            "label": {
-                                "show": True,
-                                "position": "right",
-                                "formatter": "{c} min",
-                                "fontSize": 10
-                            }
-                        }
-                    ]
-                },
-                height="400px",
-                theme="streamlit",
-                key="gov_variab"
-            )
+            df_var = df_gov_f.groupby("concluido_por")["Tempo_Minutos"].mean().fillna(0).reset_index().sort_values("Tempo_Minutos", ascending=True)
+            st_echarts(options={ "tooltip": {"trigger": "axis"}, "grid": {"left": "5%", "right": "8%", "bottom": "10%", "top": "10%", "containLabel": True}, "xAxis": {"type": "value", "name": "Minutos"}, "yAxis": {"type": "category", "data": df_var["concluido_por"].tolist(), "axisLabel": {"fontSize": 10}}, "series": [{"type": "bar", "data": df_var["Tempo_Minutos"].round(1).tolist(), "itemStyle": {"color": "#8B5CF6"}, "label": {"show": True, "position": "right", "formatter": "{c} min", "fontSize": 10}}] }, height="400px", theme="streamlit", key="gov_variab")
 #endregion 11.6
 
 #region 11.7: Tabela de Auditoria GPS
