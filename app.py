@@ -417,35 +417,46 @@ def haversine_vectorized(lat1, lon1, lat2_series, lon2_series):
 
 #region 3.1.5: Geocodificação e Tratamento KML
 @st.cache_data(show_spinner=False)
-def reverse_geocode_coordenada(lat: float, lon: float) -> str:
-    try:
-        geolocator = Nominatim(user_agent="gestao_os_eletro_mrs", timeout=10)
-        location = geolocator.reverse((float(lat), float(lon)), exactly_one=True, language="pt-BR", addressdetails=True)
-        if not location: return "GPS Local"
-        addr = getattr(location, "raw", {}).get("address", {})
-        rua = (addr.get("road") or addr.get("pedestrian") or addr.get("residential") or addr.get("footway") or "").strip()
-        numero = (addr.get("house_number") or "").strip()
-        bairro = (addr.get("suburb") or addr.get("neighbourhood") or "").strip()
-        cidade = (addr.get("city") or addr.get("town") or "").strip()
-        partes = []
-        if rua and numero: partes.append(f"{rua}, {numero}")
-        elif rua: partes.append(rua)
-        if bairro: partes.append(bairro)
-        if cidade: partes.append(cidade)
-        endereco_curto = ", ".join([p for p in partes if p])
-        return endereco_curto if endereco_curto else "GPS Local"
-    except Exception: return "GPS Local"
-
-@st.cache_data(show_spinner=False)
 def carregar_malha_cacheada(caminho="malha_mrs.kml"):
-    """Lê o KML da malha uma única vez, simplifica os vértices e guarda em RAM."""
-    if not os.path.exists(caminho): return None
+    """Lê o KML da malha, normaliza CRS, mantém apenas linhas e simplifica."""
+    if not os.path.exists(caminho):
+        st.warning(f"KML não encontrado: {caminho}")
+        return None
+
     import geopandas as gpd
+
     try:
         gdf = gpd.read_file(caminho, driver="KML")
-        # Tolerância de 0.005 reduz drasticamente o peso visual no folium
-        gdf.geometry = gdf.geometry.simplify(tolerance=0.005, preserve_topology=True)
+
+        if gdf is None or gdf.empty or "geometry" not in gdf.columns:
+            st.warning("KML carregado, mas sem geometrias válidas.")
+            return None
+
+        gdf = gdf.dropna(subset=["geometry"]).copy()
+        gdf = gdf[~gdf.geometry.is_empty].copy()
+
+        # Normaliza CRS para renderização no Folium
+        if gdf.crs is not None:
+            gdf = gdf.to_crs("EPSG:4326")
+
+        # Explode geometrias compostas
+        try:
+            gdf = gdf.explode(index_parts=False).reset_index(drop=True)
+        except Exception:
+            pass
+
+        # Mantém apenas o que o mapa atual sabe desenhar
+        gdf = gdf[gdf.geometry.geom_type.isin(["LineString", "MultiLineString"])].copy()
+
+        if gdf.empty:
+            st.warning("O KML foi lido, mas não contém LineString/MultiLineString para desenhar.")
+            return None
+
+        # Simplificação visual para performance
+        gdf["geometry"] = gdf["geometry"].simplify(tolerance=0.005, preserve_topology=True)
+
         return gdf
+
     except Exception as e:
         st.warning(f"Erro ao cachear a malha KML: {e}")
         return None
@@ -463,6 +474,19 @@ def tentar_gps_uma_vez():
         if lat is not None and lon is not None:
             return True, float(lat), float(lon), "Localização obtida.", coords.get("accuracy")
     return False, None, None, "Não foi possível interpretar o GPS.", None
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def reverse_geocode_coordenada(lat: float, lon: float) -> str:
+    try:
+        geolocator = Nominatim(user_agent="sgo_mrs_app")
+        location = geolocator.reverse((float(lat), float(lon)), exactly_one=True, timeout=10, language="pt")
+        if location and getattr(location, "address", None):
+            return str(location.address)
+        if location and isinstance(location, dict) and location.get("display_name"):
+            return str(location.get("display_name"))
+    except Exception:
+        pass
+    return f"{float(lat):.6f}, {float(lon):.6f}"
 #endregion
 
 #endregion 3.1.6
