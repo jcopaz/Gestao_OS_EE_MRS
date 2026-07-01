@@ -4362,8 +4362,10 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 
-st.markdown("### 🗓️ Cronograma de Execução de Campo")
-st.caption("OS Pendentes recomendadas no raio de atuação visual por prioridade")
+if tab2 is not None:
+    with tab2:
+        st.markdown("### 🗓️ Cronograma de Execução de Campo")
+        st.caption("OS Pendentes recomendadas no raio de atuação visual por prioridade")
 
 def gerar_pdf_cronograma_bytes(df_pdf: pd.DataFrame, titulo: str = "Cronograma de Execução de Campo") -> bytes:
     buffer = BytesIO()
@@ -4422,49 +4424,51 @@ def gerar_pdf_cronograma_bytes(df_pdf: pd.DataFrame, titulo: str = "Cronograma d
     buffer.seek(0)
     return buffer.getvalue()
 
-if not df_recomendado.empty:
-    df_tabela_campo = df_recomendado.copy()
+if tab2 is not None:
+    with tab2:
+        if not df_recomendado.empty:
+            df_tabela_campo = df_recomendado.copy()
 
-    ativo_sel_campo = st.session_state.get("ativo_aplicado", "Todos os Ativos na Rota")
-    if ativo_sel_campo != "Todos os Ativos na Rota":
-        df_tabela_campo = df_tabela_campo[
-            df_tabela_campo["Ativo"].astype(str).str.strip() == str(ativo_sel_campo).strip()
-        ].copy()
+            ativo_sel_campo = st.session_state.get("ativo_aplicado", "Todos os Ativos na Rota")
+            if ativo_sel_campo != "Todos os Ativos na Rota":
+                df_tabela_campo = df_tabela_campo[
+                    df_tabela_campo["Ativo"].astype(str).str.strip() == str(ativo_sel_campo).strip()
+                ].copy()
 
-    if df_tabela_campo.empty:
-        st.info("Nenhuma OS pendente encontrada no cronograma para o ativo selecionado.")
-    else:
-        col_cro_1, col_cro_2 = st.columns([8, 2])
+            if df_tabela_campo.empty:
+                st.info("Nenhuma OS pendente encontrada no cronograma para o ativo selecionado.")
+            else:
+                col_cro_1, col_cro_2 = st.columns([8, 2])
 
-        with col_cro_2:
-            pdf_bytes = gerar_pdf_cronograma_bytes(df_tabela_campo)
-            st.download_button(
-                "📄 Gerar Impressão PDF",
-                data=pdf_bytes,
-                file_name="cronograma_execucao_campo.pdf",
-                mime="application/pdf",
-                use_container_width=True
-            )
+                with col_cro_2:
+                    pdf_bytes = gerar_pdf_cronograma_bytes(df_tabela_campo)
+                    st.download_button(
+                        "📄 Gerar Impressão PDF",
+                        data=pdf_bytes,
+                        file_name="cronograma_execucao_campo.pdf",
+                        mime="application/pdf",
+                        use_container_width=True
+                    )
 
-        df_exibicao = df_tabela_campo[
-            ["Ordem servico", "Ativo", "Patio", "Criticidade", "Classificacao", "Descrição Longa"]
-        ].fillna("").copy()
+                df_exibicao = df_tabela_campo[
+                    ["Ordem servico", "Ativo", "Patio", "Criticidade", "Classificacao", "Descrição Longa"]
+                ].fillna("").copy()
 
-        st.dataframe(
-            df_exibicao,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Ordem servico": st.column_config.TextColumn("OS", width="small"),
-                "Ativo": st.column_config.TextColumn("Ativo", width="small"),
-                "Patio": st.column_config.TextColumn("Pátio", width="small"),
-                "Criticidade": st.column_config.TextColumn("Criticidade", width="small"),
-                "Classificacao": st.column_config.TextColumn("Classificação", width="small"),
-                "Descrição Longa": st.column_config.TextColumn("Descrição Longa", width="large"),
-            }
-        )
-else:
-    st.info("Sem OS pendentes para exibir no cronograma.")
+                st.dataframe(
+                    df_exibicao,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Ordem servico": st.column_config.TextColumn("OS", width="small"),
+                        "Ativo": st.column_config.TextColumn("Ativo", width="small"),
+                        "Patio": st.column_config.TextColumn("Pátio", width="small"),
+                        "Criticidade": st.column_config.TextColumn("Criticidade", width="small"),
+                        "Classificacao": st.column_config.TextColumn("Classificação", width="small"),
+                        "Descrição Longa": st.column_config.TextColumn("Descrição Longa", width="large"),
+                    }
+                )
+        else:
+            st.info("Sem OS pendentes para exibir no cronograma.")
 #endregion 10.3.5
 #endregion 10.3
 #endregion SESSÃO 10
