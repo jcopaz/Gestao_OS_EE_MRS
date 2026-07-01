@@ -4107,7 +4107,7 @@ def renderizar_bloco_apontamento():
         st.markdown("---")
         st.markdown("#### ⏳ Apontamento de Tempos Individuais")
 
-        apontamentos, todos_preenchidos = {{}}, True
+        apontamentos, todos_preenchidos = {}, True
         for os_id in set(os_selecionadas):
             st.markdown(f"**OS: {os_id}**", unsafe_allow_html=True)
             c1, c2 = st.columns(2)
