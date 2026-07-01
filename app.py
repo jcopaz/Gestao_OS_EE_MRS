@@ -1745,8 +1745,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         colunas_export.append("Descrição Longa")
 
     df_export = df_pendentes.head(100)[colunas_export].fillna("")
-    
-    # Sanitização crítica para evitar que o JS quebre
+
+    # Sanitização crítica para evitar quebra de HTML/JS
     os_json = df_export.to_json(orient="records", force_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
 
     usuarios_equipe = ["Sozinho (Nenhum)"]
@@ -1765,12 +1765,12 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         release_connection(conn)
 
     usuarios_json = json.dumps(usuarios_equipe, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
+
     api_url_fixa = st.secrets.get(
         "OFFLINE_API_URL",
         "https://gestao-os-ee-mrs-producao.onrender.com/sincronizar_baixa_offline"
     )
     api_key_fixa = st.secrets.get("OFFLINE_API_KEY", "")
-
 
     html_head = f"""<!DOCTYPE html>
 <html lang="pt-BR">
@@ -1819,7 +1819,10 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         .desc-box {{ padding: 10px; background: #F8FAFC; border-radius: 10px; border: 1px solid #E2E8F0; font-size: 13px; color: #334155; }}
         .small {{ font-size: 12px; color: #64748B; }}
         .footer-space {{ height: 24px; }}
-        @media (max-width: 768px) {{ .toolbar, .toolbar-3, .os-grid {{ grid-template-columns: 1fr; }} .os-header {{ flex-direction: column; align-items: flex-start; }} }}
+        @media (max-width: 768px) {{
+            .toolbar, .toolbar-3, .os-grid {{ grid-template-columns: 1fr; }}
+            .os-header {{ flex-direction: column; align-items: flex-start; }}
+        }}
     </style>
 </head>
 <body>
@@ -2036,6 +2039,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             const wrapper = document.createElement("div");
             wrapper.className = "os-item" + (locked ? " locked" : "");
             wrapper.id = `card_os_${{idx}}`;
+
             wrapper.innerHTML = `
                 <div class="os-header">
                     <div class="os-title">OS ${{osId}}</div>
@@ -2063,8 +2067,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                     <input id="foto_${{idx}}" type="file" accept="image/jpeg,image/png" ${{locked ? "disabled" : ""}}>
                     <div class="small">Use a câmera ou a galeria pelo seletor do aparelho. Evitamos forçar a câmera para reduzir reinicialização por memória no Android.</div>
                 </div>
-            `;
-
             `;
             osList.appendChild(wrapper);
         }});
@@ -2298,7 +2300,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 #endregion 3.12
 
 #region 3.13: Gerador Offline - Lógica JS de Sincronização e Fechamento
-    # Lógica de Sincronização com tratamento de erros (UX Limpa)
     js_sync = f"""
     async function sincronizarFila() {{
         const apiUrl = API_URL_FIXA;
@@ -2345,11 +2346,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 formData.append("acompanhante", item.acompanhante || "");
                 formData.append("horario_inicio", item.horario_inicio);
                 formData.append("horario_fim", item.horario_fim);
-                formData.append(
-                    "foto",
-                    item.foto_blob,
-                    item.foto_nome || "evidencia.jpg"
-                );
+                formData.append("foto", item.foto_blob, item.foto_nome || "evidencia.jpg");
+
                 const resp = await fetch(apiUrl, {{
                     method: "POST",
                     headers: {{
@@ -2358,19 +2356,16 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                     body: formData
                 }});
 
-                // --- ATUALIZAÇÃO UX: Tratamento de Erros Limpo ---
                 if (!resp.ok) {{
                     let msgErro = "Falha na comunicação com o servidor.";
                     try {{
                         const errJson = await resp.json();
-                        // Se a API mandar o erro dentro de 'detail', extrai só o texto
                         if (errJson.detail) {{
                             msgErro = errJson.detail;
                         }} else {{
                             msgErro = JSON.stringify(errJson);
                         }}
                     }} catch (parseErr) {{
-                        // Se não for JSON, pega o texto puro ou o código do erro
                         msgErro = await resp.text() || `Erro no servidor (Código ${{resp.status}})`;
                     }}
                     throw new Error(msgErro);
@@ -2390,7 +2385,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             }} catch (e) {{
                 console.error("Falha na sincronização da OS", item.os_id, e);
                 falha += 1;
-                // e.message agora contém apenas o texto limpo, sem "HTTP 403"
                 detalhesFalha.push(`OS ${{item.os_id}}: ${{e.message || "Erro desconhecido"}}`);
             }}
         }}
@@ -2435,7 +2429,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     html_final = html_head + html_body + js_core + js_lote + js_sync
     return html_final.encode("utf-8")
 #endregion 3.13
-#endregion
 
 #region SESSÃO 4: Banco de Coordenadas Fixo
 
@@ -4103,11 +4096,12 @@ def renderizar_bloco_apontamento():
         apontamentos = {}
         todos_preenchidos = True
 
-        for os_id in os_selecionadas:
-            os_id = str(os_id)
-            st.markdown(f"**OS: {os_id}**")
+        for os_id_raw in os_selecionadas:
+            os_id = str(os_id_raw).strip()
 
+            st.markdown(f"**OS: {os_id}**")
             c1, c2 = st.columns(2)
+
             with c1:
                 h_ini = st.time_input(
                     "Horário Início",
@@ -4150,10 +4144,10 @@ def renderizar_bloco_apontamento():
             equipe_str = ", ".join(equipe_selecionada) if equipe_selecionada else "Sozinho"
             realizado_dt = agora_dt()
 
-            for os_id in os_selecionadas:
-                os_id = str(os_id)
+            for os_id_raw in os_selecionadas:
+                os_id = str(os_id_raw).strip()
 
-                mask = st.session_state["df_os"]["Ordem servico"].astype(str) == os_id
+                mask = st.session_state["df_os"]["Ordem servico"].astype(str).str.strip() == os_id
                 df_match = st.session_state["df_os"].loc[mask]
 
                 if df_match.empty:
@@ -4187,8 +4181,8 @@ def renderizar_bloco_apontamento():
 
             fotos_enviadas = 0
 
-            for os_id in os_selecionadas:
-                os_id = str(os_id)
+            for os_id_raw in os_selecionadas:
+                os_id = str(os_id_raw).strip()
                 foto_da_os = fotos_por_os.get(os_id)
 
                 if foto_da_os is None:
@@ -4196,7 +4190,7 @@ def renderizar_bloco_apontamento():
 
                 try:
                     df_match = st.session_state["df_os"].loc[
-                        st.session_state["df_os"]["Ordem servico"].astype(str) == os_id
+                        st.session_state["df_os"]["Ordem servico"].astype(str).str.strip() == os_id
                     ]
                     if df_match.empty:
                         continue
@@ -4272,7 +4266,71 @@ with col_mapa:
     #endregion 10.3.4
 
 #region 10.3.5: Cronograma de Execução de Campo
+from io import BytesIO
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+
 st.markdown("### 🗓️ Cronograma de Execução de Campo")
+st.caption("OS Pendentes recomendadas no raio de atuação visual por prioridade")
+
+def gerar_pdf_cronograma_bytes(df_pdf: pd.DataFrame, titulo: str = "Cronograma de Execução de Campo") -> bytes:
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4),
+        leftMargin=20,
+        rightMargin=20,
+        topMargin=20,
+        bottomMargin=20
+    )
+
+    styles = getSampleStyleSheet()
+    story = []
+
+    story.append(Paragraph(f"<b>{titulo}</b>", styles["Title"]))
+    story.append(Spacer(1, 10))
+
+    colunas_pdf = ["Ordem servico", "Ativo", "Patio", "Criticidade", "Classificacao", "Descrição Longa"]
+    df_local = df_pdf[colunas_pdf].fillna("").copy()
+
+    data = [colunas_pdf]
+    for _, row in df_local.iterrows():
+        data.append([
+            Paragraph(str(row["Ordem servico"]), styles["BodyText"]),
+            Paragraph(str(row["Ativo"]), styles["BodyText"]),
+            Paragraph(str(row["Patio"]), styles["BodyText"]),
+            Paragraph(str(row["Criticidade"]), styles["BodyText"]),
+            Paragraph(str(row["Classificacao"]), styles["BodyText"]),
+            Paragraph(str(row["Descrição Longa"]), styles["BodyText"]),
+        ])
+
+    tabela = Table(
+        data,
+        repeatRows=1,
+        colWidths=[75, 85, 55, 75, 90, 360]
+    )
+
+    tabela.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#163A70")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D1D5DB")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 9),
+        ("FONTSIZE", (0, 1), (-1, -1), 8),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+
+    story.append(tabela)
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
 
 if not df_recomendado.empty:
     df_tabela_campo = df_recomendado.copy()
@@ -4286,62 +4344,35 @@ if not df_recomendado.empty:
     if df_tabela_campo.empty:
         st.info("Nenhuma OS pendente encontrada no cronograma para o ativo selecionado.")
     else:
-        col_pdf_1, col_pdf_2 = st.columns([8, 2])
-        with col_pdf_2:
-            # manter aqui seu botão atual de PDF, se já existir
-            pass
+        col_cro_1, col_cro_2 = st.columns([8, 2])
 
-        tabela_html = (
-            df_tabela_campo[
-                ["Ordem servico", "Ativo", "Patio", "Criticidade", "Classificacao", "Descrição Longa"]
-            ]
-            .fillna("")
-            .to_html(index=False, escape=False)
+        with col_cro_2:
+            pdf_bytes = gerar_pdf_cronograma_bytes(df_tabela_campo)
+            st.download_button(
+                "📄 Gerar Impressão PDF",
+                data=pdf_bytes,
+                file_name="cronograma_execucao_campo.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
+
+        df_exibicao = df_tabela_campo[
+            ["Ordem servico", "Ativo", "Patio", "Criticidade", "Classificacao", "Descrição Longa"]
+        ].fillna("").copy()
+
+        st.dataframe(
+            df_exibicao,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Ordem servico": st.column_config.TextColumn("OS", width="small"),
+                "Ativo": st.column_config.TextColumn("Ativo", width="small"),
+                "Patio": st.column_config.TextColumn("Pátio", width="small"),
+                "Criticidade": st.column_config.TextColumn("Criticidade", width="small"),
+                "Classificacao": st.column_config.TextColumn("Classificação", width="small"),
+                "Descrição Longa": st.column_config.TextColumn("Descrição Longa", width="large"),
+            }
         )
-
-        html_code = f"""
-        <style>
-            .cronograma-wrap {{
-                width: 100%;
-                max-width: 100%;
-                overflow-x: auto;
-                display: block;
-                margin: 0;
-                padding: 0;
-            }}
-
-            .tabela-rota {{
-                width: 100%;
-                min-width: 1200px;
-                border-collapse: collapse;
-                table-layout: fixed;
-                font-size: 12px;
-            }}
-
-            .tabela-rota th {{
-                background: #163A70;
-                color: white;
-                padding: 8px;
-                text-align: left;
-                border: 1px solid #D1D5DB;
-            }}
-
-            .tabela-rota td {{
-                padding: 8px;
-                border: 1px solid #E5E7EB;
-                vertical-align: top;
-                word-wrap: break-word;
-                overflow-wrap: break-word;
-                white-space: normal;
-            }}
-        </style>
-
-        <div class="cronograma-wrap">
-            {tabela_html.replace('<table', '<table class="tabela-rota"')}
-        </div>
-        """
-
-        st.markdown(html_code, unsafe_allow_html=True)
 else:
     st.info("Sem OS pendentes para exibir no cronograma.")
 #endregion 10.3.5
