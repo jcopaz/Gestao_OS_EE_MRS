@@ -1765,9 +1765,12 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         release_connection(conn)
 
     usuarios_json = json.dumps(usuarios_equipe, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
-
-    api_url_fixa = st.secrets.get("OFFLINE_API_URL", "https://gestao-os-ee-mrs-producao.onrender.com/sincronizar_baixa_offline")
+    api_url_fixa = st.secrets.get(
+        "OFFLINE_API_URL",
+        "https://gestao-os-ee-mrs-producao.onrender.com/sincronizar_baixa_offline"
+    )
     api_key_fixa = st.secrets.get("OFFLINE_API_KEY", "")
+
 
     html_head = f"""<!DOCTYPE html>
 <html lang="pt-BR">
@@ -2033,7 +2036,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             const wrapper = document.createElement("div");
             wrapper.className = "os-item" + (locked ? " locked" : "");
             wrapper.id = `card_os_${{idx}}`;
-
             wrapper.innerHTML = `
                 <div class="os-header">
                     <div class="os-title">OS ${{osId}}</div>
@@ -2058,8 +2060,11 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 
                 <div class="field">
                     <label for="foto_${{idx}}">📷 Evidência Fotográfica</label>
-                    <input id="foto_${{idx}}" type="file" accept=".jpg,.jpeg,.png,image/*" capture="environment" ${{locked ? "disabled" : ""}}>
+                    <input id="foto_${{idx}}" type="file" accept="image/jpeg,image/png" ${{locked ? "disabled" : ""}}>
+                    <div class="small">Use a câmera ou a galeria pelo seletor do aparelho. Evitamos forçar a câmera para reduzir reinicialização por memória no Android.</div>
                 </div>
+            `;
+
             `;
             osList.appendChild(wrapper);
         }});
@@ -4011,185 +4016,270 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 #endregion 10.3.2
 
  #region 10.3.3: Formulário de Baixa de OS + Evidências (fragment)
-                    @st.fragment
-                    def renderizar_bloco_apontamento():
-                        st.markdown("---")
-                        st.markdown("#### ✅ Apontamento e Conclusão de OS")
-                        
-                        # --- TRAVA DE PRIORIDADE NO SELECT DO DESKTOP ---
-                        hoje_atual = datetime.now().date()
-                        mask_critica = (df_recomendado["Criticidade_rank"] == 1) & (df_recomendado["dt_prog_filtro"].dt.date <= hoje_atual)
-                        
-                        if mask_critica.any():
-                            st.warning("⚠️ **Foco Operacional Ativo:** Conclua as OS Críticas (Muito Alta) para liberar as demais.")
-                            opcoes_os = df_recomendado[mask_critica]["Ordem servico"].astype(str).unique().tolist()
-                        else:
-                            opcoes_os = df_recomendado["Ordem servico"].astype(str).unique().tolist()
+@st.fragment
+def renderizar_bloco_apontamento():
+    st.markdown("---")
+    st.markdown("#### ✅ Apontamento e Conclusão de OS")
 
-                        os_selecionadas = st.multiselect("1. Selecione as OSs que deseja baixar:", opcoes_os)
+    # --- FILTRO OPERACIONAL ACIMA DA SELEÇÃO DE OS ---
+    ativos_disp = sorted(
+        df_recomendado["Ativo"].dropna().astype(str).str.strip().unique().tolist()
+    )
+    opcoes_ativos = ["Todos os Ativos na Rota"] + ativos_disp
 
-                        if os_selecionadas:
-                            os_distantes = [os_id for os_id in os_selecionadas if df_recomendado.loc[df_recomendado["Ordem servico"].astype(str) == str(os_id), "Distancia_km"].iloc[0] > 2.0]
-                            if os_distantes:
-                                st.error(f"🛑 **Bloqueio Geográfico:** O sistema exige estar em um raio máximo de **2 km** do local.")
-                                st.warning(f"Você está muito longe das OSs: **{', '.join(os_distantes)}**.")
-                                st.info("💡 Aproxime-se do pátio e atualize sua posição em '📍 Minha Localização'.")
-                                return
+    if "campo_filtro_ativo_os" not in st.session_state:
+        st.session_state["campo_filtro_ativo_os"] = "Todos os Ativos na Rota"
 
-                            st.markdown("---")
-                            st.markdown("#### 📷 Evidências Fotográficas")
-                            st.caption("Registre a evidência de **cada OS**. A imagem será comprimida automaticamente.")
-                            fotos_por_os = {os_id: st.file_uploader("📸 Tirar Foto ou 🖼️ Galeria", type=["jpg", "jpeg", "png"], key=f"foto_{os_id}") for os_id in os_selecionadas}
+    ativo_sel = st.selectbox(
+        "🔍 Filtrar OS do cronograma por Ativo:",
+        opcoes_ativos,
+        key="campo_filtro_ativo_os"
+    )
 
-                            conn = get_connection()
-                            try: df_users_equipe = pd.read_sql_query("SELECT username FROM usuarios", conn)
-                            finally: release_connection(conn)
-                            
-                            lista_equipe_disp = df_users_equipe["username"].tolist()
-                            usr_logado = st.session_state.get("username", "")
-                            if usr_logado in lista_equipe_disp: lista_equipe_disp.remove(usr_logado)
-                            
-                            with st.form("form_apontamento_os"):
-                                equipe_selecionada = st.multiselect("2. Selecione a sua equipe:", lista_equipe_disp)
-                                st.markdown("---")
-                                st.markdown("#### ⏳ Apontamento de Tempos Individuais")
-                                apontamentos, todos_preenchidos = {}, True
-                                
-                                for os_id in set(os_selecionadas):
-                                    st.markdown(f"<b style='color: #3B82F6;'>OS: {os_id}</b>", unsafe_allow_html=True)
-                                    c1, c2 = st.columns(2)
-                                    with c1: h_ini = st.time_input(f"Horário Início", key=f"time_ini_{os_id}", value=None)
-                                    with c2: h_fim = st.time_input(f"Horário Fim", key=f"time_fim_{os_id}", value=None)
-                                    apontamentos[os_id] = {"inicio": h_ini, "fim": h_fim}
-                                    if h_ini is None or h_fim is None: todos_preenchidos = False
-                                    st.markdown("<hr style='margin: 8px 0; border-color: #333D4E;'>", unsafe_allow_html=True)
+    df_recomendado_ui = df_recomendado.copy()
+    if ativo_sel != "Todos os Ativos na Rota":
+        df_recomendado_ui = df_recomendado_ui[
+            df_recomendado_ui["Ativo"].astype(str).str.strip() == str(ativo_sel).strip()
+        ].copy()
 
-                                origem = st.session_state.get("origem_tipo", "BASE")
-                                if st.form_submit_button("🚀 Concluir e Gravar OS(s)", use_container_width=True):
-                                    if origem != "GPS": st.warning("📍 A geolocalização é obrigatória. Atualize sua posição.")
-                                    elif not todos_preenchidos: st.warning("⚠️ Preencha os horários de **início e fim** de todas as OSs.")
-                                    else:
-                                        # --- PREPARAÇÃO DE DADOS (SEM BLOQUEIO DE TEMPO) ---
-                                        geo_baixa = f"{st.session_state.get('local_nome', 'Local')} (Lat: {st.session_state.get('lat_partida')}, Lon: {st.session_state.get('lon_partida')})"
-                                        equipe_str = ", ".join(equipe_selecionada) if equipe_selecionada else "Sozinho"
-                                        realizado_dt = agora_dt()
-                                        
-                                        for os_id in set(os_selecionadas):
-                                            mask = (st.session_state["df_os"]["Ordem servico"].astype(str) == str(os_id))
-                                            dt_prog = st.session_state["df_os"].loc[mask, "Data inicial programada"].iloc[0] if len(st.session_state["df_os"].loc[mask]) > 0 else pd.NaT
-                                            coord = st.session_state["df_os"].loc[mask, "Coordenacao"].iloc[0] if len(st.session_state["df_os"].loc[mask]) > 0 else "Campo"
-                                            
-                                            h_i = apontamentos[os_id]["inicio"]
-                                            h_f = apontamentos[os_id]["fim"]
-                                            
-                                            # --- CORREÇÃO AUTOMÁTICA DE DATA PARA O SAP (CRUZAMENTO DE MADRUGADA) ---
-                                            if h_f < h_i:
-                                                data_inicio_str = (realizado_dt - timedelta(days=1)).strftime("%d/%m/%Y")
-                                            else:
-                                                data_inicio_str = realizado_dt.strftime("%d/%m/%Y")
-                                                
-                                            data_fim_str = realizado_dt.strftime("%d/%m/%Y")
-                                            
-                                            upsert_baixa(
-                                                os_id=str(os_id), 
-                                                status=determinar_status_execucao(pd.to_datetime(dt_prog, errors="coerce"), realizado_dt),
-                                                realizado_em_str=formatar_dt_br(realizado_dt), 
-                                                coordenacao=coord, 
-                                                concluido_por=usr_logado,
-                                                geolocalizacao_baixa=geo_baixa, 
-                                                equipe=equipe_str, 
-                                                data_inicio=data_inicio_str,      # Data tratada (ontem se cruzou a meia noite)
-                                                hora_inicio=h_i.strftime("%H:%M:%S"), 
-                                                data_fim=data_fim_str,            # Data tratada (hoje)
-                                                hora_fim=h_f.strftime("%H:%M:%S")
-                                            )
+    if df_recomendado_ui.empty:
+        st.info("Nenhuma OS encontrada para o ativo selecionado.")
+        return
 
-                                        fotos_enviadas = 0
-                                        for os_id_foto in set(os_selecionadas):
-                                            foto_da_os = fotos_por_os.get(str(os_id_foto))
-                                            if foto_da_os is None: continue
-                                            with st.spinner(f"📤 Comprimindo e enviando foto da OS {os_id_foto}..."):
-                                                try:
-                                                    df_match = st.session_state["df_os"].loc[st.session_state["df_os"]["Ordem servico"].astype(str) == str(os_id_foto)]
-                                                    if df_match.empty: continue
-                                                    ativo_val = str(df_match["Ativo"].iloc[0]).strip()
-                                                    atividade_val = str(df_match["Atividade ativo"].iloc[0]).strip() if "Atividade ativo" in df_match.columns else "N_A"
-                                                    url_foto = upload_foto_supabase(foto_da_os.getvalue(), re.sub(r'[^\w\-.]', '_', f"{ativo_val}__{atividade_val}.jpg"))
-                                                    upsert_evidencia(ativo=ativo_val, atividade=atividade_val, foto_url=url_foto, os_referencia=str(os_id_foto), concluido_por=usr_logado, geolocalizacao=f"Lat: {st.session_state.get('lat_partida')}, Lon: {st.session_state.get('lon_partida')}")
-                                                    fotos_enviadas += 1
-                                                except Exception as e_foto: st.warning(f"⚠️ Foto da OS {os_id_foto} falhou: {e_foto}")
-                                        
-                                        if fotos_enviadas > 0: st.info(f"📷 {fotos_enviadas} evidência(s) registrada(s) com sucesso!")
-                                        st.success(f"✅ Execução registrada com sucesso!")
-                                        time.sleep(2); st.rerun()
+    # --- TRAVA DE PRIORIDADE NO SELECT DO DESKTOP ---
+    hoje_atual = datetime.now().date()
+    mask_critica = (
+        (df_recomendado_ui["Criticidade_rank"] == 1) &
+        (df_recomendado_ui["dt_prog_filtro"].dt.date <= hoje_atual)
+    )
 
-                    renderizar_bloco_apontamento()
-                    st.markdown("---")
-            #endregion 10.3.3
+    if mask_critica.any():
+        st.warning("⚠️ **Foco Operacional Ativo:** Conclua as OS Críticas (Muito Alta) para liberar as demais.")
+        opcoes_os = df_recomendado_ui[mask_critica]["Ordem servico"].astype(str).unique().tolist()
+    else:
+        opcoes_os = df_recomendado_ui["Ordem servico"].astype(str).unique().tolist()
 
- #region 10.3.4: Mapa Interativo Otimizado (Cache da Malha)
-            with col_mapa:
-                lat_centro = min(max(lat_origem, -25.50), -19.50)
-                lon_centro = min(max(lon_origem, -53.50), -44.00)
-                zoom_mapa = int(min(18, max(6, round(math.log2(360.0 / max((2.0 * max(float(raio_busca_km), 0.5)) / (111.320 * max(math.cos(math.radians(float(lat_centro))), 0.20)), 1e-6))))))
+    os_selecionadas = st.multiselect(
+        "1. Selecione as OSs que deseja baixar:",
+        opcoes_os
+    )
 
-                mapa = folium.Map(location=[lat_centro, lon_centro], zoom_start=zoom_mapa, max_bounds=True, min_lat=-25.50, max_lat=-19.50, min_lon=-53.50, max_lon=-44.00, control_scale=True, tiles="CartoDB positron", prefer_canvas=True)
+    if os_selecionadas:
+        os_distantes = [
+            os_id for os_id in os_selecionadas
+            if df_recomendado_ui.loc[
+                df_recomendado_ui["Ordem servico"].astype(str) == str(os_id),
+                "Distancia_km"
+            ].iloc[0] > 2.0
+        ]
+        if os_distantes:
+            st.error("🛑 **Bloqueio Geográfico:** O sistema exige estar em um raio máximo de **2 km** do local.")
+            st.warning(f"Você está muito longe das OSs: **{', '.join(os_distantes)}**.")
+            st.info("💡 Aproxime-se do pátio e atualize sua posição em '📍 Minha Localização'.")
+            return
 
-                # FIX: USO DO KML CACHEADO DA MEMÓRIA
-                gdf_malha_cache = carregar_malha_cacheada()
-                if gdf_malha_cache is not None:
-                    def adicionar_trecho(geom): folium.GeoJson(geom.__geo_interface__, style_function=lambda x: {"color": "#2563EB", "weight": 2, "opacity": 0.70}, control=False).add_to(mapa)
-                    for _, row in gdf_malha_cache.iterrows():
-                        geom = row.geometry
-                        if geom is None or geom.is_empty: continue
-                        if geom.geom_type == 'LineString': adicionar_trecho(geom)
-                        elif geom.geom_type == 'MultiLineString':
-                            for subgeom in geom.geoms: adicionar_trecho(subgeom)
+    st.markdown("---")
+    st.markdown("#### 📷 Evidências Fotográficas")
+    st.caption("Registre a evidência de **cada OS**. A imagem será comprimida automaticamente.")
 
-                folium.Marker(location=[lat_origem, lon_origem], tooltip=f"Origem: {st.session_state['local_nome']}", icon=folium.Icon(color="red", icon="home" if st.session_state.get("origem_tipo") != "GPS" else "map-marker", prefix="fa")).add_to(mapa)
-                folium.Circle(radius=raio_busca_km * 1000, location=[lat_origem, lon_origem], color="#3B82F6", fill=True, fill_opacity=0.08, weight=2, tooltip=f"Raio: {raio_busca_km} km").add_to(mapa)
+    fotos_por_os = {
+        os_id: st.file_uploader(
+            "📸 Tirar Foto ou 🖼️ Galeria",
+            type=["jpg", "jpeg", "png"],
+            key=f"foto_{os_id}"
+        )
+        for os_id in os_selecionadas
+    }
 
-                if not df_recomendado.empty:
-                    agg_map = df_recomendado.groupby("Patio", as_index=False).agg(lat_patio=("lat_patio", "first"), lon_patio=("lon_patio", "first"), qtd_os=("Ordem servico", "count"), menor_dist=("Distancia_km", "min"))
-                    for _, row in agg_map.iterrows(): folium.CircleMarker(location=[row["lat_patio"], row["lon_patio"]], radius=6, color="#1D4ED8", weight=1.5, fill=True, fill_color="#3B82F6", fill_opacity=0.95, tooltip=f"Pátio: {row['Patio']}<br>OS: {row['qtd_os']}<br>Distância: {row['menor_dist']:.1f} km").add_to(mapa)
+    conn = get_connection()
+    try:
+        df_users_equipe = pd.read_sql_query("SELECT username FROM usuarios", conn)
+    finally:
+        release_connection(conn)
 
-                st_folium(mapa, height=650, use_container_width=True, returned_objects=[], key="mapa_final_limpo")
-            st.markdown("---")
-            #endregion 10.3.4
+    lista_equipe_disp = df_users_equipe["username"].tolist()
+    usr_logado = st.session_state.get("username", "")
+    if usr_logado in lista_equipe_disp:
+        lista_equipe_disp.remove(usr_logado)
+
+    with st.form("form_apontamento_os"):
+        equipe_selecionada = st.multiselect("2. Selecione a sua equipe:", lista_equipe_disp)
+        st.markdown("---")
+        st.markdown("#### ⏳ Apontamento de Tempos Individuais")
+
+        apontamentos, todos_preenchidos = {{}}, True
+        for os_id in set(os_selecionadas):
+            st.markdown(f"**OS: {os_id}**", unsafe_allow_html=True)
+            c1, c2 = st.columns(2)
+            with c1:
+                h_ini = st.time_input(f"Horário Início", key=f"time_ini_{os_id}", value=None)
+            with c2:
+                h_fim = st.time_input(f"Horário Fim", key=f"time_fim_{os_id}", value=None)
+            apontamentos[os_id] = {{"inicio": h_ini, "fim": h_fim}}
+            if h_ini is None or h_fim is None:
+                todos_preenchidos = False
+
+        st.markdown(" ", unsafe_allow_html=True)
+        origem = st.session_state.get("origem_tipo", "BASE")
+
+        if st.form_submit_button("🚀 Concluir e Gravar OS(s)", use_container_width=True):
+            if origem != "GPS":
+                st.warning("📍 A geolocalização é obrigatória. Atualize sua posição.")
+            elif not todos_preenchidos:
+                st.warning("⚠️ Preencha os horários de **início e fim** de todas as OSs.")
+            else:
+                geo_baixa = f"{st.session_state.get('local_nome', 'Local')} (Lat: {st.session_state.get('lat_partida')}, Lon: {st.session_state.get('lon_partida')})"
+                equipe_str = ", ".join(equipe_selecionada) if equipe_selecionada else "Sozinho"
+                realizado_dt = agora_dt()
+
+                for os_id in set(os_selecionadas):
+                    mask = (st.session_state["df_os"]["Ordem servico"].astype(str) == str(os_id))
+                    dt_prog = st.session_state["df_os"].loc[mask, "Data inicial programada"].iloc[0] if len(st.session_state["df_os"].loc[mask]) > 0 else pd.NaT
+                    coord = st.session_state["df_os"].loc[mask, "Coordenacao"].iloc[0] if len(st.session_state["df_os"].loc[mask]) > 0 else "Campo"
+                    h_i = apontamentos[os_id]["inicio"]
+                    h_f = apontamentos[os_id]["fim"]
+
+                    if h_f < h_i:
+                        data_inicio_str = (realizado_dt - timedelta(days=1)).strftime("%d/%m/%Y")
+                    else:
+                        data_inicio_str = realizado_dt.strftime("%d/%m/%Y")
+                    data_fim_str = realizado_dt.strftime("%d/%m/%Y")
+
+                    upsert_baixa(
+                        os_id=str(os_id),
+                        status=determinar_status_execucao(pd.to_datetime(dt_prog, errors="coerce"), realizado_dt),
+                        realizado_em_str=formatar_dt_br(realizado_dt),
+                        coordenacao=coord,
+                        concluido_por=usr_logado,
+                        geolocalizacao_baixa=geo_baixa,
+                        equipe=equipe_str,
+                        data_inicio=data_inicio_str,
+                        hora_inicio=h_i.strftime("%H:%M:%S"),
+                        data_fim=data_fim_str,
+                        hora_fim=h_f.strftime("%H:%M:%S")
+                    )
+
+                fotos_enviadas = 0
+                for os_id_foto in set(os_selecionadas):
+                    foto_da_os = fotos_por_os.get(str(os_id_foto))
+                    if foto_da_os is None:
+                        continue
+
+                    with st.spinner(f"📤 Comprimindo e enviando foto da OS {os_id_foto}..."):
+                        try:
+                            df_match = st.session_state["df_os"].loc[
+                                st.session_state["df_os"]["Ordem servico"].astype(str) == str(os_id_foto)
+                            ]
+                            if df_match.empty:
+                                continue
+
+                            ativo_val = str(df_match["Ativo"].iloc[0]).strip()
+                            atividade_val = str(df_match["Atividade ativo"].iloc[0]).strip() if "Atividade ativo" in df_match.columns else "N_A"
+
+                            url_foto = upload_foto_supabase(
+                                foto_da_os.getvalue(),
+                                re.sub(r"[^\w\-.]", "_", f"{ativo_val}__{atividade_val}.jpg")
+                            )
+
+                            upsert_evidencia(
+                                ativo=ativo_val,
+                                atividade=atividade_val,
+                                foto_url=url_foto,
+                                os_referencia=str(os_id_foto),
+                                concluido_por=usr_logado,
+                                geolocalizacao=f"Lat: {st.session_state.get('lat_partida')}, Lon: {st.session_state.get('lon_partida')}"
+                            )
+                            fotos_enviadas += 1
+                        except Exception as e_foto:
+                            st.warning(f"⚠️ Foto da OS {os_id_foto} falhou: {e_foto}")
+
+                if fotos_enviadas > 0:
+                    st.info(f"📷 {fotos_enviadas} evidência(s) registrada(s) com sucesso!")
+                st.success("✅ Execução registrada com sucesso!")
+                time.sleep(2)
+                st.rerun()
+
+renderizar_bloco_apontamento()
+st.markdown("---")
+#endregion 10.3.3
+
+#region 10.3.4: Mapa Interativo Otimizado (Cache da Malha)
+with col_mapa:
+    lat_centro = min(max(lat_origem, -25.50), -19.50)
+    lon_centro = min(max(lon_origem, -53.50), -44.00)
+    zoom_mapa = int(min(18, max(6, round(math.log2(360.0 / max((2.0 * max(float(raio_busca_km), 0.5)) / (111.320 * max(math.cos(math.radians(float(lat_centro))), 0.20)), 1e-6))))))
+
+    mapa = folium.Map(location=[lat_centro, lon_centro], zoom_start=zoom_mapa, max_bounds=True, min_lat=-25.50, max_lat=-19.50, min_lon=-53.50, max_lon=-44.00, control_scale=True, tiles="CartoDB positron", prefer_canvas=True)
+
+    # FIX: USO DO KML CACHEADO DA MEMÓRIA
+    gdf_malha_cache = carregar_malha_cacheada()
+    if gdf_malha_cache is not None:
+        def adicionar_trecho(geom): folium.GeoJson(geom.__geo_interface__, style_function=lambda x: {"color": "#2563EB", "weight": 2, "opacity": 0.70}, control=False).add_to(mapa)
+        for _, row in gdf_malha_cache.iterrows():
+            geom = row.geometry
+            if geom is None or geom.is_empty:
+                continue
+            if geom.geom_type == 'LineString':
+                adicionar_trecho(geom)
+            elif geom.geom_type == 'MultiLineString':
+                for subgeom in geom.geoms:
+                    adicionar_trecho(subgeom)
+
+    folium.Marker(location=[lat_origem, lon_origem], tooltip=f"Origem: {st.session_state['local_nome']}", icon=folium.Icon(color="red", icon="home" if st.session_state.get("origem_tipo") != "GPS" else "map-marker", prefix="fa")).add_to(mapa)
+    folium.Circle(radius=raio_busca_km * 1000, location=[lat_origem, lon_origem], color="#3B82F6", fill=True, fill_opacity=0.08, weight=2, tooltip=f"Raio: {raio_busca_km} km").add_to(mapa)
+
+    if not df_recomendado.empty:
+        agg_map = df_recomendado.groupby("Patio", as_index=False).agg(lat_patio=("lat_patio", "first"), lon_patio=("lon_patio", "first"), qtd_os=("Ordem servico", "count"), menor_dist=("Distancia_km", "min"))
+        for _, row in agg_map.iterrows():
+            folium.CircleMarker(location=[row["lat_patio"], row["lon_patio"]], radius=6, color="#1D4ED8", weight=1.5, fill=True, fill_color="#3B82F6", fill_opacity=0.95, tooltip=f"Pátio: {row['Patio']}<br>OS: {row['qtd_os']}<br>Distância: {row['menor_dist']:.1f} km").add_to(mapa)
+
+    st_folium(mapa, height=650, use_container_width=True, returned_objects=[], key="mapa_final_limpo")
+    st.markdown("---")
+    #endregion 10.3.4
 
 #region 10.3.5: Cronograma de Execução de Campo (Tabela/PDF)
-            if not df_recomendado.empty:
-                df_tabela_campo = df_recomendado.copy()
-                
-                df_tabela_campo = df_tabela_campo.rename(columns={"Ordem servico": "OS", "Classificacao": "Classificação"})
-                df_tabela_campo["Data da Programação"] = df_tabela_campo["dt_prog_filtro"].dt.strftime("%d/%m/%Y")
-                colunas_exibir = ["OS", "Data da Programação", "Patio", "Ativo", "Criticidade", "Classificação", "Descrição Longa"]
+    if not df_recomendado.empty:
+        df_tabela_campo = df_recomendado.copy()
 
-                col_tit_crono, col_btn_crono = st.columns([7.5, 2.5])
-                with col_btn_crono:
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    try:
-                        from reportlab.lib.pagesizes import A4, landscape; from reportlab.lib import colors; from reportlab.lib.units import mm
-                        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer; from reportlab.lib.styles import getSampleStyleSheet
-                        def gerar_pdf_cronograma(df_pdf, colunas):
-                            buf = io.BytesIO()
-                            doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=10*mm, rightMargin=10*mm, topMargin=15*mm, bottomMargin=15*mm)
-                            styles, elementos = getSampleStyleSheet(), [Paragraph("📋 Cronograma de Execução de Campo", getSampleStyleSheet()["Title"]), Paragraph(f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')} | Origem: {st.session_state.get('local_nome', 'N/A')} | Raio: {raio_busca_km} km", getSampleStyleSheet()["Normal"]), Spacer(1, 6*mm)]
-                            data_rows = [[str(c) for c in colunas]]
-                            style_cell = styles["Normal"]; style_cell.fontSize, style_cell.leading = 7, 9
-                            for _, row in df_pdf[colunas].iterrows(): 
-                                data_rows.append([Paragraph(str(v).replace('\n', '<br/>').replace('\r', ''), style_cell) for v in row.values])
-                            col_widths = [45, 45, 35, 90, 45, 70, landscape(A4)[0] - 20*mm - 330]
-                            tabela = Table(data_rows, colWidths=col_widths, repeatRows=1)
-                            tabela.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E3A8A")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("FONTSIZE", (0, 0), (-1, 0), 8), ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("ALIGN", (0, 0), (-1, -1), "CENTER"), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")), ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]), ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]))
-                            elementos.append(tabela); doc.build(elementos); buf.seek(0)
-                            return buf.getvalue()
+        ativo_sel_campo = st.session_state.get("campo_filtro_ativo_os", "Todos os Ativos na Rota")
+        if ativo_sel_campo != "Todos os Ativos na Rota":
+            df_tabela_campo = df_tabela_campo[
+                df_tabela_campo["Ativo"].astype(str).str.strip() == str(ativo_sel_campo).strip()
+            ].copy()
 
-                        st.download_button("🖨️ Gerar Impressão PDF", data=gerar_pdf_cronograma(df_tabela_campo, colunas_exibir), file_name=f"Crono_Campo_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf", mime="application/pdf", use_container_width=True)
-                    except ImportError: st.warning("⚠️ 'reportlab' não instalada.")
-                
-                with col_tit_crono: 
-                    st.markdown("#### 📋 Cronograma de Execução de Campo\n<small>OS Pendentes recomendadas no raio de atuação visual por prioridade</small>", unsafe_allow_html=True)
+        if df_tabela_campo.empty:
+            st.info("Nenhuma OS pendente encontrada no cronograma para o ativo selecionado.")
+        else:
+            df_tabela_campo = df_tabela_campo.rename(columns={"Ordem servico": "OS", "Classificacao": "Classificação"})
+            df_tabela_campo["Data da Programação"] = df_tabela_campo["dt_prog_filtro"].dt.strftime("%d/%m/%Y")
+            colunas_exibir = ["OS", "Data da Programação", "Patio", "Ativo", "Criticidade", "Classificação", "Descrição Longa"]
+
+            col_tit_crono, col_btn_crono = st.columns([7.5, 2.5])
+            with col_btn_crono:
+                st.markdown("<br>", unsafe_allow_html=True)
+                try:
+                    from reportlab.lib.pagesizes import A4, landscape; from reportlab.lib import colors; from reportlab.lib.units import mm
+                    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer; from reportlab.lib.styles import getSampleStyleSheet
+                    def gerar_pdf_cronograma(df_pdf, colunas):
+                        buf = io.BytesIO()
+                        doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=10*mm, rightMargin=10*mm, topMargin=15*mm, bottomMargin=15*mm)
+                        styles, elementos = getSampleStyleSheet(), [Paragraph("📋 Cronograma de Execução de Campo", getSampleStyleSheet()["Title"]), Paragraph(f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')} | Origem: {st.session_state.get('local_nome', 'N/A')} | Raio: {raio_busca_km} km", getSampleStyleSheet()["Normal"]), Spacer(1, 6*mm)]
+                        data_rows = [[str(c) for c in colunas]]
+                        style_cell = styles["Normal"]; style_cell.fontSize, style_cell.leading = 7, 9
+                        for _, row in df_pdf[colunas].iterrows():
+                            data_rows.append([Paragraph(str(v).replace('\n', '<br/>').replace('\r', ''), style_cell) for v in row.values])
+                        col_widths = [45, 45, 35, 90, 45, 70, landscape(A4)[0] - 20*mm - 330]
+                        tabela = Table(data_rows, colWidths=col_widths, repeatRows=1)
+                        tabela.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E3A8A")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("FONTSIZE", (0, 0), (-1, 0), 8), ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("ALIGN", (0, 0), (-1, -1), "CENTER"), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")), ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]), ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]))
+                        elementos.append(tabela); doc.build(elementos); buf.seek(0)
+                        return buf.getvalue()
+                    
+                    st.download_button("🖨️ Gerar Impressão PDF", data=gerar_pdf_cronograma(df_tabela_campo, colunas_exibir), file_name=f"Crono_Campo_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf", mime="application/pdf", use_container_width=True)
+                except ImportError: 
+                    st.warning("⚠️ 'reportlab' não instalada.")
+            
+            with col_tit_crono: 
+                st.markdown("#### 📋 Cronograma de Execução de Campo\n<small>OS Pendentes recomendadas no raio de atuação visual por prioridade</small>", unsafe_allow_html=True)
                 
                 def aplicar_cor_foco(row):
                     hoje_atual = datetime.now().date()
@@ -4207,10 +4297,10 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     elif dt.date() == hoje_atual: return ["background-color: #FEF3C7; color: #78350F; font-weight: 500; border-bottom: 1px solid #FDE68A;"] * len(row)
                     return ["border-bottom: 1px solid #E2E8F0;"] * len(row)
                 
-                df_estilizado = df_tabela_campo[colunas_exibir].style.apply(aplicar_cor_foco, axis=1).hide(axis="index")
-                tabela_html = df_estilizado.to_html(escape=False)
-                
-                html_code = f"""<style>
+            df_estilizado = df_tabela_campo[colunas_exibir].style.apply(aplicar_cor_foco, axis=1).hide(axis="index")
+            tabela_html = df_estilizado.to_html(escape=False)
+            
+            html_code = f"""<style>
 .scroll-rota {{ width: 100%; max-height: 400px; overflow: auto; border: 1px solid #E2E8F0; border-radius: 8px; }}
 .tabela-rota {{ width: 100%; border-collapse: collapse; font-family: "Source Sans Pro", sans-serif; font-size: 13px; background-color: #FFFFFF; color: #0F172A; }}
 .tabela-rota th {{ background-color: #1E293B; color: #F8FAFC; position: sticky; top: 0; z-index: 1; padding: 10px; text-align: left; border-bottom: 2px solid #3B82F6; white-space: nowrap; }}
@@ -4220,9 +4310,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 <div class="scroll-rota">
 {tabela_html.replace('<table', '<table class="tabela-rota"')}
 </div>"""
-                st.markdown(html_code, unsafe_allow_html=True)
-            else: 
-                st.info("Nenhuma OS pendente localizada dentro do raio de atuação selecionado.")
+            st.markdown(html_code, unsafe_allow_html=True)
 #endregion 10.3.5
 #endregion 10.3
 #endregion SESSÃO 10
