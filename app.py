@@ -1868,8 +1868,9 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 <div class="toolbar">
                     <div class="field">
                         <label for="filtroAtivo">🔍 Filtrar por Ativo</label>
-                        <input id="filtroAtivo" type="text" list="listaAtivos" placeholder="Todos os Ativos na Rota">
-                        <datalist id="listaAtivos"></datalist>
+                        <select id="filtroAtivo">
+                            <option value="">Todos os Ativos na Rota</option>
+                        </select>
                     </div>
                     <div class="field">
                         <label for="acompanhanteGlobal">👥 Acompanhante / Equipe (aplica a todas as OS)</label>
@@ -1918,14 +1919,12 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 
     function abrirDB() {{
         return new Promise((resolve, reject) => {{
-            // Versão 2: Força o upgrade do banco para usar a OS como chave única
-            const req = indexedDB.open(DB_NAME, 2); 
+            const req = indexedDB.open(DB_NAME, 2);
             req.onupgradeneeded = (event) => {{
                 const database = event.target.result;
                 if (database.objectStoreNames.contains(STORE_NAME)) {{
                     database.deleteObjectStore(STORE_NAME);
                 }}
-                // Transforma o os_id na chave primária (Impede duplicações na fila)
                 const store = database.createObjectStore(STORE_NAME, {{ keyPath: "os_id" }});
                 store.createIndex("status_sync", "status_sync", {{ unique: false }});
             }};
@@ -1979,19 +1978,21 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         }});
     }}
 
-    function popularListaAtivos() {{
-        const datalist = document.getElementById("listaAtivos");
-        if (!datalist) return;
+    function popularFiltroAtivos() {{
+        const sel = document.getElementById("filtroAtivo");
+        if (!sel) return;
+
+        sel.innerHTML = '<option value="">Todos os Ativos na Rota</option>';
 
         const ativosUnicos = [...new Set(
             OS_DATA.map(item => String(item.Ativo || "").trim()).filter(v => v)
         )].sort((a, b) => a.localeCompare(b, "pt-BR"));
 
-        datalist.innerHTML = "";
         ativosUnicos.forEach((ativo) => {{
-            const option = document.createElement("option");
-            option.value = ativo;
-            datalist.appendChild(option);
+            const opt = document.createElement("option");
+            opt.value = ativo;
+            opt.textContent = ativo;
+            sel.appendChild(opt);
         }});
     }}
 
@@ -1999,18 +2000,20 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         return lista.some((os) => String(os.Criticidade || "").trim().toUpperCase() === "MUITO ALTA");
     }}
 
+    function contextoLocalInseguro() {{
+        return !window.isSecureContext || !/^https?:$/i.test(window.location.protocol);
+    }}
+
     function renderListaOS() {{
-        const filtro = document.getElementById("filtroAtivo").value.trim().toUpperCase();
+        const filtro = String(document.getElementById("filtroAtivo").value || "").trim().toUpperCase();
         const osList = document.getElementById("osList");
         osList.innerHTML = "";
 
         const listaBase = OS_DATA
             .map((item, originalIdx) => ({{ ...item, _origIdx: originalIdx }}))
             .filter((item) => {{
-                const ativo = String(item.Ativo || "").toUpperCase();
-                const atividade = String(item["Atividade ativo"] || "").toUpperCase();
-                const osId = String(item["Ordem servico"] || "").toUpperCase();
-                return !filtro || ativo.includes(filtro) || atividade.includes(filtro) || osId.includes(filtro);
+                const ativo = String(item.Ativo || "").trim().toUpperCase();
+                return !filtro || ativo === filtro;
             }});
 
         const temCritica = haOSCriticaPendente(listaBase);
@@ -2029,7 +2032,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 
             const wrapper = document.createElement("div");
             wrapper.className = "os-item" + (locked ? " locked" : "");
-            // Adicionando um ID para podermos manipular o card depois
             wrapper.id = `card_os_${{idx}}`;
 
             wrapper.innerHTML = `
@@ -2065,6 +2067,15 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 
     async function capturarGPS() {{
         return new Promise((resolve) => {{
+            if (contextoLocalInseguro()) {{
+                gpsAtual = null;
+                setGpsInfo(
+                    "GPS do navegador indisponível neste pacote local. Na sincronização, a API tentará usar o GPS EXIF da foto.",
+                    "yellow"
+                );
+                return resolve(null);
+            }}
+
             if (!navigator.geolocation) {{
                 setGpsInfo("Este navegador não suporta geolocalização.", "red");
                 return resolve(null);
@@ -2082,7 +2093,11 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                     resolve(gpsAtual);
                 }},
                 (err) => {{
-                    setGpsInfo(`Falha ao capturar GPS: ${{err.message}}`, "red");
+                    gpsAtual = null;
+                    setGpsInfo(
+                        `GPS do navegador falhou: ${{err.message}}. Na sincronização, a API tentará usar o GPS EXIF da foto.`,
+                        "yellow"
+                    );
                     resolve(null);
                 }},
                 {{
@@ -2093,11 +2108,63 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             );
         }});
     }}
+
+    async function comprimirImagemArquivo(file) {{
+        if (!file) return null;
+
+        return new Promise((resolve) => {{
+            try {{
+                const url = URL.createObjectURL(file);
+                const img = new Image();
+
+                img.onload = () => {{
+                    const maxW = 1600;
+                    const maxH = 1600;
+                    let w = img.width;
+                    let h = img.height;
+
+                    const scale = Math.min(maxW / w, maxH / h, 1);
+                    w = Math.round(w * scale);
+                    h = Math.round(h * scale);
+
+                    const canvas = document.createElement("canvas");
+                    canvas.width = w;
+                    canvas.height = h;
+                    const ctx = canvas.getContext("2d", {{ alpha: false }});
+                    ctx.drawImage(img, 0, 0, w, h);
+
+                    canvas.toBlob((blob) => {{
+                        URL.revokeObjectURL(url);
+                        if (!blob) {{
+                            resolve(file);
+                            return;
+                        }}
+
+                        const nomeBase = (file.name || "evidencia").replace(/\.[^/.]+$/, "");
+                        const novoArquivo = new File(
+                            [blob],
+                            `${{nomeBase}}.jpg`,
+                            {{ type: "image/jpeg", lastModified: Date.now() }}
+                        );
+                        resolve(novoArquivo);
+                    }}, "image/jpeg", 0.72);
+                }};
+
+                img.onerror = () => {{
+                    URL.revokeObjectURL(url);
+                    resolve(file);
+                }};
+
+                img.src = url;
+            }} catch (e) {{
+                resolve(file);
+            }}
+        }});
+    }}
 """
 #endregion 3.11
 
 #region 3.12: Gerador Offline - Lógica JS de Lote / Persistência
-    # REMOVIDO a tag <script> daqui, ele continua a execução do js_core diretamente
     js_lote = f"""
     function calcularDuracaoHoras(inicio, fim) {{
         if (!inicio || !fim) return null;
@@ -2118,7 +2185,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     async function salvarSelecionadasNoLote() {{
         const acompanhanteGlobal = document.getElementById("acompanhanteGlobal").value || "Sozinho (Nenhum)";
         const selecionadas = [];
-        const indicesParaLimpar = []; // Guarda quem devemos apagar da tela depois de salvar
+        const indicesParaLimpar = [];
+        let horariosSemFoto = 0;
 
         for (let i = 0; i < OS_DATA.length; i += 1) {{
             const elIni = document.getElementById(`ini_${{i}}`);
@@ -2126,10 +2194,15 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             const inicio = elIni ? elIni.value : "";
             const fim = elFim ? elFim.value : "";
             const fileInput = document.getElementById(`foto_${{i}}`);
-            const foto = (fileInput && fileInput.files && fileInput.files.length > 0) ? fileInput.files[0] : null;
+            const fotoOriginal = (fileInput && fileInput.files && fileInput.files.length > 0) ? fileInput.files[0] : null;
             const osItem = OS_DATA[i];
 
-            if (!(inicio && fim && foto)) continue;
+            if (inicio && fim && !fotoOriginal) {{
+                horariosSemFoto += 1;
+                continue;
+            }}
+
+            if (!(inicio && fim && fotoOriginal)) continue;
 
             const duracaoHoras = calcularDuracaoHoras(inicio, fim);
             if (duracaoHoras !== null && duracaoHoras > 12) {{
@@ -2138,6 +2211,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 );
                 if (!ok) return;
             }}
+
+            const fotoTratada = await comprimirImagemArquivo(fotoOriginal);
 
             selecionadas.push({{
                 os_id: String(osItem["Ordem servico"] || "").trim(),
@@ -2151,15 +2226,20 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 lon_browser: gpsAtual ? gpsAtual.lon : 0.0,
                 criticidade: String(osItem["Criticidade"] || "").trim(),
                 status_sync: "pendente",
-                foto_blob: foto,
+                foto_blob: fotoTratada,
+                foto_nome: fotoTratada && fotoTratada.name ? fotoTratada.name : "evidencia.jpg",
                 criado_em: new Date().toISOString()
             }});
-            
+
             indicesParaLimpar.push(i);
         }}
 
         if (!selecionadas.length) {{
-            alert("Nenhuma OS preenchida para gravação.");
+            if (horariosSemFoto > 0) {{
+                alert(`Existem ${{horariosSemFoto}} OS com horário preenchido, mas sem foto anexada. Anexe a evidência antes de gravar.`);
+            }} else {{
+                alert("Nenhuma OS preenchida para gravação.");
+            }}
             return;
         }}
 
@@ -2171,8 +2251,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             }}))
         );
 
-        // UPDATE: Remoção Visual do Card (A OS sai da lista!)
-        // Assim o técnico sabe visualmente que aquela OS já foi para a fila.
         indicesParaLimpar.forEach((i) => {{
             const cardOS = document.getElementById(`card_os_${{i}}`);
             if (cardOS) {{
@@ -2262,8 +2340,11 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 formData.append("acompanhante", item.acompanhante || "");
                 formData.append("horario_inicio", item.horario_inicio);
                 formData.append("horario_fim", item.horario_fim);
-                formData.append("foto", item.foto_blob, `${{item.ativo_id}}_${{item.os_id}}.jpg`);
-
+                formData.append(
+                    "foto",
+                    item.foto_blob,
+                    item.foto_nome || "evidencia.jpg"
+                );
                 const resp = await fetch(apiUrl, {{
                     method: "POST",
                     headers: {{
@@ -2323,14 +2404,14 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         await abrirDB();
         setStatusOnline();
         popularEquipe();
-        popularListaAtivos();
+        popularFiltroAtivos();
         renderListaOS();
         await atualizarFila();
 
         window.addEventListener("online", setStatusOnline);
         window.addEventListener("offline", setStatusOnline);
 
-        document.getElementById("filtroAtivo").addEventListener("input", renderListaOS);
+        document.getElementById("filtroAtivo").addEventListener("change", renderListaOS);
         document.getElementById("btnCapturarGps").addEventListener("click", capturarGPS);
         document.getElementById("btnSalvarLote").addEventListener("click", salvarSelecionadasNoLote);
         document.getElementById("btnSync").addEventListener("click", sincronizarFila);
