@@ -4315,8 +4315,10 @@ def renderizar_bloco_apontamento():
             time.sleep(1.5)
             st.rerun()
 
-renderizar_bloco_apontamento()
-st.markdown("---")
+if tab2 is not None:
+    with tab2:
+        renderizar_bloco_apontamento()
+        st.markdown("---")
 #endregion 10.3.3
 
 #region 10.3.4: Mapa Interativo Otimizado (Cache da Malha)
