@@ -226,7 +226,51 @@ for _key, _val in _defaults_session.items():
     if _key not in st.session_state:
         st.session_state[_key] = _val
 #endregion
-#endregion SESSÃO 1
+
+#region 1.6: Persistência de Sessão (token HMAC na URL — sobrevive à câmera no mobile)
+import hmac, hashlib, time, base64
+
+def _auth_secret():
+    return st.secrets.get("AUTH_TOKEN_SECRET", "TROQUE-ESTE-SEGREDO-NO-SECRETS")
+
+def gerar_token_sessao(username: str, ttl_horas: int = 12) -> str:
+    exp = int(time.time()) + ttl_horas * 3600
+    payload = f"{username}|{exp}"
+    assin = hmac.new(_auth_secret().encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return base64.urlsafe_b64encode(f"{payload}|{assin}".encode()).decode()
+
+def validar_token_sessao(token: str):
+    try:
+        bruto = base64.urlsafe_b64decode(token.encode()).decode()
+        username, exp, assin = bruto.rsplit("|", 2)
+        esperada = hmac.new(_auth_secret().encode(), f"{username}|{exp}".encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(esperada, assin):
+            return None
+        if int(exp) < int(time.time()):
+            return None
+        return username
+    except Exception:
+        return None
+#endregion
+
+# Restaura sessão a partir do token da URL (reconexão do WebSocket após a câmera)
+if not st.session_state.get("logged_in"):
+    _tok = st.query_params.get("sid")
+    if _tok:
+        _user_tok = validar_token_sessao(_tok)
+        if _user_tok:
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute("SELECT perfil, escopo, governanca FROM usuarios WHERE username = %s", (_user_tok,))
+            _row = cur.fetchone()
+            cur.close(); release_connection(conn)
+            if _row:
+                st.session_state.update({
+                    "logged_in": True, "username": _user_tok,
+                    "perfil": _row, "escopo": _row[1](),
+                    "governanca": _row or "Mapa de Campo",
+                    "validando_gps": False, "needs_reset": False,
+                })
 
 #region 2.1: Barreira de Login com Governança e GPS Obrigatório
 if "logged_in" not in st.session_state:
@@ -238,6 +282,7 @@ if not st.session_state["logged_in"]:
     
     with col_l2:
 #endregion
+#endregion SESSÃO 1
 
 #region 2.2: Etapa 3 — Reset de Senha
         if st.session_state.get("needs_reset"):
@@ -3247,6 +3292,7 @@ with col_acoes:
         
         st.session_state.clear()
         st.session_state.update({"logged_in": False, "needs_reset": True, "reset_user": usr_atual})
+        st.query_params.clear()
         st.rerun()
         
     if st.button("🚪 Sair", use_container_width=True):
@@ -3254,6 +3300,7 @@ with col_acoes:
         for key in list(st.session_state.keys()):
             if key not in keys_manter: del st.session_state[key]
         st.session_state["logged_in"] = False
+        st.query_params.clear()
         st.rerun()
 
 st.markdown("---")
@@ -3337,6 +3384,8 @@ st.markdown("---")
 #region SESSÃO 10: Abas e Renderização dos Gráficos
 
 #region 10.1: Roteamento Principal (Controle de Telas)
+if st.session_state.get("logged_in") and "sid" not in st.query_params:
+    st.query_params["sid"] = gerar_token_sessao(st.session_state["username"])
 if st.session_state.get("tela_atual", "dashboard") == "dashboard":
     tem_mapa_campo = "Mapa de Campo" in st.session_state.get("governanca", "")
     tem_painel_gerencial = "Painel Gerencial" in st.session_state.get("governanca", "")
@@ -4038,6 +4087,12 @@ def renderizar_bloco_apontamento():
     st.markdown("---")
     st.markdown("#### ✅ Apontamento e Conclusão de OS")
 
+    # Protege contra df_recomendado vazio/sem colunas (ex.: nenhuma OS no raio de 1 km).
+    # DataFrame vazio nao possui a coluna "Ativo", entao checamos ANTES de acessa-la.
+    if df_recomendado.empty or "Ativo" not in df_recomendado.columns:
+        st.info("Nenhuma OS pendente no raio atual. Aumente o raio e clique em **Filtrar**.")
+        return
+
     ativos_disp = sorted(
         df_recomendado["Ativo"].dropna().astype(str).str.strip().unique().tolist()
     )
@@ -4046,6 +4101,14 @@ def renderizar_bloco_apontamento():
     if "campo_filtro_ativo_os" not in st.session_state:
         st.session_state["campo_filtro_ativo_os"] = "Todos os Ativos na Rota"
 
+    # Guarda de consistencia: se o estado salvo apontava para um ativo que
+    # nao existe mais na rota atual, reseta para evitar StreamlitAPIException.
+    if st.session_state["campo_filtro_ativo_os"] not in opcoes_ativos:
+        st.session_state["campo_filtro_ativo_os"] = "Todos os Ativos na Rota"
+
+    # (RE)CRIA a variavel local ativo_sel a partir do widget.
+    # ativo_sel so existe dentro deste fragment; fora daqui use
+    # st.session_state.get("campo_filtro_ativo_os", ...).
     ativo_sel = st.selectbox(
         "🔍 Filtrar OS do cronograma por Ativo:",
         opcoes_ativos,
