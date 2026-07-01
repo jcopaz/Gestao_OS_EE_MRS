@@ -2219,7 +2219,14 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 if (!ok) return;
             }}
 
-            const fotoTratada = await comprimirImagemArquivo(fotoOriginal);
+            // ROOT CAUSE do "5655 km": em pacote local (file://) o GPS do navegador é
+            // bloqueado (contexto inseguro) e gpsAtual fica null. Nesse caso a API depende
+            // do GPS EXIF da foto. Como o canvas de compressao REMOVE o EXIF, enviamos a
+            // FOTO ORIGINAL (EXIF intacto) quando nao ha GPS de navegador. Com GPS presente,
+            // comprimimos normalmente para manter o payload leve.
+            const fotoTratada = gpsAtual
+                ? await comprimirImagemArquivo(fotoOriginal)
+                : fotoOriginal;
 
             selecionadas.push({{
                 os_id: String(osItem["Ordem servico"] || "").trim(),
@@ -3977,7 +3984,24 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             st.error("Tempo do GPS esgotado. Tente novamente ou use a Minha Base.")
 
                 st.markdown("---")
-                raio_busca_km = st.slider("📏 Raio de Atuação Visual (km):", 0, 50, 10, 1, key="slider_raio_atuacao")
+
+                # Estado APLICADO: só muda ao clicar em "Filtrar" (sem recálculo automático)
+                if "raio_aplicado" not in st.session_state:
+                    st.session_state["raio_aplicado"] = 1
+                if "ativo_aplicado" not in st.session_state:
+                    st.session_state["ativo_aplicado"] = "Todos os Ativos na Rota"
+
+                # Slider agora é só ENTRADA (default 1 km); não dispara cálculo sozinho
+                st.slider("📏 Raio de Atuação Visual (km):", 0, 50, 1, 1, key="slider_raio_atuacao")
+
+                if st.button("🔎 Filtrar", use_container_width=True, type="primary", key="btn_filtrar_rota"):
+                    st.session_state["raio_aplicado"] = int(st.session_state["slider_raio_atuacao"])
+                    st.session_state["ativo_aplicado"] = st.session_state.get("campo_filtro_ativo_os", "Todos os Ativos na Rota")
+                    st.rerun()
+
+                # Mapa + cronograma usam SEMPRE o raio já aplicado
+                raio_busca_km = int(st.session_state["raio_aplicado"])
+
                 origem_label = "📍 GPS" if st.session_state.get("origem_tipo") == "GPS" else "🏠 Base"
                 st.caption(f"{origem_label}: **{st.session_state['local_nome']}**")
 
@@ -4335,7 +4359,7 @@ def gerar_pdf_cronograma_bytes(df_pdf: pd.DataFrame, titulo: str = "Cronograma d
 if not df_recomendado.empty:
     df_tabela_campo = df_recomendado.copy()
 
-    ativo_sel_campo = st.session_state.get("campo_filtro_ativo_os", "Todos os Ativos na Rota")
+    ativo_sel_campo = st.session_state.get("ativo_aplicado", "Todos os Ativos na Rota")
     if ativo_sel_campo != "Todos os Ativos na Rota":
         df_tabela_campo = df_tabela_campo[
             df_tabela_campo["Ativo"].astype(str).str.strip() == str(ativo_sel_campo).strip()
