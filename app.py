@@ -2269,9 +2269,10 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             // do GPS EXIF da foto. Como o canvas de compressao REMOVE o EXIF, enviamos a
             // FOTO ORIGINAL (EXIF intacto) quando nao ha GPS de navegador. Com GPS presente,
             // comprimimos normalmente para manter o payload leve.
-            const fotoTratada = gpsAtual
-                ? await comprimirImagemArquivo(fotoOriginal)
-                : fotoOriginal;
+            const preservarExif = !gpsAtual;
+            const fotoTratada = preservarExif
+                ? fotoOriginal
+                : await comprimirImagemArquivo(fotoOriginal);
 
             selecionadas.push({{
                 os_id: String(osItem["Ordem servico"] || "").trim(),
