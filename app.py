@@ -4080,22 +4080,16 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         df_recomendado = com_coord[com_coord["Distancia_km"] <= raio_busca_km].sort_values(by=["Ordem_Prazo", "Criticidade_rank", "Distancia_km"])
 
                 st.info(f"**{len(df_recomendado)} OS pendentes** encontradas no raio de {raio_busca_km} km.")
-                
-                # --- BOTÃO OFFLINE AGORA USA O DF_RECOMENDADO (Raio já aplicado!) ---
+
+                # --- ENTREGA OFFLINE: PWA em HTTPS (único caminho — resolve GPS offline sem file://) ---
                 if not df_recomendado.empty:
                     pacote_html_bytes = gerar_html_offline(df_recomendado, st.session_state.get("username", "tecnico"))
-                    st.download_button(
-                        label="📴 Baixar Pacote de OS para Área de Sombra",
-                        data=pacote_html_bytes, file_name=f"Rota_Offline_{datetime.now().strftime('%Y%m%d')}.html",
-                        mime="text/html", use_container_width=True, type="primary"
-                    )
-                    
-                    # --- PWA: publica a rota em HTTPS (resolve o GPS offline sem file://) ---
+
                     base_api = st.secrets.get(
                         "OFFLINE_API_URL",
                         "https://gestao-os-ee-mrs-producao.onrender.com/sincronizar_baixa_offline"
                     ).rsplit("/", 1)[0]
-                    if st.button("🌐 Publicar Rota PWA (abrir online 1x no celular)", use_container_width=True):
+                    if st.button("🌐 Publicar Rota PWA (abrir online 1x no celular)", use_container_width=True, type="primary"):
                         try:
                             usuario_pwa = st.session_state.get("username", "tecnico")
                             resp_pub = requests.post(
