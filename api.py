@@ -317,6 +317,12 @@ async def sincronizar_baixa_offline(
 
     # 5) Leitura da foto
     foto_bytes = await foto.read()
+
+    # 5.1) Evidencia fotografica obrigatoria: mesma logica de bloqueio do GPS (secao 2).
+    #      Sem foto (arquivo ausente ou vazio) a baixa nao pode ser gravada.
+    if not foto_bytes or len(foto_bytes) == 0:
+        raise HTTPException(status_code=400, detail="Evidencia fotografica obrigatoria nao recebida. Anexe a foto antes de sincronizar a baixa.")
+
     geo_string = f"Offline Sync - {fonte_gps} (Lat: {lat_final:.6f}, Lon: {lon_final:.6f})"
 
     # 6) Upload ao Supabase e Gestão de Evidência

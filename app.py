@@ -430,8 +430,13 @@ def calcular_nivel_prioridade(classificacao: str, criticidade_rank: int) -> int:
 #region 3.1.3: Funções de Data/Hora e Status de Execução
 def parse_data_programada(valor):
     if pd.isna(valor): return pd.NaT
-    try: return pd.to_datetime(valor, dayfirst=True, errors="coerce")
-    except Exception: return pd.NaT
+    s = str(valor).strip()
+    try:
+        if re.match(r'^\d{4}-\d{2}-\d{2}', s):          # já ISO -> não inverter
+            return pd.to_datetime(s, errors="coerce")
+        return pd.to_datetime(s, dayfirst=True, errors="coerce")   # DD/MM/AAAA
+    except Exception:
+        return pd.NaT
 
 def agora_dt():
     return datetime.now(timezone(timedelta(hours=-3)))
@@ -4623,6 +4628,46 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
 
             if not todos_preenchidos:
                 st.warning("⚠️ Preencha os horários de início e fim de todas as OSs.")
+                return
+
+            # Evidência fotográfica obrigatória: mesma trava do GPS acima. Sem foto anexada
+            # para alguma OS selecionada, a baixa NÃO pode ser gravada (nem no banco, nem a
+            # evidência), evitando concluir OS só com geolocalização.
+            os_sem_foto = [
+                os_id_raw for os_id_raw in os_selecionadas
+                if fotos_por_os.get(str(os_id_raw).strip()) is None
+            ]
+            if os_sem_foto:
+                st.warning(
+                    "📷 Evidência fotográfica obrigatória. Anexe a foto antes de concluir a(s) OS: "
+                    + ", ".join(str(o) for o in os_sem_foto)
+                )
+                return
+
+            # Geofence 2,0km (Haversine): mesma trava aplicada no fluxo Offline (api.py).
+            # O fluxo Online gravava a baixa direto no banco (upsert_baixa) sem nunca checar
+            # a distância até o ativo — por isso conseguia concluir OS fora do raio permitido.
+            lat_atual = st.session_state.get("lat_partida")
+            lon_atual = st.session_state.get("lon_partida")
+            os_fora_raio = []
+            for os_id_raw in os_selecionadas:
+                os_id_geo = str(os_id_raw).strip()
+                df_match_geo = st.session_state["df_os"].loc[
+                    st.session_state["df_os"]["Ordem servico"].astype(str).str.strip() == os_id_geo
+                ]
+                if df_match_geo.empty:
+                    continue
+                ativo_geo = str(df_match_geo["Ativo"].iloc[0]).strip()
+                coord_ativo = COORDENADAS_FIXAS.get(ativo_geo[:3].upper(), COORDENADAS_FIXAS.get("IPA"))
+                dist_km = haversine_vectorized(lat_atual, lon_atual, pd.Series([coord_ativo[0]]), pd.Series([coord_ativo[1]]))[0]
+                if dist_km > 2.0:
+                    os_fora_raio.append(f"{os_id_geo} ({dist_km:.1f}km)")
+
+            if os_fora_raio:
+                st.error(
+                    "⛔ Bloqueio Geográfico: a conclusão só é permitida a até 2,0km do ativo (Haversine). "
+                    "Fora do raio: " + ", ".join(os_fora_raio)
+                )
                 return
 
             geo_baixa = (
