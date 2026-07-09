@@ -806,8 +806,10 @@ def aplicar_filtros_sidebar(
         df = df[mask_data]
     if exec_start_date is not None and exec_end_date is not None and "dt_realizado" in df.columns:
         _exec = pd.to_datetime(df["dt_realizado"], errors="coerce")
-        # Filtro de Execução ATIVO: mantém apenas OS com data de realização dentro do período (esconde pendentes).
-        mask_exec = (_exec.dt.date >= exec_start_date) & (_exec.dt.date <= exec_end_date)
+        # Filtro de Execução: mantém OS realizadas dentro do período OU ainda pendentes (dt_realizado NaT).
+        # Sem o OR de isna(), OS planejadas mas ainda não executadas eram excluídas quando o filtro de
+        # Execução era combinado com o de Programação, zerando o Backlog e inflando a Taxa de Conclusão para 100%.
+        mask_exec = ((_exec.dt.date >= exec_start_date) & (_exec.dt.date <= exec_end_date)) | _exec.isna()
         df = df[mask_exec]
     if crit_selecionadas and "Criticidade" in df.columns:
         df = df[df["Criticidade"].isin(crit_selecionadas)]
@@ -3325,7 +3327,7 @@ with st.sidebar: fragmento_filtros_sidebar_seguro()
 crit_selecionadas = st.session_state.get("filtro_criticidades", list(lista_criticidades))
 exec_start_date = st.session_state.get("filtro_exec_start_date", min_date)
 exec_end_date = st.session_state.get("filtro_exec_end_date", max_date)
-# Só aplica o filtro de Execução (que esconde pendentes) quando o usuário estreita o range padrão.
+# Só aplica o filtro de Execução (restringe pelas realizadas, mantendo as pendentes/NaT) quando o usuário estreita o range padrão.
 if not ((exec_start_date > min_date) or (exec_end_date < max_date)):
     exec_start_date = exec_end_date = None
 start_date = st.session_state.get("filtro_start_date", min_date)
