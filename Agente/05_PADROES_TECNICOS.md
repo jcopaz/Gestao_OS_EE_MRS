@@ -75,6 +75,13 @@ st.query_params.clear()
 
 ---
 
+## 📅 Padrão de Datas / Reprogramação de OS
+
+- **Datas de programação/realização:** sempre parsear com `dayfirst=True`, mas **detectar strings ISO (`AAAA-MM-DD`) antes** e não inverter dia/mês nelas (`parse_data_programada`, sessão 3.1.3). Nunca usar `pd.to_datetime(..., dayfirst=True)` cego em coluna que pode ter vindo de CSV/ISO.
+- **SAP reaproveita o número de uma OS** quando ela é reprogramada em um novo ciclo. A tabela `baixas` é upsertada por `os` (chave única) — ao fazer overlay/merge de baixas com a base de OS programadas, **sempre validar que a baixa pertence ao ciclo vigente** (`realizado_em >= Data inicial programada` atual), senão uma baixa antiga (órfã) contamina a OS reprogramada e some do backlog (ver `aplicar_overlay_baixas`, sessão 5).
+
+---
+
 ## 🧮 Baixa em massa
 
 - **Horário único** (toggle default **ligado**): 1 Data/Hora Início/Fim replicado às OS selecionadas (online e offline).

@@ -53,6 +53,10 @@
 | 10.3.3 | `KeyError "Ativo"` com raio 1 km e zero OS | Guarda `if df_recomendado.empty or "Ativo" not in df_recomendado.columns: return` |
 | — | `NameError opcoes_ativos` | Linha reposta antes do `selectbox` |
 | 8 | `404` em ação contra a API | Conferir rota em `api.py` + método liberado no CORS |
+| 3.1.3 | Filtro de Programação/Execução não trazia OS com dia ≤12 | `parse_data_programada` invertia dia/mês (`dayfirst=True`) em datas já ISO; agora detecta ISO antes de decidir o parse |
+| 10.3.3 | Baixa online concluía OS sem foto | Trava real (bloqueia `upsert_baixa`) além do aviso; servidor rejeita foto de 0 bytes em `/sincronizar_baixa_offline` |
+| 10.3.3 | Geofence 2 km não valia no fluxo Online | Online grava direto no banco sem passar pela API (sem Haversine); replicada a mesma regra de 2,0 km no ponto de submissão online |
+| 3.6 / overlay | Filtro de "Período de Execução" zerava o Backlog (Taxa 100%) | Duas causas: (1) máscara de execução sem `\| isna()` descartava pendentes; (2) **overlay de baixas contaminado entre ciclos** — SAP reaproveita número de OS ao reprogramar, e a baixa antiga (órfã) "grudava" na OS do novo ciclo via merge por `Ordem servico`. Corrigido validando `realizado_em >= Data inicial programada` do ciclo vigente antes de aplicar a baixa. Confirmado com 3736 OS afetadas via SQL no Neon (09/07/2026) |
 
 ---
 
