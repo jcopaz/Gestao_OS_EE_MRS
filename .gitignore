@@ -1,12 +1,17 @@
-__pycache__/
-*.lock
-*.tmp_*
-bases_os/*_backup_*.xlsx
-# Segredos e bancos locais
-.streamlit/secrets.toml
-*.db
-Colaboradores*.xlsx
+ï»¿# ===== ALLOWLIST: ignora tudo e libera so o necessario =====
+/*
 
-# Dados operacionais e PII
-Relação_ativos_SP.xlsx
-bases_os/*.xlsx
+# Arquivos que SOBEM
+!app.py
+!api.py
+!requirements.txt
+!logo_mrs.png
+!malha_mrs.kml
+!README.md
+!CLAUDE.md
+!.gitignore
+
+# Pastas que SOBEM
+!Agente/
+!.claude/
+!.vscode/
