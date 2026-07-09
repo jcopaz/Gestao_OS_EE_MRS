@@ -2976,14 +2976,36 @@ def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, bai
         cols_merge.append("foto_evidencia")
 
     df_base = df_base.merge(df_baixas[cols_merge], on="Ordem servico", how="left", suffixes=("", "_baixado"))
-    
+
+    # CORREÇÃO: valida se a baixa encontrada pertence ao MESMO ciclo de programação da OS atual.
+    # Sem essa checagem, uma OS recorrente já baixada em um ciclo anterior (ex.: programada em
+    # 17/06/2026 e concluída em 01/07/2026) que o SAP reprograma para um novo ciclo (ex.: nova
+    # "Data inicial programada" em julho/2026, com "os" reaproveitado) continuava herdando a
+    # "Data/Hora Realizado" e o "Status da Operação" da baixa antiga via merge por "Ordem servico".
+    # Resultado: a OS aparecia como Realizada quando, no ciclo vigente, ainda está pendente —
+    # zerando o Backlog assim que o filtro de Período de Execução era restringido.
+    # Reaproveita parse_datahora_realizado (dayfirst=True, já corrigido) para evitar o mesmo bug
+    # de inversão de data que já foi corrigido em parse_data_programada.
+    if "Data inicial programada" in df_base.columns:
+        _dt_prog_atual = pd.to_datetime(df_base["Data inicial programada"], errors="coerce")
+    else:
+        _dt_prog_atual = pd.Series(pd.NaT, index=df_base.index)
+    _dt_realizado_baixa = df_base["Data/Hora Realizado_baixado"].apply(parse_datahora_realizado)
+    # Baixa é válida quando: tem data de realização E (não há data de programação atual para
+    # comparar OU a baixa ocorreu no ciclo vigente, isto é, em/após a "Data inicial programada" atual).
+    baixa_do_ciclo_atual = _dt_realizado_baixa.notna() & (
+        _dt_prog_atual.isna() | (_dt_realizado_baixa.dt.normalize() >= _dt_prog_atual.dt.normalize())
+    )
+
     for col in colunas_overlay:
-        df_base[col] = np.where(df_base[f"{col}_baixado"].notna() & (df_base[f"{col}_baixado"] != ""), df_base[f"{col}_baixado"], df_base[col])
+        tem_baixado_valido = df_base[f"{col}_baixado"].notna() & (df_base[f"{col}_baixado"] != "") & baixa_do_ciclo_atual
+        df_base[col] = np.where(tem_baixado_valido, df_base[f"{col}_baixado"], df_base[col])
         df_base.drop(columns=[f"{col}_baixado"], inplace=True)
-        
-    # Salva a foto na base final limpa
+
+    # Salva a foto na base final limpa (só quando a baixa pertence ao ciclo vigente)
     if "foto_evidencia_baixado" in df_base.columns:
-        df_base["foto_evidencia"] = df_base["foto_evidencia_baixado"]
+        _foto_base = df_base["foto_evidencia"] if "foto_evidencia" in df_base.columns else ""
+        df_base["foto_evidencia"] = np.where(baixa_do_ciclo_atual, df_base["foto_evidencia_baixado"], _foto_base)
         df_base.drop(columns=["foto_evidencia_baixado"], inplace=True)
 
     return df_base
