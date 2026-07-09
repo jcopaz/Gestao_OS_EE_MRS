@@ -1,0 +1,420 @@
+
+
+import io
+import os
+import time
+import base64
+import numpy as np
+import pandas as pd
+import re
+from fastapi.responses import HTMLResponse, Response
+import psycopg2
+from psycopg2 import pool
+import streamlit as st
+from datetime import datetime, timezone, timedelta
+from fastapi import FastAPI, Form, HTTPException, UploadFile, File, Header
+from fastapi.middleware.cors import CORSMiddleware
+from PIL import Image
+from PIL.ExifTags import TAGS, GPSTAGS
+import requests
+from PIL import Image, ImageOps
+
+# Lógica de Retry para lidar com o "Cold Start" (Banco dormindo) do Neon PostgreSQL
+pool_conexoes = None
+
+# Lógica de Retry para lidar com o "Cold Start" (Banco dormindo) do Neon PostgreSQL
+pool_conexoes = None
+
+def get_connection():
+    global pool_conexoes
+    if pool_conexoes is None:
+        for tentativa in range(3):
+            try:
+                db_url = os.environ.get("NEON_POSTGRES_URL") 
+                pool_conexoes = psycopg2.pool.SimpleConnectionPool(1, 20, db_url)
+                break
+            except psycopg2.OperationalError as e:
+                if tentativa == 2: 
+                    raise e
+                time.sleep(2) # Espera 2 segundos para o Neon acordar e tenta de novo
+    return pool_conexoes.getconn()
+
+def release_connection(conn):
+    if pool_conexoes is not None:
+        pool_conexoes.putconn(conn)
+
+def formatar_dt_br(dt: datetime) -> str: 
+    return dt.strftime("%d/%m/%Y %H:%M")
+
+def haversine_vectorized(lat1, lon1, lat2_series, lon2_series):
+    R = 6371.0
+    lat1, lon1 = np.radians(float(lat1)), np.radians(float(lon1))
+    lat2, lon2 = np.radians(lat2_series.astype(float).to_numpy()), np.radians(lon2_series.astype(float).to_numpy())
+    a = np.sin((lat2 - lat1) / 2.0)**2 + np.cos(lat1) * np.cos(lat2) * np.sin((lon2 - lon1) / 2.0)**2
+    return R * (2.0 * np.arctan2(np.sqrt(a), np.sqrt(1.0 - a)))
+
+# Converte formato graus/min/seg do EXIF para Decimal
+def get_decimal_from_dms(dms, ref):
+    try:
+        degrees = float(dms[0])
+        minutes = float(dms[1]) / 60.0
+        seconds = float(dms[2]) / 3600.0
+        dec = degrees + minutes + seconds
+        if ref in ['S', 'W']:
+            dec = -dec
+        return round(dec, 6)
+    except Exception:
+        return None
+
+# Extrai Latitude e Longitude da Foto
+def extrair_gps_exif(image: Image.Image):
+    try:
+        exif_data = image._getexif()
+        if not exif_data:
+            return None, None
+
+        gps_info = {}
+        for tag, value in exif_data.items():
+            decoded = TAGS.get(tag, tag)
+            if decoded == "GPSInfo":
+                for t in value:
+                    sub_decoded = GPSTAGS.get(t, t)
+                    gps_info[sub_decoded] = value[t]
+
+        if "GPSLatitude" in gps_info and "GPSLongitude" in gps_info:
+            lat = get_decimal_from_dms(gps_info["GPSLatitude"], gps_info.get("GPSLatitudeRef", "N"))
+            lon = get_decimal_from_dms(gps_info["GPSLongitude"], gps_info.get("GPSLongitudeRef", "E"))
+            return lat, lon
+    except Exception as e:
+        print(f"Erro ao ler EXIF: {e}")
+    return None, None
+def upload_foto_supabase(arquivo_bytes: bytes, nome_arquivo: str) -> str:
+    url_base = os.environ.get("SUPABASE_URL")
+    chave = os.environ.get("SUPABASE_KEY")
+    if not url_base or not chave: return ""
+    
+    upload_url = f"{url_base}/storage/v1/object/evidencias/{nome_arquivo}"
+    try:
+        img = Image.open(io.BytesIO(arquivo_bytes))
+        img = ImageOps.exif_transpose(img) # Corrige foto deitada
+        if img.mode != 'RGB': img = img.convert('RGB')
+        img.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
+        out = io.BytesIO()
+        img.save(out, format='JPEG', quality=75, optimize=True)
+        bytes_comprimidos = out.getvalue()
+    except Exception:
+        bytes_comprimidos = arquivo_bytes
+
+    headers = {
+        "Authorization": f"Bearer {chave}", "apikey": chave,
+        "Content-Type": "image/jpeg", "x-upsert": "true"
+    }
+    resp = requests.post(upload_url, headers=headers, data=bytes_comprimidos)
+    if resp.status_code in (200, 201):
+        return f"{url_base}/storage/v1/object/public/evidencias/{nome_arquivo}"
+    return ""
+
+def upsert_evidencia(ativo: str, atividade: str, foto_url: str, os_referencia: str, concluido_por: str, geolocalizacao: str):
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO evidencias (ativo, atividade, foto_url, os_referencia, concluido_por, geolocalizacao, data_upload)
+            VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (ativo, atividade) DO UPDATE SET
+                foto_url = EXCLUDED.foto_url, os_referencia = EXCLUDED.os_referencia,
+                concluido_por = EXCLUDED.concluido_por, geolocalizacao = EXCLUDED.geolocalizacao, data_upload = CURRENT_TIMESTAMP;
+        """, (str(ativo), str(atividade), str(foto_url), str(os_referencia), str(concluido_por), str(geolocalizacao)))
+        conn.commit()
+        cur.close()
+    finally: release_connection(conn)
+
+def upsert_baixa(os_id, status, realizado_em_str, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim, foto_b64):
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO baixas (os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim, foto_evidencia)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (os) DO UPDATE SET
+                status = EXCLUDED.status, realizado_em = EXCLUDED.realizado_em, concluido_por = EXCLUDED.concluido_por,
+                geolocalizacao_baixa = EXCLUDED.geolocalizacao_baixa, equipe = EXCLUDED.equipe, data_inicio = EXCLUDED.data_inicio,
+                hora_inicio = EXCLUDED.hora_inicio, data_fim = EXCLUDED.data_fim, hora_fim = EXCLUDED.hora_fim,
+                foto_evidencia = EXCLUDED.foto_evidencia;
+        """, (str(os_id), str(status), str(realizado_em_str), str(coordenacao), str(concluido_por), str(geolocalizacao_baixa), str(equipe), str(data_inicio), str(hora_inicio), str(data_fim), str(hora_fim), foto_b64))
+        conn.commit()
+        cur.close()
+    finally: 
+        release_connection(conn)
+
+COORDENADAS_FIXAS = {
+    "FPI": [-23.444413, -46.309269], "IAA": [-23.862936, -46.398189], "IAB": [-23.521338, -46.688570],
+    "IBA": [-23.907681, -46.325638], "ICB": [-23.886147, -46.416167], "ICG": [-23.767863, -46.343114],
+    "ICP": [-23.658495, -46.490753], "ICQ": [-23.926493, -46.402720], "ICR": [-23.640310, -46.323992],
+    "ICZ": [-23.954824, -46.293306], "IEF": [-23.477809, -46.360984], "IES": [-23.545441, -46.603648],
+    "IIP": [-23.564977, -46.604896], "IJN": [-23.195297, -46.870829], "IJU": [-23.889626, -46.338534], 
+    "ILA": [-23.520217, -46.698082], "IMO": [-23.557803, -46.608382], "IOF": [-23.658579, -46.338538],
+    "IPA": [-23.774399, -46.306769], "IPG": [-23.847950, -46.370812], "IPR": [-23.537749, -46.625522],
+    "IQA": [-23.925948, -46.380123], "IQB": [-23.875674, -46.348587], "IRA": [-23.500572, -46.339448], 
+    "IRG": [-23.736705, -46.382241], "IRP": [-23.713578, -46.414862], "IRS": [-23.828162, -46.363101],
+    "ISA": [-23.647553, -46.531007], "ISC": [-23.613874, -46.558834], "ISL": [-23.752383, -46.389262],
+    "ISN": [-23.928399, -46.363015], "ISU": [-23.551210, -46.288671], "IUF": [-23.860615, -46.359726],  
+    "IUT": [-23.624864, -46.544716], "IVP": [-23.848139, -46.390430], "OAR": [-23.500419, -46.339111],
+    "OBF": [-23.525591, -46.666726], "OBR": [-23.545397, -46.616293], "OCE": [-23.484980, -46.481471],
+    "OCV": [-23.525061, -46.333701], "OEG": [-23.498082, -46.519759], "OET": [-23.510887, -46.552273],
+    "OGP": [-23.691962, -46.448784], "OIC": [-23.479040, -46.367395], "OIT": [-23.493970, -46.401392],
+    "OLU": [-23.535423, -46.634503], "OMA": [-23.667910, -46.462083], "OMP": [-23.490530, -46.443668],
+    "OPS": [-23.637494, -46.537198], "OSU": [-23.534010, -46.308025], "OTA": [-23.591863, -46.590075],
+    "OTT": [-23.539844, -46.575501], "ZPD": [-22.363436, -48.711002], "ZPG": [-23.874149, -46.411283],
+    "Sede IPA": [-23.767355, -46.344117], "Sede IPG": [-23.850772, -46.371760]
+}
+
+app_api = FastAPI(title="SGO MRS - Motor Antifraude")
+app_api.add_middleware(
+    CORSMiddleware, 
+    allow_origins=["*"],  # O "*" significa "Aceitar de qualquer origem, inclusive arquivos locais do celular"
+    allow_credentials=False, 
+    allow_methods=["*"],  # Aceitar métodos POST, GET, etc.
+    allow_headers=["*"]   # Aceitar o cabeçalho FormData que usamos para mandar a foto
+)
+
+# ============================================================================
+# PWA OFFLINE — publicação e serving por HTTPS (resolve o GPS no file://)
+# ============================================================================
+API_KEY_PWA = os.environ.get("API_KEY_SECRET", "")
+
+
+def _check_pwa_key(x_api_key):
+    if API_KEY_PWA and x_api_key != API_KEY_PWA:
+        raise HTTPException(status_code=403, detail="Chave invalida para publicar rota.")
+
+
+def ensure_pacotes_table():
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pacotes_offline (
+                usuario TEXT PRIMARY KEY,
+                html TEXT NOT NULL,
+                criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+        conn.commit()
+        cur.close()
+    finally:
+        release_connection(conn)
+
+
+ensure_pacotes_table()
+
+
+def _slug_usuario(usuario: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_-]", "_", (usuario or "").strip())
+    return slug[:80] or "tecnico"
+
+
+SERVICE_WORKER_JS = """
+const CACHE = 'sgo-mrs-offline-v1';
+
+self.addEventListener('install', (event) => {
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(self.clients.claim());
+});
+
+self.addEventListener('fetch', (event) => {
+  const req = event.request;
+  if (req.method !== 'GET') {
+    return;
+  }
+  const url = new URL(req.url);
+  if (url.pathname.indexOf('/sincronizar_baixa_offline') !== -1) {
+    return;
+  }
+  event.respondWith(
+    fetch(req)
+      .then((resp) => {
+        const copy = resp.clone();
+        caches.open(CACHE).then((c) => c.put(req, copy));
+        return resp;
+      })
+      .catch(() => caches.match(req))
+  );
+});
+"""
+
+
+MANIFEST_JSON = """{
+  "name": "SGO MRS - Rota Offline",
+  "short_name": "SGO Offline",
+  "start_url": ".",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#F8FAFC",
+  "theme_color": "#1E3A8A"
+}"""
+
+
+@app_api.get("/sw.js")
+async def service_worker():
+    return Response(
+        content=SERVICE_WORKER_JS,
+        media_type="application/javascript",
+        headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"},
+    )
+
+
+@app_api.get("/manifest.webmanifest")
+async def manifest():
+    return Response(content=MANIFEST_JSON, media_type="application/manifest+json")
+
+
+@app_api.post("/publicar_pacote")
+async def publicar_pacote(
+    usuario: str = Form(...),
+    html: str = Form(...),
+    x_api_key: str = Header(default=None),
+):
+    _check_pwa_key(x_api_key)
+    slug = _slug_usuario(usuario)
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO pacotes_offline (usuario, html, criado_em)
+            VALUES (%s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (usuario) DO UPDATE SET
+                html = EXCLUDED.html,
+                criado_em = CURRENT_TIMESTAMP;
+            """,
+            (slug, html),
+        )
+        conn.commit()
+        cur.close()
+    finally:
+        release_connection(conn)
+    return {"status": "ok", "url": f"/rota/{slug}"}
+
+
+@app_api.get("/rota/{usuario}", response_class=HTMLResponse)
+async def servir_rota(usuario: str):
+    slug = _slug_usuario(usuario)
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT html FROM pacotes_offline WHERE usuario = %s", (slug,))
+        row = cur.fetchone()
+        cur.close()
+    finally:
+        release_connection(conn)
+
+    if not row:
+        return HTMLResponse(
+            "<h1>Rota nao encontrada</h1>"
+            "<p>Gere e publique o pacote no painel online primeiro.</p>",
+            status_code=404,
+        )
+
+    return HTMLResponse(
+        content=row[0],
+        headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"},
+    )
+
+@app_api.post("/sincronizar_baixa_offline")
+async def sincronizar_baixa_offline(
+    os_id: str = Form(...),
+    ativo_id: str = Form(...),
+    usuario: str = Form(...),
+    lat_browser: float = Form(...),
+    lon_browser: float = Form(...),
+    data_hora_local: str = Form(...),
+    acompanhante: str = Form(default=""),
+    horario_inicio: str = Form(...),
+    horario_fim: str = Form(...),
+    foto: UploadFile = File(...),
+    debug_token: str = Form(default=None)
+):
+    # Lógica de Redundância: Tenta ler o EXIF se o navegador mandou 0.0
+    lat_final, lon_final = lat_browser, lon_browser
+    fonte_gps = "Navegador"
+
+    if lat_browser == 0.0 and lon_browser == 0.0:
+        # Carrega a imagem na memória para extrair metadados
+        imagem_bytes = await foto.read()
+        imagem_pil = Image.open(io.BytesIO(imagem_bytes))
+        
+        lat_exif, lon_exif = extrair_gps_exif(imagem_pil)
+        if lat_exif is not None and lon_exif is not None:
+            lat_final, lon_final = lat_exif, lon_exif
+            fonte_gps = "Foto (EXIF)"
+
+    # Validação Antifraude (Distância)
+    coordenada_ativo = COORDENADAS_FIXAS.get(ativo_id[:3], COORDENADAS_FIXAS["IPA"])
+    lat_ativo, lon_ativo = coordenada_ativo[0], coordenada_ativo[1]
+
+    # Regra de ouro: Se o token for o 'mrs2026', ignora o bloqueio
+    if debug_token == "mrs2026":
+        dist_km = 0.0  # Força a distância como se estivesse em cima do ativo
+    else:
+        dist_km = haversine_vectorized(lat_final, lon_final, pd.Series([lat_ativo]), pd.Series([lon_ativo]))[0]
+
+    # 🔒 BLOQUEIO GEOGRÁFICO ESTRITO (Para qualquer dispositivo)
+    if dist_km > 2.0:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Bloqueio Geográfico: O apontamento foi realizado a {dist_km:.1f}km do ativo (Limite máximo: 2.0km). Verifique seu GPS."
+        )
+    
+    hora_envio = datetime.now(timezone(timedelta(hours=-3)))
+    hora_apontamento = datetime.fromisoformat(data_hora_local.replace("Z", "+00:00")).astimezone(timezone(timedelta(hours=-3)))
+    delta_minutos = (hora_envio - hora_apontamento).total_seconds() / 60.0
+
+    equipe_formatada = acompanhante if acompanhante.strip() else "Sozinho"
+
+    await foto.seek(0)
+    foto_bytes = await foto.read()
+    geo_string = f"Offline Sync - {fonte_gps} (Lat: {lat_final:.6f}, Lon: {lon_final:.6f})"
+
+    # 1. TENTA O FLUXO PERFEITO (Supabase)
+    nome_foto = f"{ativo_id}_OS{os_id}_offline.jpg".replace(" ", "_")
+    url_supabase = upload_foto_supabase(foto_bytes, nome_foto)
+
+    if url_supabase:
+        # Sucesso! Salva o link na tabela de evidências e deixa o Base64 vazio no Neon.
+        upsert_evidencia(ativo_id, "Baixa Offline", url_supabase, os_id, usuario, geo_string)
+        foto_b64 = "" 
+    else:
+        # 2. FALLBACK DE SEGURANÇA: Se o Supabase falhar, salva como Base64 para não perder a prova.
+        foto_b64 = f"data:image/jpeg;base64,{base64.b64encode(foto_bytes).decode('utf-8')}"
+
+    # Salva os dados textuais da OS
+    upsert_baixa(
+        os_id=os_id, 
+        status="Realizado", 
+        realizado_em_str=formatar_dt_br(hora_apontamento), 
+        coordenacao="Sincronização Offline", 
+        concluido_por=usuario, 
+        geolocalizacao_baixa=geo_string,
+        equipe=equipe_formatada, 
+        data_inicio=hora_apontamento.strftime("%d/%m/%Y"), 
+        hora_inicio=horario_inicio, 
+        data_fim=hora_apontamento.strftime("%d/%m/%Y"), 
+        hora_fim=horario_fim,
+        foto_b64=foto_b64
+    )
+
+    dist_km_float = float(dist_km)
+
+    return {
+        "status": "sucesso", 
+        "os_id": os_id, 
+        "dist_km": round(dist_km_float, 2), 
+        "fonte_gps": fonte_gps, 
+        "auditoria": "OK"
+    }

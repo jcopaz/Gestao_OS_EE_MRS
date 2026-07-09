@@ -1,0 +1,12 @@
+__pycache__/
+*.lock
+*.tmp_*
+bases_os/*_backup_*.xlsx
+# Segredos e bancos locais
+.streamlit/secrets.toml
+*.db
+Colaboradores*.xlsx
+
+# Dados operacionais e PII
+Relação_ativos_SP.xlsx
+bases_os/*.xlsx
