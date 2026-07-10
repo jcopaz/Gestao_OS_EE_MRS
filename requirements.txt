@@ -1,7 +1,7 @@
 requests
-streamlit
-pandas
-numpy
+streamlit>=1.32,<2
+pandas>=2.1,<2.3
+numpy>=1.26,<2
 folium
 streamlit-folium
 geopy
@@ -10,8 +10,8 @@ streamlit-echarts
 openpyxl
 reportlab
 streamlit-calendar
-geopandas
-shapely
+geopandas>=0.14,<0.15
+shapely>=2.0,<2.1
 psycopg2-binary
 fastapi
 uvicorn
