@@ -1,0 +1,25 @@
+name: Keep Render API awake
+
+on:
+  schedule:
+    # A cada 10 minutos. GitHub Actions nao garante o horario exato,
+    # mas mantem o serviço acordado mesmo se o cron-job.org falhar.
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /health da API (Render)
+        run: |
+          for i in 1 2 3; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 "https://gestao-os-ee-mrs-producao.onrender.com/health")
+            echo "Tentativa $i -> HTTP $code"
+            if [ "$code" = "200" ]; then
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "Falhou nas 3 tentativas (serviço pode estar em cold start ou fora do ar)."
+          exit 1
