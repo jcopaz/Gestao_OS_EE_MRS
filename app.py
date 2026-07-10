@@ -4674,20 +4674,33 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
             lat_atual = st.session_state.get("lat_partida")
             lon_atual = st.session_state.get("lon_partida")
             os_fora_raio = []
+            os_sem_geo = []
             for os_id_raw in os_selecionadas:
                 os_id_geo = str(os_id_raw).strip()
                 df_match_geo = st.session_state["df_os"].loc[
                     st.session_state["df_os"]["Ordem servico"].astype(str).str.strip() == os_id_geo
                 ]
-                if df_match_geo.empty:
+                # Fail-closed: se a OS não for localizada em df_os ou o pátio não resolver para uma
+                # coordenada conhecida, a baixa é BLOQUEADA (não liberada) — antes o código dava
+                # "continue" nesses casos, deixando a validação de geofence passar em branco.
+                if df_match_geo.empty or lat_atual is None or lon_atual is None:
+                    os_sem_geo.append(os_id_geo)
                     continue
                 patio_geo = str(df_match_geo["Patio"].iloc[0]).strip().upper() if "Patio" in df_match_geo.columns else ""
                 coord_ativo = COORDENADAS_FIXAS.get(patio_geo)
                 if coord_ativo is None:
+                    os_sem_geo.append(os_id_geo)
                     continue
                 dist_km = haversine_vectorized(lat_atual, lon_atual, pd.Series([coord_ativo[0]]), pd.Series([coord_ativo[1]]))[0]
                 if dist_km > 2.0:
                     os_fora_raio.append(f"{os_id_geo} ({dist_km:.1f}km)")
+
+            if os_sem_geo:
+                st.error(
+                    "⛔ Não foi possível confirmar a localização do pátio para a(s) OS: "
+                    + ", ".join(os_sem_geo) + ". Contate o suporte antes de concluir."
+                )
+                return
 
             if os_fora_raio:
                 st.error(
