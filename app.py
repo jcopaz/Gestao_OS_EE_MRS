@@ -4681,8 +4681,10 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
                 ]
                 if df_match_geo.empty:
                     continue
-                ativo_geo = str(df_match_geo["Ativo"].iloc[0]).strip()
-                coord_ativo = COORDENADAS_FIXAS.get(ativo_geo[:3].upper(), COORDENADAS_FIXAS.get("IPA"))
+                patio_geo = str(df_match_geo["Patio"].iloc[0]).strip().upper() if "Patio" in df_match_geo.columns else ""
+                coord_ativo = COORDENADAS_FIXAS.get(patio_geo)
+                if coord_ativo is None:
+                    continue
                 dist_km = haversine_vectorized(lat_atual, lon_atual, pd.Series([coord_ativo[0]]), pd.Series([coord_ativo[1]]))[0]
                 if dist_km > 2.0:
                     os_fora_raio.append(f"{os_id_geo} ({dist_km:.1f}km)")
