@@ -69,7 +69,7 @@ Duas frentes de trabalho:
 
 ## 📌 Estado atual
 
-- **App:** em produção (Render) · Banco Neon · Storage Supabase.
+- **App:** em produção — painel Streamlit em **Streamlit Community Cloud** (`sgomrs.streamlit.app`, Python 3.12) + API FastAPI em **Render** (`gestao-os-ee-mrs-producao.onrender.com`) · Banco Neon · Storage Supabase. São **duas hospedagens diferentes**, cada push no `main` redeploya as duas.
 - **Deck:** v10 concluído.
 - **Pendências:** hospedagem corporativa MRS + SSO/AD (contato: Bruno Capobiango).
 

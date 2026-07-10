@@ -34,7 +34,10 @@ SAP  →  Motor SGO  →  Campo  →  Banco / Evidências  →  Retorno SAP
 | Segurança | **HTTPS + API Key** · token HMAC na URL | GPS somente navegador |
 | Geolocalização | **GPS HTML5 + Haversine** | Geofence 2,0 km |
 | ERP | **SAP / IW47** | Retorno estruturado |
-| Hospedagem atual | **Render** | Evolução → ambiente corporativo MRS |
+| Hospedagem — Painel (`app.py`) | **Streamlit Community Cloud** (`sgomrs.streamlit.app`) | ⚠️ Plataforma DIFERENTE do Render — Python fixado em **3.12** nas Settings do app (3.14 quebra build de pandas/geopandas) |
+| Hospedagem — API (`api.py`) | **Render** (`gestao-os-ee-mrs-producao.onrender.com`, free tier) | Free tier "dorme" por inatividade; keep-alive duplo: cron-job.org + GitHub Actions (`.github/workflows/keep-alive-render.yml`, a cada 10min) |
+
+> ⚠️ **`app.py` e `api.py` NÃO ficam no mesmo host.** Um push no `main` dispara redeploy nos dois lugares (Render + Streamlit Cloud) de forma independente — sempre confirmar os DOIS quando uma correção envolver o painel.
 
 > ⚠️ **Distribuído como PWA em HTTPS — nunca `file://`** (senão o navegador bloqueia geolocation).
 

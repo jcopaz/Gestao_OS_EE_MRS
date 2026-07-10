@@ -75,6 +75,15 @@ st.query_params.clear()
 
 ---
 
+## 📦 Padrão de Dependências (`requirements.txt`)
+
+- **Sempre travar versões** (`>=x,<y`), nunca deixar solto. Sem pin, todo reboot no Streamlit Cloud reinstala a versão mais recente de tudo via `uv`/`pip`, podendo quebrar o processo em produção sem nenhum commit novo (aconteceu em 10/07/2026: `numpy 2.x` solto causou `Segmentation fault`).
+- **`geopandas` deve ser `>=1.0`** — versões `<1.0` dependem de `fiona`, que exige compilar contra `GDAL` nativo (`gdal-config`), indisponível no build do Streamlit Cloud (sem `apt`/`packages.txt`). `geopandas>=1.0` usa `pyogrio` (wheel pré-compilada, sem GDAL do sistema).
+- **Python do Streamlit Cloud fixado em 3.12** (Settings → General → Python version). Versões muito novas (ex.: 3.14) não têm wheel pronta pra `pandas`/`shapely`/`pyogrio`, forçando build do zero (lento/instável).
+- Combo validado em 10/07/2026: `numpy>=1.26,<2` · `pandas>=2.1,<2.3` · `geopandas>=1.0,<2` · `shapely>=2.0,<3` · `pyogrio` · `streamlit>=1.32,<2` · Python 3.12.
+
+---
+
 ## 📅 Padrão de Datas / Reprogramação de OS
 
 - **Datas de programação/realização:** sempre parsear com `dayfirst=True`, mas **detectar strings ISO (`AAAA-MM-DD`) antes** e não inverter dia/mês nelas (`parse_data_programada`, sessão 3.1.3). Nunca usar `pd.to_datetime(..., dayfirst=True)` cego em coluna que pode ter vindo de CSV/ISO.
