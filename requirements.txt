@@ -10,8 +10,9 @@ streamlit-echarts
 openpyxl
 reportlab
 streamlit-calendar
-geopandas>=0.14,<0.15
-shapely>=2.0,<2.1
+geopandas>=1.0,<2
+shapely>=2.0,<3
+pyogrio
 psycopg2-binary
 fastapi
 uvicorn
