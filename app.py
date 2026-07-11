@@ -2949,7 +2949,14 @@ def carregar_base_sem_overlay(usar_sim: bool, qtd_sim: int, seed_sim: int, escop
         .set_index("os")["data_upload"]
         .to_dict()
     )
-    df_base_final["_data_upload_ciclo"] = df_base_final["Ordem servico"].astype(str).str.strip().map(_mapa_data_upload_ciclo)
+    # Converte para datetime64 (em vez de deixar objetos datetime.datetime "crus" do psycopg2
+    # misturados com NaN numa coluna object) -- coluna object com tipos mistos nesse ponto
+    # trafega para dentro do cache_data de aplicar_overlay_baixas (que hasheia o DataFrame
+    # inteiro), e coincidiu com Segmentation fault no Streamlit Cloud logo após o deploy.
+    df_base_final["_data_upload_ciclo"] = pd.to_datetime(
+        df_base_final["Ordem servico"].astype(str).str.strip().map(_mapa_data_upload_ciclo),
+        errors="coerce"
+    )
 
     if escopo_usuario != "Todas":
         escopo_norm = _mapa_norm.get(escopo_usuario.strip().upper(), escopo_usuario.strip())
