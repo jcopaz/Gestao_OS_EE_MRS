@@ -4131,59 +4131,21 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     df_lista = df_lista[mask]
 
                 if not df_lista.empty:
-                    # 1. Formatar a coluna de link para HTML nativo (abre em nova aba)
-                    def formatar_link(url):
-                        if pd.notna(url) and str(url).startswith("http"):
-                            return f'<a href="{url}" target="_blank" style="color: #3B82F6; font-weight: bold; text-decoration: none;">🔗 Abrir Foto</a>'
-                        return ""
-                    df_lista["Evidência"] = df_lista["Evidência"].apply(formatar_link)
-                    
-                    # 2. Gerar HTML com Pandas Styler
-                    df_html = df_lista[colunas_ordem].copy()
-                    tabela_html = df_html.style.hide(axis="index").set_properties(**{'text-align': 'center'}).to_html(escape=False)
-                    
-                    # 3. Injetar a tabela em um Iframe Interativo com Motor JS de Ordenação
-                    html_code = f"""
-                    <!DOCTYPE html>
-                    <html>
-                    <head>
-                    <style>
-                    body {{ margin: 0; font-family: "Source Sans Pro", sans-serif; background-color: #FFFFFF; }}
-                    .tabela-dash {{ width: 100%; border-collapse: collapse; font-size: 13px; color: #0F172A; }}
-                    .tabela-dash th {{ 
-                        background-color: #1E293B; color: #F8FAFC; position: sticky; top: 0; z-index: 1; 
-                        padding: 10px; text-align: center; border-bottom: 2px solid #3B82F6; white-space: nowrap; 
-                        cursor: pointer; user-select: none; transition: background-color 0.2s;
-                    }}
-                    .tabela-dash th:hover {{ background-color: #333D4E; }}
-                    .tabela-dash th::after {{ content: ' ↕'; font-size: 11px; color: #94A3B8; padding-left: 5px; }}
-                    .tabela-dash td {{ padding: 8px 10px; border-bottom: 1px solid #E2E8F0; text-align: center; vertical-align: middle; white-space: nowrap; }}
-                    .tabela-dash td:nth-child(6) {{ text-align: left; min-width: 500px; white-space: pre-wrap; word-wrap: break-word; }}
-                    .tabela-dash td:nth-child(11) {{ text-align: left; min-width: 300px; white-space: pre-wrap; word-wrap: break-word; }}
-                    </style>
-                    </head>
-                    <body>
-                    {tabela_html.replace('<table', '<table class="tabela-dash"')}
-                    
-                    <script>
-                    // Motor de Ordenação JavaScript Vanilla
-                    const getCellValue = (tr, idx) => tr.children[idx].innerText || tr.children[idx].textContent;
-                    const comparer = (idx, asc) => (a, b) => ((v1, v2) => 
-                        v1 !== '' && v2 !== '' && !isNaN(v1) && !isNaN(v2) ? v1 - v2 : v1.toString().localeCompare(v2)
-                        )(getCellValue(asc ? a : b, idx), getCellValue(asc ? b : a, idx));
-                    document.querySelectorAll('th').forEach(th => th.addEventListener('click', function() {{
-                        const table = th.closest('table');
-                        const tbody = table.querySelector('tbody');
-                        Array.from(tbody.querySelectorAll('tr'))
-                            .sort(comparer(Array.from(th.parentNode.children).indexOf(th), this.asc = !this.asc))
-                            .forEach(tr => tbody.appendChild(tr));
-                    }}));
-                    </script>
-                    </body>
-                    </html>
-                    """
-                    import streamlit.components.v1 as components
-                    components.html(html_code, height=450, scrolling=True)
+                    # Tabela nativa do Streamlit (ordenação por clique na coluna já é nativa) em vez de
+                    # HTML/JS cru via components.html -- essa era a causa raiz recorrente do
+                    # Segmentation fault (crash nativo sem traceback Python) apos o upgrade forcado
+                    # do Streamlit pela nuvem. LinkColumn renderiza o link de evidência sem precisar
+                    # de HTML cru.
+                    df_display = df_lista[colunas_ordem].copy()
+                    st.dataframe(
+                        df_display,
+                        use_container_width=True,
+                        hide_index=True,
+                        height=450,
+                        column_config={
+                            "Evidência": st.column_config.LinkColumn("Evidência", display_text="🔗 Abrir Foto"),
+                        }
+                    )
                 else:
                     st.info("Nenhuma OS encontrada para a pesquisa.")
 #endregion 10.2.4
