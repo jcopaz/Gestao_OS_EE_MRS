@@ -3927,14 +3927,21 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                                 for _xi, _crt in enumerate(ordem_crit):
                                     _row = agg[(agg["Classificacao"] == _cls) & (agg["Criticidade"] == _crt)]
                                     _val = int(_row["Total"].iloc[0]) if not _row.empty else 0
-                                    heat_data.append([_xi, _yi, _val]); max_val = max(max_val, _val)
+                                    # Sem JsCode: para valor 0, some o rotulo via override por item
+                                    # (label.show=False) em vez de formatter em JS -- JsCode parou de
+                                    # ser serializado apos a nuvem forcar upgrade do Streamlit.
+                                    if _val > 0:
+                                        heat_data.append([_xi, _yi, _val])
+                                    else:
+                                        heat_data.append({"value": [_xi, _yi, _val], "label": {"show": False}})
+                                    max_val = max(max_val, _val)
 
                             st_echarts(options={
                                 "tooltip": {"position": "top"}, "grid": {"height": "70%", "top": "10%", "left": "25%", "containLabel": True},
                                 "xAxis": {"type": "category", "data": ordem_crit, "splitArea": {"show": True}, "axisLine": {"show": False}, "axisTick": {"show": False}},
                                 "yAxis": {"type": "category", "data": ordem_class, "splitArea": {"show": True}, "axisLine": {"show": False}, "axisTick": {"show": False}},
                                 "visualMap": {"min": 0, "max": max_val if max_val > 0 else 10, "calculable": True, "orient": "horizontal", "left": "center", "bottom": "0%", "inRange": {"color": ["#F1F5F9", "#93C5FD", "#3B82F6", "#1E3A8A"]}},
-                                "series": [{"name": "Total de OS", "type": "heatmap", "data": heat_data, "label": {"show": True, "color": "#FFFFFF", "fontWeight": "bold", "formatter": JsCode("function(p){return p.value[2] > 0 ? p.value[2] : '';}")}, "itemStyle": {"borderColor": "#FFFFFF", "borderWidth": 2}}],
+                                "series": [{"name": "Total de OS", "type": "heatmap", "data": heat_data, "label": {"show": True, "color": "#FFFFFF", "fontWeight": "bold"}, "itemStyle": {"borderColor": "#FFFFFF", "borderWidth": 2}}],
                             }, height="380px", theme="streamlit", key="aba1_heatmap_discrete")
                         else: st.info("Sem dados para a Matriz.")
 
@@ -5207,16 +5214,9 @@ if st.session_state.get("tela_atual") == "governanca":
             "min": data_ini_gov.strftime("%Y-%m-%d"),
             "max": data_fim_gov.strftime("%Y-%m-%d"),
             "axisLabel": {
-                "formatter": JsCode(
-                    """
-                    function(value) {
-                        const d = new Date(value);
-                        const dia = String(d.getDate()).padStart(2, '0');
-                        const mes = String(d.getMonth() + 1).padStart(2, '0');
-                        return dia + '/' + mes;
-                    }
-                    """
-                )
+                # Template nativo do eixo "time" do ECharts (sem JS) -- JsCode parou de
+                # ser serializado apos a nuvem forcar upgrade do Streamlit.
+                "formatter": "{dd}/{MM}"
             }
         }
 
@@ -5623,19 +5623,34 @@ if st.session_state.get("tela_atual") == "governanca":
                 df_aderencia = df_aderencia.dropna(subset=["y_login_frac", "y_baixa_frac"]).sort_values("Data_Real_Pure")
                 
                 if not df_aderencia.empty:
-                    login_data = [[row["x_date"], round(row["y_login_frac"], 2), row["username"]] for _, row in df_aderencia.iterrows()]
-                    baixa_data = [[row["x_date"], round(row["y_baixa_frac"], 2), row["username"]] for _, row in df_aderencia.iterrows()]
-                    
-                    st_echarts(options={ 
-                        "tooltip": { 
-                            "trigger": "item", 
-                            "formatter": JsCode("""function (p) { var hh = Math.floor(p.data[1]); var mm = Math.round((p.data[1] - hh) * 60); if (mm == 60) { hh += 1; mm = 0; } return '<b>' + p.data[2] + '</b><br>' + p.seriesName + ': ' + (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm + '<br>Data: ' + p.data[0]; }""") 
-                        }, 
-                        "legend": {"data": ["Login", "Primeira Baixa"], "bottom": "0%"}, 
-                        "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}], 
-                        "grid": {"top": "10%", "bottom": "25%", "left": "12%", "right": "5%"}, 
-                        "xAxis": {"type": "category", "data": sorted(df_aderencia["x_date"].unique().tolist())}, 
-                        "yAxis": { "type": "value", "name": "Horário", "min": 0, "max": 24, "interval": 4, "axisLabel": { "formatter": JsCode("""function(value) { var hh = Math.floor(value); return (hh < 10 ? '0' : '') + hh + ':00'; }""") } }, 
+                    # Tooltip pre-formatado em Python (HTML na dimensao 3) e referenciado via
+                    # template nativo "{@[3]}" do ECharts -- evita JsCode, que parou de ser
+                    # serializado apos a nuvem forcar upgrade do Streamlit.
+                    login_data = [
+                        [
+                            row["x_date"], round(row["y_login_frac"], 2), row["username"],
+                            f'<b>{row["username"]}</b><br>Login: {row["dt_login_calc"].strftime("%H:%M")}<br>Data: {row["x_date"]}'
+                        ]
+                        for _, row in df_aderencia.iterrows()
+                    ]
+                    baixa_data = [
+                        [
+                            row["x_date"], round(row["y_baixa_frac"], 2), row["username"],
+                            f'<b>{row["username"]}</b><br>Primeira Baixa: {row["dt_baixa_1os"].strftime("%H:%M")}<br>Data: {row["x_date"]}'
+                        ]
+                        for _, row in df_aderencia.iterrows()
+                    ]
+
+                    st_echarts(options={
+                        "tooltip": {
+                            "trigger": "item",
+                            "formatter": "{@[3]}"
+                        },
+                        "legend": {"data": ["Login", "Primeira Baixa"], "bottom": "0%"},
+                        "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}],
+                        "grid": {"top": "10%", "bottom": "25%", "left": "12%", "right": "5%"},
+                        "xAxis": {"type": "category", "data": sorted(df_aderencia["x_date"].unique().tolist())},
+                        "yAxis": { "type": "value", "name": "Horário", "min": 0, "max": 24, "interval": 4, "axisLabel": { "formatter": "{value}:00" } },
                         "series": [ 
                             {"name": "Login", "type": "scatter", "data": login_data, "symbolSize": 10, "itemStyle": {"color": "#3B82F6"}}, 
                             {"name": "Primeira Baixa", "type": "scatter", "data": baixa_data, "symbolSize": 10, "itemStyle": {"color": "#10B981"}} 
