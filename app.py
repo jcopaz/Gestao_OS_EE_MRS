@@ -2882,7 +2882,7 @@ def carregar_base_sem_overlay(usar_sim: bool, qtd_sim: int, seed_sim: int, escop
         return gerar_base_simulada(qtd=qtd_sim, seed=seed_sim, pct_p=pct_p, pct_ok=pct_ok, pct_a=pct_a)
 
     conn = get_connection()
-    try: df_raw_db = pd.read_sql_query("SELECT os, coordenacao, dados_completos FROM os_programadas", conn)
+    try: df_raw_db = pd.read_sql_query("SELECT os, coordenacao, dados_completos, data_upload FROM os_programadas", conn)
     except Exception as e: df_raw_db = pd.DataFrame()
     finally: release_connection(conn)
 
@@ -2940,6 +2940,17 @@ def carregar_base_sem_overlay(usar_sim: bool, qtd_sim: int, seed_sim: int, escop
     if not dfs_tratados: return pd.DataFrame()
     df_base_final = pd.concat(dfs_tratados, ignore_index=True)
 
+    # Mapeia, por OS, o timestamp real de quando o ciclo vigente foi importado do SAP
+    # (data_upload). Usado depois em aplicar_overlay_baixas para validar se uma baixa
+    # pertence ao ciclo atual sem depender da "Data inicial programada" (que é a data-alvo
+    # do serviço, não o momento de entrada do ciclo no sistema).
+    _mapa_data_upload_ciclo = (
+        df_raw_db.assign(os=df_raw_db["os"].astype(str).str.strip())
+        .set_index("os")["data_upload"]
+        .to_dict()
+    )
+    df_base_final["_data_upload_ciclo"] = df_base_final["Ordem servico"].astype(str).str.strip().map(_mapa_data_upload_ciclo)
+
     if escopo_usuario != "Todas":
         escopo_norm = _mapa_norm.get(escopo_usuario.strip().upper(), escopo_usuario.strip())
         df_base_final = df_base_final[df_base_final["Coordenacao"].apply(lambda x: str(x).strip().upper() == escopo_norm.upper() if pd.notna(x) else False)]
@@ -2986,15 +2997,20 @@ def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, bai
     # zerando o Backlog assim que o filtro de Período de Execução era restringido.
     # Reaproveita parse_datahora_realizado (dayfirst=True, já corrigido) para evitar o mesmo bug
     # de inversão de data que já foi corrigido em parse_data_programada.
-    if "Data inicial programada" in df_base.columns:
-        _dt_prog_atual = pd.to_datetime(df_base["Data inicial programada"], errors="coerce")
+    if "_data_upload_ciclo" in df_base.columns:
+        _dt_upload_ciclo = pd.to_datetime(df_base["_data_upload_ciclo"], errors="coerce")
     else:
-        _dt_prog_atual = pd.Series(pd.NaT, index=df_base.index)
+        _dt_upload_ciclo = pd.Series(pd.NaT, index=df_base.index)
     _dt_realizado_baixa = df_base["Data/Hora Realizado_baixado"].apply(parse_datahora_realizado)
-    # Baixa é válida quando: tem data de realização E (não há data de programação atual para
-    # comparar OU a baixa ocorreu no ciclo vigente, isto é, em/após a "Data inicial programada" atual).
+    # Baixa é válida quando: tem data de realização E (não há timestamp de importação do ciclo atual
+    # para comparar OU a baixa ocorreu depois que o ciclo vigente foi importado do SAP). Usamos
+    # "data_upload" (quando o ciclo entrou no sistema) em vez da "Data inicial programada" (data-alvo)
+    # porque o time de campo frequentemente executa a OS ANTES da data-alvo dentro do mesmo ciclo --
+    # comparar contra a data-alvo derrubava baixas reais e recentes (com foto/GPS confirmados),
+    # tratando "adiantou o serviço" como "baixa velha de ciclo já fechado". Ver histórico de
+    # investigação de 11/07/2026 (SQL direto no Neon confirmou >100 OS afetadas).
     baixa_do_ciclo_atual = _dt_realizado_baixa.notna() & (
-        _dt_prog_atual.isna() | (_dt_realizado_baixa.dt.normalize() >= _dt_prog_atual.dt.normalize())
+        _dt_upload_ciclo.isna() | (_dt_realizado_baixa.dt.normalize() >= _dt_upload_ciclo.dt.normalize())
     )
 
     for col in colunas_overlay:
@@ -3007,6 +3023,9 @@ def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, bai
         _foto_base = df_base["foto_evidencia"] if "foto_evidencia" in df_base.columns else ""
         df_base["foto_evidencia"] = np.where(baixa_do_ciclo_atual, df_base["foto_evidencia_baixado"], _foto_base)
         df_base.drop(columns=["foto_evidencia_baixado"], inplace=True)
+
+    if "_data_upload_ciclo" in df_base.columns:
+        df_base = df_base.drop(columns=["_data_upload_ciclo"])
 
     return df_base
 #endregion
