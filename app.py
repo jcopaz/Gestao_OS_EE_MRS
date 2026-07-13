@@ -666,19 +666,56 @@ def gerar_excel_sap_bytes(df_filtrado_atual: pd.DataFrame) -> bytes:
         else: todos = [principal]
         return list(dict.fromkeys(todos))
 
-    df_sap["_lista_equipe"] = df_sap.apply(montar_lista_equipe, axis=1)
-    df_sap_explodido = df_sap.explode("_lista_equipe").rename(columns={"_lista_equipe": "matricula_final"}).reset_index(drop=True)
-    df_sap_explodido = df_sap_explodido.drop(columns=["_lista_equipe"], errors="ignore")
-
-    def calc_trab_real(h_ini, h_fim):
+    # Rateio de "Trab. real" por grupo de apontamento simultâneo (mesmo executor e mesmo
+    # horário de início/fim — caso de "baixa em massa" com um único horário para várias OS).
+    # Bug corrigido: o cálculo antigo devolvia "HH,MM" (ex.: "03,48"), que o SAP lê como
+    # minutos decimais (3,48 min) já que a coluna UN Medida está em MIN — 3 horas viravam
+    # 3 minutos. Agora o campo sempre sai em minutos inteiros totais.
+    def _duracao_minutos(h_ini, h_fim):
         try:
             t_ini = pd.to_datetime(h_ini, format='%H:%M:%S')
             t_fim = pd.to_datetime(h_fim, format='%H:%M:%S')
             diff = (t_fim - t_ini).total_seconds() / 60.0
-            if diff < 0: diff += 24 * 60 
-            h, m = int(diff // 60), int(diff % 60)
-            return f"{h:02d},{m:02d}"
-        except Exception: return ""
+            if diff < 0: diff += 24 * 60
+            return diff
+        except Exception: return 0.0
+
+    df_sap["_duracao_min"] = df_sap.apply(lambda r: _duracao_minutos(r['hora_inicio'], r['hora_fim']), axis=1)
+    df_sap["_hh_plano_min"] = (
+        pd.to_numeric(df_sap["Hxh Plano"], errors="coerce").fillna(0.0) * 60.0
+        if "Hxh Plano" in df_sap.columns else 0.0
+    )
+
+    def _ratear_grupo(grupo: pd.DataFrame) -> pd.Series:
+        # Todas as linhas do grupo compartilham o mesmo horário de início/fim -> mesma duração total.
+        total_min = round(grupo["_duracao_min"].iloc[0])
+        n = len(grupo)
+        if n == 1:
+            return pd.Series([total_min], index=grupo.index)
+
+        soma_plano = grupo["_hh_plano_min"].sum()
+        # Sem HH planejado para ratear (planilha sem "Hxh Plano"): divide o tempo igualmente
+        # entre as OS do grupo em vez de creditar o tempo cheio em cada uma.
+        pesos = grupo["_hh_plano_min"] / soma_plano if soma_plano > 0 else pd.Series([1.0 / n] * n, index=grupo.index)
+
+        brutos = total_min * pesos
+        base = np.floor(brutos).astype(int)
+        # Método do maior resto: distribui os minutos que sobraram do arredondamento para as
+        # OS com a maior fração fracionária, garantindo que a soma bata exatamente com o total apontado.
+        falta = int(total_min) - int(base.sum())
+        restos_ordenados = (brutos - base).sort_values(ascending=False).index
+        for idx_os in list(restos_ordenados)[:max(falta, 0)]:
+            base[idx_os] += 1
+        return base
+
+    df_sap["_trab_real_min"] = 0
+    _chave_grupo = ["concluido_por", "data_inicio", "hora_inicio", "data_fim", "hora_fim"]
+    for _, idxs in df_sap.groupby(_chave_grupo, dropna=False).groups.items():
+        df_sap.loc[idxs, "_trab_real_min"] = _ratear_grupo(df_sap.loc[idxs])
+
+    df_sap["_lista_equipe"] = df_sap.apply(montar_lista_equipe, axis=1)
+    df_sap_explodido = df_sap.explode("_lista_equipe").rename(columns={"_lista_equipe": "matricula_final"}).reset_index(drop=True)
+    df_sap_explodido = df_sap_explodido.drop(columns=["_lista_equipe"], errors="ignore")
 
     def get_centro_trab(coord):
         c = str(coord).upper()
@@ -692,7 +729,7 @@ def gerar_excel_sap_bytes(df_filtrado_atual: pd.DataFrame) -> bytes:
     sap_out = pd.DataFrame({
         'A': [""] * n, 'Ordem': df_sap_explodido['Ordem servico'].values, 'Operação': ["10"] * n,
         'D': [""] * n, 'E': [""] * n, 'F': [""] * n,
-        'Trab. real': df_sap_explodido.apply(lambda r: calc_trab_real(r['hora_inicio'], r['hora_fim']), axis=1).values,
+        'Trab. real': df_sap_explodido['_trab_real_min'].astype(int).astype(str).values,
         'UN Medida 1': ["MIN"] * n, 'I': [""] * n, 'J': [""] * n, 'K': [""] * n,
         'Centro de Trabalho': df_sap_explodido['coordenacao'].apply(get_centro_trab).values,
         'Centro': df_sap_explodido['coordenacao'].apply(get_centro).values,
@@ -2895,7 +2932,7 @@ def carregar_base_sem_overlay(usar_sim: bool, qtd_sim: int, seed_sim: int, escop
         return gerar_base_simulada(qtd=qtd_sim, seed=seed_sim, pct_p=pct_p, pct_ok=pct_ok, pct_a=pct_a)
 
     conn = get_connection()
-    try: df_raw_db = pd.read_sql_query("SELECT os, coordenacao, dados_completos, data_upload FROM os_programadas", conn)
+    try: df_raw_db = pd.read_sql_query("SELECT os, coordenacao, dados_completos, data_upload, mes_referencia FROM os_programadas", conn)
     except Exception as e: df_raw_db = pd.DataFrame()
     finally: release_connection(conn)
 
@@ -2969,6 +3006,18 @@ def carregar_base_sem_overlay(usar_sim: bool, qtd_sim: int, seed_sim: int, escop
     df_base_final["_data_upload_ciclo"] = pd.to_datetime(
         df_base_final["Ordem servico"].astype(str).str.strip().map(_mapa_data_upload_ciclo),
         errors="coerce"
+    )
+
+    # Mapeia, por OS, o "Mês de Referência" informado no upload (ex.: "Julho/2026"), para
+    # permitir filtrar a Visão Gerencial apenas pelas OS de uma planilha/ciclo específico,
+    # independente do período de programação/execução selecionado nos filtros de data.
+    _mapa_mes_referencia = (
+        df_raw_db.assign(os=df_raw_db["os"].astype(str).str.strip())
+        .set_index("os")["mes_referencia"]
+        .to_dict()
+    )
+    df_base_final["Plano_Mes_Referencia"] = (
+        df_base_final["Ordem servico"].astype(str).str.strip().map(_mapa_mes_referencia)
     )
 
     if escopo_usuario != "Todas":
@@ -3318,6 +3367,10 @@ if not valid_dates.empty: min_date, max_date = valid_dates.min().date(), valid_d
 else: min_date, max_date = datetime.now().date() - pd.Timedelta(days=30), datetime.now().date()
 
 lista_patios = sorted(df_visao["Patio"].dropna().astype(str).unique().tolist())
+lista_planos_mes = (
+    sorted(df_visao["Plano_Mes_Referencia"].dropna().astype(str).str.strip().replace("", pd.NA).dropna().unique().tolist())
+    if "Plano_Mes_Referencia" in df_visao.columns else []
+)
 lista_classificacoes = ["Confiabilidade e Segurança", "Segurança", "Confiabilidade"]
 lista_criticidades = ["Muito Alta", "Alta", "Média", "Baixa"]
 lista_turnos = ["Turno Dia (07h-19h)", "Administrativo (08h-17h30)", "Turno Noite (19h-07h)", "Pendente (Sem Turno)"]
@@ -3345,6 +3398,11 @@ def fragmento_filtros_sidebar_seguro():
     st.markdown("### 📊 Filtros")
     
     with st.form("form_filtros"):
+        # Plano (Mês de Referência): filtra pela planilha de OS Programadas importada (ex.: "Julho/2026"),
+        # independente do período de data escolhido abaixo — usado para isolar os cards/gráficos
+        # gerenciais apenas às OS daquele ciclo específico.
+        st.selectbox("📋 Plano (Mês de Referência)", ["Todos"] + lista_planos_mes, key="filtro_mes_referencia")
+
         # Datas
         start_padrao = st.session_state.get("filtro_start_date", min_date)
         end_padrao = st.session_state.get("filtro_end_date", max_date)
@@ -3398,6 +3456,10 @@ classif_selecionadas = st.session_state.get("filtro_classificacoes", list(lista_
 turnos_selecionados = st.session_state.get("filtro_turnos", list(lista_turnos))
 status_sel = st.session_state.get("filtro_status_sel", "Todos")
 intervalo_sel = st.session_state.get("filtro_intervalo_sel", "Todas")
+
+plano_mes_sel = st.session_state.get("filtro_mes_referencia", "Todos")
+if plano_mes_sel != "Todos" and "Plano_Mes_Referencia" in df_visao.columns:
+    df_visao = df_visao[df_visao["Plano_Mes_Referencia"].astype(str).str.strip() == plano_mes_sel].copy()
 
 df_filtrado = aplicar_filtros_sidebar(
     df_visao=df_visao, patios_selecionados=patios_selecionados,
