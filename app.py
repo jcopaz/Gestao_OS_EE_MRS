@@ -185,14 +185,25 @@ def init_db():
                 coordenacao VARCHAR(100) PRIMARY KEY,
                 geofence_km NUMERIC(6,2) NOT NULL DEFAULT 2.0,
                 trava_prioridade_ativa BOOLEAN NOT NULL DEFAULT TRUE,
-                escopo_dados VARCHAR(20) NOT NULL DEFAULT 'todos',
-                ordem_criterios VARCHAR(255) NOT NULL DEFAULT 'seguranca,criticidade,atraso,intervalo,proximidade',
+                escopo_dados VARCHAR(50) NOT NULL DEFAULT 'todos',
+                ordem_criterios VARCHAR(255) NOT NULL DEFAULT 'confiabilidade_seguranca,seguranca,confiabilidade,criticidade,atraso,intervalo,proximidade',
+                ordem_criticidade VARCHAR(100) NOT NULL DEFAULT 'Muito Alta,Alta,Média,Baixa',
+                vigente_desde TIMESTAMP NULL,
                 vigente_ate TIMESTAMP NULL,
                 atualizado_por VARCHAR(255), atualizado_em TIMESTAMP DEFAULT NOW()
             );
         """)
 
         # --- ATUALIZAÇÕES AUTOMÁTICAS DE ESTRUTURA ---
+        try: cur.execute("ALTER TABLE configuracoes_operacionais ADD COLUMN IF NOT EXISTS vigente_desde TIMESTAMP NULL;")
+        except Exception: conn.rollback()
+
+        try: cur.execute("ALTER TABLE configuracoes_operacionais ADD COLUMN IF NOT EXISTS ordem_criticidade VARCHAR(100) NOT NULL DEFAULT 'Muito Alta,Alta,Média,Baixa';")
+        except Exception: conn.rollback()
+
+        try: cur.execute("ALTER TABLE configuracoes_operacionais ALTER COLUMN escopo_dados TYPE VARCHAR(50);")
+        except Exception: conn.rollback()
+
         try: cur.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS governanca VARCHAR(255) DEFAULT 'Painel Gerencial,Mapa de Campo';")
         except Exception: conn.rollback()
         
@@ -1845,6 +1856,186 @@ def render_tela_admin():
 
 #endregion 3.8
 
+#region 3.8b: Configurações Operacionais (render_tela_config_operacional)
+def render_tela_config_operacional():
+    col_cfg_t1, col_cfg_t2 = st.columns([8, 2])
+    with col_cfg_t1: st.title("🛠️ Configurações Operacionais")
+    with col_cfg_t2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("⬅️ Voltar ao Painel", use_container_width=True, key="btn_voltar_config_op"):
+            st.session_state["tela_atual"] = "dashboard"; st.rerun()
+
+    st.caption(
+        "Ajustes por coordenação para cenários operacionais especiais (ex.: plano de guerra). "
+        "Toda configuração salva aqui tem vigência definida — fora da janela, o sistema volta "
+        "sozinho aos valores padrão."
+    )
+
+    if "msg_sucesso_config_op" in st.session_state:
+        st.success(st.session_state["msg_sucesso_config_op"]); del st.session_state["msg_sucesso_config_op"]
+
+    st.markdown("---")
+
+    _rotulos_criterios = {
+        "confiabilidade_seguranca": "Confiabilidade e Segurança", "seguranca": "Segurança",
+        "confiabilidade": "Confiabilidade", "criticidade": "Criticidade",
+        "atraso": "Atraso ao vencimento", "intervalo": "Tipo de Intervalo",
+        "proximidade": "Proximidade geográfica",
+    }
+    _chave_por_rotulo = {v: k for k, v in _rotulos_criterios.items()}
+
+    coord_sel = st.selectbox("Coordenação", ["Paranapiacaba", "Piaçaguera"], key="config_op_coord_sel")
+    config_atual = carregar_config_operacional(coord_sel)
+
+    conn_status = get_connection()
+    try:
+        cur_status = conn_status.cursor()
+        cur_status.execute(
+            "SELECT vigente_desde, vigente_ate FROM configuracoes_operacionais WHERE coordenacao = %s",
+            (coord_sel,)
+        )
+        row_status = cur_status.fetchone()
+        cur_status.close()
+    finally:
+        release_connection(conn_status)
+
+    agora = datetime.now()
+    if row_status:
+        v_desde, v_ate = row_status
+        if v_desde is not None and agora < v_desde:
+            st.info(f"🕒 Override de **{coord_sel}** agendado para começar em **{v_desde.strftime('%d/%m/%Y %H:%M')}**.")
+        elif v_ate is not None and agora > v_ate:
+            st.caption(f"Override de **{coord_sel}** expirou em {v_ate.strftime('%d/%m/%Y %H:%M')} — usando valores padrão.")
+        elif v_desde is None and v_ate is None:
+            st.caption(f"Nenhum override salvo para **{coord_sel}** — usando valores padrão.")
+        else:
+            _txt_janela = "sem prazo final" if v_ate is None else f"até **{v_ate.strftime('%d/%m/%Y %H:%M')}**"
+            st.warning(f"⚠️ Override **ativo** para **{coord_sel}** {_txt_janela}.")
+    else:
+        st.caption(f"Nenhum override salvo para **{coord_sel}** — usando valores padrão.")
+
+    # Planos disponíveis (planilhas de OS Programadas importadas) para o escopo de dados.
+    conn_planos = get_connection()
+    try:
+        df_planos = pd.read_sql_query(
+            "SELECT mes_referencia, MAX(data_upload) AS ultimo_upload FROM os_programadas "
+            "WHERE coordenacao = %s AND mes_referencia IS NOT NULL AND mes_referencia <> '' "
+            "GROUP BY mes_referencia ORDER BY ultimo_upload DESC",
+            conn_planos, params=(coord_sel,)
+        )
+    except Exception:
+        df_planos = pd.DataFrame(columns=["mes_referencia", "ultimo_upload"])
+    finally:
+        release_connection(conn_planos)
+
+    planos_disponiveis = df_planos["mes_referencia"].dropna().astype(str).tolist()
+    opcoes_escopo = ["Todas as OS Pendentes"] + [f"Plano de {p}" for p in planos_disponiveis]
+    escopo_atual_label = (
+        "Todas as OS Pendentes" if config_atual["escopo_dados"] == "todos"
+        else f"Plano de {config_atual['escopo_dados']}"
+    )
+    if escopo_atual_label not in opcoes_escopo:
+        opcoes_escopo.append(escopo_atual_label)
+
+    with st.form("form_config_operacional"):
+        trava_ativa = st.toggle(
+            "Trava de prioridade ativa (Muito Alta bloqueia as demais)",
+            value=config_atual["trava_prioridade_ativa"], key="config_op_trava"
+        )
+        geofence_km = st.number_input(
+            "Geofence (km)", min_value=0.0, value=float(config_atual["geofence_km"]), step=0.5, key="config_op_geofence"
+        )
+
+        st.markdown("**Escopo de dados para as equipes**")
+        escopo_dados_label = st.selectbox(
+            "Base de OS usada na roteirização/pacote offline", opcoes_escopo,
+            index=opcoes_escopo.index(escopo_atual_label), key="config_op_escopo"
+        )
+        if not planos_disponiveis:
+            st.caption("Nenhuma planilha de OS Programadas com Mês de Referência preenchido para esta coordenação ainda.")
+
+        st.markdown("---")
+        st.markdown("**Ordem dos critérios de priorização** (clique na ordem desejada)")
+        ordem_labels_default = [_rotulos_criterios[c] for c in config_atual["ordem_criterios"] if c in _rotulos_criterios]
+        ordem_sel = st.multiselect(
+            "Critérios", list(_rotulos_criterios.values()), default=ordem_labels_default,
+            key="config_op_ordem", label_visibility="collapsed"
+        )
+
+        st.markdown("**Ordem de Criticidade** (filtro paralelo — reordena Muito Alta/Alta/Média/Baixa dentro do critério Criticidade)")
+        ordem_crit_sel = st.multiselect(
+            "Níveis", NIVEIS_CRITICIDADE_PADRAO, default=config_atual["ordem_criticidade"],
+            key="config_op_ordem_criticidade", label_visibility="collapsed"
+        )
+
+        st.markdown("---")
+        st.markdown("**Vigência** (obrigatória — fora dessa janela, volta ao padrão automaticamente)")
+        col_vd1, col_vd2, col_vf1, col_vf2 = st.columns(4)
+        with col_vd1:
+            vigencia_desde_data = st.date_input("Início — data", value=datetime.now().date(), key="config_op_desde_data")
+        with col_vd2:
+            vigencia_desde_hora = st.time_input("Início — hora", value=datetime.now().time().replace(microsecond=0), key="config_op_desde_hora")
+        with col_vf1:
+            vigencia_ate_data = st.date_input("Fim — data", value=datetime.now().date() + pd.Timedelta(days=7), key="config_op_ate_data")
+        with col_vf2:
+            vigencia_ate_hora = st.time_input("Fim — hora", value=datetime.now().time().replace(microsecond=0), key="config_op_ate_hora")
+
+        st.caption(
+            "📶 **Importante:** pacotes offline já publicados (PWA) não leem a configuração nova sozinhos — "
+            "eles são um arquivo estático gerado no momento da publicação. É preciso **republicar a rota** "
+            "(Publicar Rota PWA) depois de salvar aqui para que os técnicos recebam a mudança offline. "
+            "No fluxo online, a mudança já vale na próxima ação do usuário."
+        )
+
+        if st.form_submit_button("💾 Salvar Configuração", type="primary", use_container_width=True):
+            ordem_final = [_chave_por_rotulo[l] for l in ordem_sel]
+            for chave in CRITERIOS_ORDEM_PADRAO:
+                if chave not in ordem_final: ordem_final.append(chave)
+
+            ordem_crit_final = list(ordem_crit_sel)
+            for nivel in NIVEIS_CRITICIDADE_PADRAO:
+                if nivel not in ordem_crit_final: ordem_crit_final.append(nivel)
+
+            escopo_dados_valor = (
+                "todos" if escopo_dados_label == "Todas as OS Pendentes"
+                else escopo_dados_label.replace("Plano de ", "", 1)
+            )
+            vigente_desde_dt = datetime.combine(vigencia_desde_data, vigencia_desde_hora)
+            vigente_ate_dt = datetime.combine(vigencia_ate_data, vigencia_ate_hora)
+
+            if vigente_ate_dt <= vigente_desde_dt:
+                st.error("⛔ A data/hora de Fim precisa ser depois da data/hora de Início.")
+            else:
+                conn = get_connection()
+                try:
+                    cur = conn.cursor()
+                    cur.execute("""
+                        INSERT INTO configuracoes_operacionais
+                            (coordenacao, geofence_km, trava_prioridade_ativa, escopo_dados, ordem_criterios,
+                             ordem_criticidade, vigente_desde, vigente_ate, atualizado_por, atualizado_em)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                        ON CONFLICT (coordenacao) DO UPDATE SET
+                            geofence_km = EXCLUDED.geofence_km, trava_prioridade_ativa = EXCLUDED.trava_prioridade_ativa,
+                            escopo_dados = EXCLUDED.escopo_dados, ordem_criterios = EXCLUDED.ordem_criterios,
+                            ordem_criticidade = EXCLUDED.ordem_criticidade, vigente_desde = EXCLUDED.vigente_desde,
+                            vigente_ate = EXCLUDED.vigente_ate, atualizado_por = EXCLUDED.atualizado_por, atualizado_em = NOW()
+                        """, (
+                        coord_sel, geofence_km, trava_ativa, escopo_dados_valor, ",".join(ordem_final),
+                        ",".join(ordem_crit_final), vigente_desde_dt, vigente_ate_dt,
+                        st.session_state.get("username", "")
+                    ))
+                    conn.commit(); cur.close()
+                finally:
+                    release_connection(conn)
+
+                st.cache_data.clear()
+                st.session_state["msg_sucesso_config_op"] = (
+                    f"Configuração de {coord_sel} salva — vigente de "
+                    f"{vigente_desde_dt.strftime('%d/%m/%Y %H:%M')} até {vigente_ate_dt.strftime('%d/%m/%Y %H:%M')}."
+                )
+                st.rerun()
+#endregion 3.8b
+
 #region 3.9: Gerador Offline - Produção (HTML/JS completo)
 def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     if df_pendentes.empty:
@@ -2833,11 +3024,15 @@ COORDENADAS_FIXAS = {
 #endregion 4.1
 
 #region 4.2: Configuração Operacional por Coordenação (Plano de Guerra)
+CRITERIOS_ORDEM_PADRAO = ["confiabilidade_seguranca", "seguranca", "confiabilidade", "criticidade", "atraso", "intervalo", "proximidade"]
+NIVEIS_CRITICIDADE_PADRAO = ["Muito Alta", "Alta", "Média", "Baixa"]
+
 DEFAULTS_CONFIG_OPERACIONAL = {
     "geofence_km": 2.0,
     "trava_prioridade_ativa": True,
     "escopo_dados": "todos",
-    "ordem_criterios": ["seguranca", "criticidade", "atraso", "intervalo", "proximidade"],
+    "ordem_criterios": list(CRITERIOS_ORDEM_PADRAO),
+    "ordem_criticidade": list(NIVEIS_CRITICIDADE_PADRAO),
 }
 
 @st.cache_data(ttl=30)
@@ -2847,8 +3042,8 @@ def carregar_config_operacional(coordenacao: str) -> dict:
         conn = get_connection()
         cur = conn.cursor()
         cur.execute(
-            "SELECT geofence_km, trava_prioridade_ativa, escopo_dados, ordem_criterios, vigente_ate "
-            "FROM configuracoes_operacionais WHERE coordenacao = %s",
+            "SELECT geofence_km, trava_prioridade_ativa, escopo_dados, ordem_criterios, ordem_criticidade, "
+            "vigente_desde, vigente_ate FROM configuracoes_operacionais WHERE coordenacao = %s",
             (coordenacao,)
         )
         row = cur.fetchone()
@@ -2861,16 +3056,18 @@ def carregar_config_operacional(coordenacao: str) -> dict:
     if row is None:
         return dict(DEFAULTS_CONFIG_OPERACIONAL)
 
-    geofence_km, trava_ativa, escopo_dados, ordem_criterios, vigente_ate = row
-    # Config expirada (vigente_ate no passado) -> age como se não houvesse override.
-    if vigente_ate is not None and vigente_ate < datetime.now():
+    geofence_km, trava_ativa, escopo_dados, ordem_criterios, ordem_criticidade, vigente_desde, vigente_ate = row
+    agora = datetime.now()
+    # Config fora da janela de vigência (ainda não começou ou já passou) -> age como padrão.
+    if (vigente_desde is not None and agora < vigente_desde) or (vigente_ate is not None and agora > vigente_ate):
         return dict(DEFAULTS_CONFIG_OPERACIONAL)
 
     return {
         "geofence_km": float(geofence_km),
         "trava_prioridade_ativa": bool(trava_ativa),
         "escopo_dados": escopo_dados or "todos",
-        "ordem_criterios": [c.strip() for c in (ordem_criterios or "").split(",") if c.strip()] or list(DEFAULTS_CONFIG_OPERACIONAL["ordem_criterios"]),
+        "ordem_criterios": [c.strip() for c in (ordem_criterios or "").split(",") if c.strip()] or list(CRITERIOS_ORDEM_PADRAO),
+        "ordem_criticidade": [c.strip() for c in (ordem_criticidade or "").split(",") if c.strip()] or list(NIVEIS_CRITICIDADE_PADRAO),
     }
 #endregion 4.2
 
@@ -3370,23 +3567,33 @@ gov_usuario = st.session_state.get("governanca", "")
 tem_painel = "Painel Gerencial" in gov_usuario or "Mapa de Campo" in gov_usuario
 tem_dados = "Upload de Dados" in gov_usuario
 tem_governanca = "Gestão de Usuários" in gov_usuario or "Governança" in gov_usuario
+tem_config_operacional = "Configurações Operacionais" in gov_usuario
 
-if tem_painel and tem_dados:
-    col_nav1, col_nav2 = st.sidebar.columns(2)
-    with col_nav1:
-        if st.button("📊 Painel", use_container_width=True): st.session_state["tela_atual"] = "dashboard"; st.rerun()
-    with col_nav2:
-        if st.button("⚙️ Dados", use_container_width=True): st.session_state["tela_atual"] = "admin"; st.rerun()
-elif tem_painel:
-    if st.sidebar.button("📊 Painel", use_container_width=True): st.session_state["tela_atual"] = "dashboard"; st.rerun()
-elif tem_dados:
-    if st.sidebar.button("⚙️ Dados", use_container_width=True): st.session_state["tela_atual"] = "admin"; st.rerun()
+_nav_botoes = []
+if tem_painel: _nav_botoes.append(("📊 Painel", "dashboard"))
+if tem_dados: _nav_botoes.append(("⚙️ Dados", "admin"))
+if tem_config_operacional: _nav_botoes.append(("🛠️ Configurações", "config_operacional"))
+
+if len(_nav_botoes) >= 2:
+    _cols_nav = st.sidebar.columns(len(_nav_botoes))
+    for _col_nav, (_label_nav, _tela_nav) in zip(_cols_nav, _nav_botoes):
+        with _col_nav:
+            if st.button(_label_nav, use_container_width=True, key=f"navbtn_{_tela_nav}"):
+                st.session_state["tela_atual"] = _tela_nav; st.rerun()
+elif len(_nav_botoes) == 1:
+    _label_nav, _tela_nav = _nav_botoes[0]
+    if st.sidebar.button(_label_nav, use_container_width=True, key=f"navbtn_{_tela_nav}"):
+        st.session_state["tela_atual"] = _tela_nav; st.rerun()
 
 if tem_governanca:
     if st.sidebar.button("🛡️ Governança (Auditoria)", use_container_width=True): st.session_state["tela_atual"] = "governanca"; st.rerun()
 
 if st.session_state.get("tela_atual") == "admin":
     render_tela_admin()
+    st.stop()
+
+if st.session_state.get("tela_atual") == "config_operacional":
+    render_tela_config_operacional()
     st.stop()
 
 # --- BLINDAGEM DO PERFIL TÉCNICO ---
@@ -3729,88 +3936,6 @@ if "Gestão de Usuários" in st.session_state.get("governanca", ""):
 
         fragmento_gestao_usuarios()
 #endregion 8.2
-
-#region 8.3: Configurações Operacionais por Coordenação (Plano de Guerra)
-if "Configurações Operacionais" in st.session_state.get("governanca", ""):
-    with st.sidebar.expander("🛠️ Configurações Operacionais", expanded=False):
-        @st.fragment
-        def fragmento_config_operacional():
-            st.markdown("<div style='background-color: #7C3AED; color: #FFFFFF; font-weight: bold; text-align: center; padding: 8px; border-radius: 6px; margin-bottom: 10px;'>Configurações Operacionais</div>", unsafe_allow_html=True)
-            if "msg_sucesso_config_op" in st.session_state:
-                st.success(st.session_state["msg_sucesso_config_op"]); del st.session_state["msg_sucesso_config_op"]
-
-            _rotulos_criterios = {
-                "seguranca": "Segurança/Confiabilidade", "criticidade": "Criticidade",
-                "atraso": "Atraso ao vencimento", "intervalo": "Tipo de Intervalo",
-                "proximidade": "Proximidade geográfica",
-            }
-            _chave_por_rotulo = {v: k for k, v in _rotulos_criterios.items()}
-
-            coord_sel = st.selectbox("Coordenação", ["Paranapiacaba", "Piaçaguera"], key="config_op_coord_sel")
-            config_atual = carregar_config_operacional(coord_sel)
-
-            conn_status = get_connection()
-            try:
-                cur_status = conn_status.cursor()
-                cur_status.execute("SELECT vigente_ate FROM configuracoes_operacionais WHERE coordenacao = %s", (coord_sel,))
-                row_status = cur_status.fetchone()
-                cur_status.close()
-            finally:
-                release_connection(conn_status)
-
-            if row_status and row_status[0] and row_status[0] >= datetime.now():
-                st.info(f"⚠️ Override ativo para **{coord_sel}** até **{row_status[0].strftime('%d/%m/%Y %H:%M')}**.")
-            else:
-                st.caption(f"Nenhum override ativo para **{coord_sel}** — usando valores padrão.")
-
-            with st.form("form_config_operacional"):
-                trava_ativa = st.toggle("Trava de prioridade ativa (Muito Alta bloqueia as demais)", value=config_atual["trava_prioridade_ativa"], key="config_op_trava")
-                geofence_km = st.number_input("Geofence (km)", min_value=0.0, value=float(config_atual["geofence_km"]), step=0.5, key="config_op_geofence")
-                escopo_dados = st.selectbox(
-                    "Escopo de dados para as equipes", ["Todas as OS pendentes", "Somente o ciclo mais recente"],
-                    index=0 if config_atual["escopo_dados"] == "todos" else 1, key="config_op_escopo"
-                )
-                ordem_labels_default = [_rotulos_criterios[c] for c in config_atual["ordem_criterios"] if c in _rotulos_criterios]
-                ordem_sel = st.multiselect(
-                    "Ordem dos critérios de priorização (clique na ordem desejada)",
-                    list(_rotulos_criterios.values()), default=ordem_labels_default, key="config_op_ordem"
-                )
-                vigente_ate_sel = st.date_input(
-                    "Vigente até", value=st.session_state.get("config_op_vigencia_padrao", datetime.now().date() + pd.Timedelta(days=7)),
-                    key="config_op_vigencia"
-                )
-
-                if st.form_submit_button("💾 Salvar Configuração"):
-                    ordem_final = [_chave_por_rotulo[l] for l in ordem_sel]
-                    for chave in DEFAULTS_CONFIG_OPERACIONAL["ordem_criterios"]:
-                        if chave not in ordem_final: ordem_final.append(chave)
-
-                    conn = get_connection()
-                    try:
-                        cur = conn.cursor()
-                        cur.execute("""
-                            INSERT INTO configuracoes_operacionais (coordenacao, geofence_km, trava_prioridade_ativa, escopo_dados, ordem_criterios, vigente_ate, atualizado_por, atualizado_em)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
-                            ON CONFLICT (coordenacao) DO UPDATE SET
-                                geofence_km = EXCLUDED.geofence_km, trava_prioridade_ativa = EXCLUDED.trava_prioridade_ativa,
-                                escopo_dados = EXCLUDED.escopo_dados, ordem_criterios = EXCLUDED.ordem_criterios,
-                                vigente_ate = EXCLUDED.vigente_ate, atualizado_por = EXCLUDED.atualizado_por, atualizado_em = NOW()
-                            """, (
-                            coord_sel, geofence_km, trava_ativa,
-                            "todos" if escopo_dados == "Todas as OS pendentes" else "ciclo_atual",
-                            ",".join(ordem_final), datetime.combine(vigente_ate_sel, datetime.min.time()),
-                            st.session_state.get("username", "")
-                        ))
-                        conn.commit(); cur.close()
-                    finally:
-                        release_connection(conn)
-
-                    st.cache_data.clear()
-                    st.session_state["msg_sucesso_config_op"] = f"Configuração de {coord_sel} salva — vigente até {vigente_ate_sel.strftime('%d/%m/%Y')}."
-                    st.rerun(scope="fragment")
-
-        fragmento_config_operacional()
-#endregion 8.3
 #endregion SESSÃO 8
 
 #region SESSÃO 9: Dashboard Header e KPI Metrics
@@ -4600,32 +4725,47 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             coordenacao_rota = "Paranapiacaba"
                         config_rota = carregar_config_operacional(coordenacao_rota)
 
-                        # Escopo de dados: "Somente o ciclo mais recente" mantém, por coordenação,
-                        # apenas as OS cujo upload (_data_upload_ciclo) é o mais recente daquela
-                        # coordenação — evita mostrar backlog de ciclos antigos já superados.
-                        if config_rota["escopo_dados"] == "ciclo_atual" and "_data_upload_ciclo" in com_coord.columns and "Coordenacao" in com_coord.columns:
-                            _dt_ciclo = pd.to_datetime(com_coord["_data_upload_ciclo"], errors="coerce")
-                            _max_por_coord = _dt_ciclo.groupby(com_coord["Coordenacao"]).transform("max")
-                            com_coord = com_coord[_dt_ciclo.isna() | (_dt_ciclo == _max_por_coord)].copy()
-                            com_coord["Ordem_Prazo"] = com_coord["dt_prog_filtro"].apply(lambda dt: 1 if pd.notna(dt) and dt.date() < hoje_atual else (2 if pd.notna(dt) and dt.date() == hoje_atual else 3))
-                            com_coord["Distancia_km"] = haversine_vectorized(lat_origem, lon_origem, com_coord["lat_patio"], com_coord["lon_patio"])
+                        # Escopo de dados: quando configurado para um plano específico (ex.: "Julho/2026",
+                        # escolhido na tela de Configurações Operacionais como "Plano de Julho/2026"),
+                        # mantém só as OS daquele Mês de Referência — evita mostrar backlog de outros ciclos.
+                        if config_rota["escopo_dados"] != "todos" and "Plano_Mes_Referencia" in com_coord.columns:
+                            com_coord = com_coord[com_coord["Plano_Mes_Referencia"].astype(str).str.strip() == config_rota["escopo_dados"]].copy()
+                            if not com_coord.empty:
+                                com_coord["Ordem_Prazo"] = com_coord["dt_prog_filtro"].apply(lambda dt: 1 if pd.notna(dt) and dt.date() < hoje_atual else (2 if pd.notna(dt) and dt.date() == hoje_atual else 3))
+                                com_coord["Distancia_km"] = haversine_vectorized(lat_origem, lon_origem, com_coord["lat_patio"], com_coord["lon_patio"])
 
-                        # Ordem dos critérios de priorização (configurável por coordenação).
-                        _base_map_seguranca = {"Confiabilidade e Segurança": 1, "Segurança": 2, "Confiabilidade": 3}
-                        com_coord["_rank_seguranca"] = com_coord.get("Classificacao", pd.Series("Confiabilidade", index=com_coord.index)).map(_base_map_seguranca).fillna(3)
-                        _base_map_intervalo = {"Com Intervalo": 1, "Sem Intervalo": 2}
-                        com_coord["_rank_intervalo"] = com_coord.get("Tipo_Intervalo", pd.Series("N/D", index=com_coord.index)).map(_base_map_intervalo).fillna(3)
+                        if com_coord.empty:
+                            df_recomendado = com_coord
+                        else:
+                            # Ordem dos critérios de priorização (configurável por coordenação). Os 3
+                            # subtipos de Segurança/Confiabilidade viram colunas binárias independentes
+                            # (0 = é desse subtipo, 1 = não é), permitindo reordenar cada um separadamente
+                            # em relação aos demais critérios — não só como um bloco fixo.
+                            classif_col = com_coord.get("Classificacao", pd.Series("Confiabilidade", index=com_coord.index))
+                            com_coord["_rank_confseg"] = (classif_col != "Confiabilidade e Segurança").astype(int)
+                            com_coord["_rank_seg"] = (classif_col != "Segurança").astype(int)
+                            com_coord["_rank_conf"] = (classif_col != "Confiabilidade").astype(int)
 
-                        _mapa_criterio_coluna = {
-                            "seguranca": "_rank_seguranca", "criticidade": "Criticidade_rank",
-                            "atraso": "Ordem_Prazo", "intervalo": "_rank_intervalo",
-                            "proximidade": "Distancia_km",
-                        }
-                        ordem_sort = [_mapa_criterio_coluna[c] for c in config_rota["ordem_criterios"] if c in _mapa_criterio_coluna]
-                        if not ordem_sort:
-                            ordem_sort = ["Ordem_Prazo", "Criticidade_rank", "Distancia_km"]
+                            _base_map_intervalo = {"Com Intervalo": 1, "Sem Intervalo": 2}
+                            com_coord["_rank_intervalo"] = com_coord.get("Tipo_Intervalo", pd.Series("N/D", index=com_coord.index)).map(_base_map_intervalo).fillna(3)
 
-                        df_recomendado = com_coord[com_coord["Distancia_km"] <= raio_busca_km].sort_values(by=ordem_sort)
+                            # Ordem de Criticidade (filtro paralelo): reordena Muito Alta/Alta/Média/Baixa
+                            # dentro do critério "criticidade" sem afetar o Criticidade_rank fixo usado
+                            # pela trava de bloqueio (que continua identificando "Muito Alta" normalmente).
+                            _mapa_ordem_crit = {nivel: idx for idx, nivel in enumerate(config_rota["ordem_criticidade"])}
+                            com_coord["_rank_criticidade_custom"] = com_coord.get("Criticidade", pd.Series("", index=com_coord.index)).map(_mapa_ordem_crit).fillna(99)
+
+                            _mapa_criterio_coluna = {
+                                "confiabilidade_seguranca": "_rank_confseg", "seguranca": "_rank_seg",
+                                "confiabilidade": "_rank_conf", "criticidade": "_rank_criticidade_custom",
+                                "atraso": "Ordem_Prazo", "intervalo": "_rank_intervalo",
+                                "proximidade": "Distancia_km",
+                            }
+                            ordem_sort = [_mapa_criterio_coluna[c] for c in config_rota["ordem_criterios"] if c in _mapa_criterio_coluna]
+                            if not ordem_sort:
+                                ordem_sort = ["Ordem_Prazo", "Criticidade_rank", "Distancia_km"]
+
+                            df_recomendado = com_coord[com_coord["Distancia_km"] <= raio_busca_km].sort_values(by=ordem_sort)
 
                 st.info(f"**{len(df_recomendado)} OS pendentes** encontradas no raio de {raio_busca_km} km.")
 

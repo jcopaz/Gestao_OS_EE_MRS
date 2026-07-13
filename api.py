@@ -269,7 +269,7 @@ def carregar_config_operacional(coordenacao: str) -> dict:
         conn = get_connection()
         cur = conn.cursor()
         cur.execute(
-            "SELECT geofence_km, trava_prioridade_ativa, vigente_ate "
+            "SELECT geofence_km, trava_prioridade_ativa, vigente_desde, vigente_ate "
             "FROM configuracoes_operacionais WHERE coordenacao = %s",
             (coordenacao,)
         )
@@ -283,8 +283,9 @@ def carregar_config_operacional(coordenacao: str) -> dict:
     if row is None:
         return dict(DEFAULTS_CONFIG_OPERACIONAL)
 
-    geofence_km, trava_ativa, vigente_ate = row
-    if vigente_ate is not None and vigente_ate < datetime.now():
+    geofence_km, trava_ativa, vigente_desde, vigente_ate = row
+    agora = datetime.now()
+    if (vigente_desde is not None and agora < vigente_desde) or (vigente_ate is not None and agora > vigente_ate):
         return dict(DEFAULTS_CONFIG_OPERACIONAL)
 
     return {"geofence_km": float(geofence_km), "trava_prioridade_ativa": bool(trava_ativa)}
