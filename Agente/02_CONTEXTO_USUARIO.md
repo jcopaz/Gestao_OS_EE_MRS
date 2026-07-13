@@ -42,7 +42,7 @@
 
 - Coordena/lidera equipes de **manutenção eletroeletrônica** na malha.
 - **SAP** é o sistema fonte das OS (integração via IW47 / baixas em massa).
-- Apresenta resultados à **Gerência Geral da Malha** (o deck v10 é abertura de demo ao vivo).
+- Apresenta resultados à **Gerência Geral da Malha** (o deck v11 é abertura de demo ao vivo).
 - Tem **pendência ativa** de hospedagem corporativa via TI MRS.
 
 ### Contatos importantes na MRS

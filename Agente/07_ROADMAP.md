@@ -9,10 +9,14 @@
 | PWA Offline (IndexedDB + sync FormData) | ✅ |
 | Integração SAP (IW47, baixas em massa) | ✅ |
 | Governança (login, perfil, geofence 2 km, evidência foto) | ✅ |
-| Priorização Muito Alta (trava menores do grupo) | ✅ |
+| Priorização Muito Alta (trava menores do grupo) — modelo Segurança da Operação (TOP1-4) | ✅ |
 | Motor Antifraude (FastAPI, geofence, rejeição 0,0) | ✅ |
+| Rateio proporcional de HH na baixa em massa (export SAP) | ✅ |
+| Configurações Operacionais por coordenação (geofence/trava/escopo/ordem, vigência automática) | 🟡 em homologação (`dev`) |
 
 **Hospedagem atual:** Render.
+
+> 🟡 = pronto e validado, mas ainda **não promovido para `main`/produção** — testando em ambiente `dev` (segundo canal Streamlit) antes do merge.
 
 ---
 
@@ -43,4 +47,4 @@
 3. **Dados geram inteligência** — o histórico auditável é a base da predição.
 4. **Campo no centro** — toda evolução é validada pela realidade da malha.
 
-> ⚠️ **Médio prazo foi removido do deck v10** (a pedido do Julio): o slide 8 mostra apenas **Em produção · Curto prazo · Futuro**.
+> ⚠️ **Médio prazo foi removido do deck** (a pedido do Julio, mantido na v11): o slide 8 mostra apenas **Em produção · Curto prazo · Futuro**.

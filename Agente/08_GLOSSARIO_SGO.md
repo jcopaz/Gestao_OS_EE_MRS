@@ -14,11 +14,16 @@
 | **CI / SI** | Com Intervalo / Sem Intervalo — filas de priorização independentes |
 | **Criticidade_rank** | Ranking de criticidade; **1 = Muito Alta** (trava as menores do grupo) |
 | **Grupo** | Chave de priorização = `Ativo × Tipo de Intervalo` |
-| **Geofence / Geofencing** | Cerca operacional de **2,0 km** ao redor do ativo |
+| **Geofence / Geofencing** | Cerca operacional — padrão **2,0 km** ao redor do ativo, configurável por coordenação |
 | **Haversine** | Fórmula de distância entre coordenadas GPS |
 | **Roteirização** | Agrupamento/ordenação de OS por proximidade |
 | **Raio de atuação** | Distância de busca de OS (inicial **1 km**) |
 | **Evidência** | Foto obrigatória da execução |
+| **Segurança da Operação** | Camada composta de priorização: TOP1 (Segurança+Muito Alta) → TOP2 (Confiab.+Seg.+Muito Alta) → TOP3 (Segurança+Alta/Média/Baixa) → TOP4 (demais) |
+| **Plano de Guerra** | Cenário operacional excepcional (ex.: Piaçaguera 13/07/2026) que motivou tornar geofence/trava/ordem configuráveis por coordenação |
+| **Configurações Operacionais** | Tela admin (aba própria) para ajustar geofence, trava de prioridade, escopo de dados e ordem de critérios por coordenação, com vigência automática |
+| **Vigência (vigente_desde / vigente_ate)** | Janela de validade de um override de configuração — fora dela, volta ao padrão sozinho, sem cron |
+| **Rateio de HH** | Distribuição proporcional do tempo apontado entre OS baixadas juntas (mesmo horário), conforme o peso do HH planejado de cada uma |
 
 ---
 
@@ -37,6 +42,22 @@
 
 ---
 
+## 🛠️ Tabela `configuracoes_operacionais`
+
+| Coluna | Significado |
+|---|---|
+| `coordenacao` | PK — "Paranapiacaba" ou "Piaçaguera" |
+| `geofence_km` | Limite de distância (km); padrão 2,0 |
+| `trava_prioridade_ativa` | Liga/desliga o bloqueio de Muito Alta |
+| `escopo_dados` | `"todos"` ou o `mes_referencia` exato de um plano (ex.: "Julho/2026") |
+| `ordem_criterios` | CSV com a ordem dos critérios (`seguranca_operacional,criticidade,atraso,proximidade` por padrão) |
+| `ordem_criticidade` | CSV com a ordem de Muito Alta/Alta/Média/Baixa (padrão nessa ordem) |
+| `vigente_desde` / `vigente_ate` | Janela de vigência (data+hora); fora dela, os valores acima são ignorados e o sistema usa o padrão |
+
+Lida por `carregar_config_operacional(coordenacao)` — duplicada em `app.py` e `api.py` (mesmo padrão de duplicação já usado para `COORDENADAS_FIXAS`).
+
+---
+
 ## 🔑 Chaves técnicas
 
 | Chave | Significado |
@@ -47,6 +68,10 @@
 | `AUTH_TOKEN_SECRET` | Segredo do token HMAC de login (`?sid=`, TTL 12 h) |
 | `debug_token = "mrs2026"` | Bypass do geofence para teste |
 | `#region` / `#endregion` | Delimitadores de seção no código |
+| `carregar_config_operacional(coordenacao)` | Lê a config ativa (ou o padrão, se expirada/ausente) — `app.py` e `api.py` |
+| `render_tela_config_operacional()` | Página dedicada da tela "Configurações Operacionais" (`tela_atual = "config_operacional"`) |
+| `Plano_Mes_Referencia` | Coluna por OS com o "Mês de Referência" do upload (ex.: "Julho/2026"); usada no filtro de Visão Gerencial e no escopo de dados |
+| **Perfil "Administrador"** | Novo perfil de usuário; permissão granular `Configurações Operacionais` |
 
 ---
 
@@ -68,7 +93,7 @@
 
 | Termo | Significado |
 |---|---|
-| **v10** | Versão atual do deck (`SGO_Eletroeletronica_MRS_v10.html`) |
+| **v11** | Versão atual do deck (`SGO_Eletroeletronica_MRS_v11.html`) — v10 mantido como histórico |
 | **Paleta v8** | Esquema dourado (`#f3b13c`) + cyan (`#39d6e8`) sobre fundo escuro |
 | **Matrix radial** | Grafo de nós (slides "O que é" e "Governança") |
 | **Malha pulsante** | Fundo animado de rede (`gmark` / `gpulse`) |

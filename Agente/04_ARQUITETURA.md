@@ -63,7 +63,7 @@ SAP  →  Motor SGO  →  Campo  →  Banco / Evidências  →  Retorno SAP
 **Regras de negócio:**
 1. GPS **somente do navegador**. Se `lat_browser = 0.0` e `lon_browser = 0.0` → **HTTP 400** (não há mais fallback EXIF).
 2. Distância validada por **Haversine**.
-3. **Limite geográfico: 2,0 km.**
+3. **Limite geográfico: 2,0 km por padrão** — configurável por coordenação via tabela `configuracoes_operacionais` (`carregar_config_operacional`, resolvida pela coordenação da OS em `os_programadas`). Fora da janela de vigência, volta ao padrão de 2,0 km sozinho.
 4. `debug_token = "mrs2026"` → ignora o bloqueio geográfico (teste).
 
 ---
@@ -94,9 +94,11 @@ SAP  →  Motor SGO  →  Campo  →  Banco / Evidências  →  Retorno SAP
 | **OS** | Ordem de Serviço (origem SAP) |
 | **Ativo** | Equipamento eletroeletrônico na malha (com coordenadas) |
 | **Pátio** | Ponto operacional com coordenadas |
-| **Tipo de Intervalo** | CI (Com Intervalo) / SI (Sem Intervalo) — filas independentes |
+| **Tipo de Intervalo** | CI (Com Intervalo) / SI (Sem Intervalo) — filas independentes; é um **filtro prévio**, não entra no cascateamento de prioridade |
 | **Criticidade_rank** | 1 = Muito Alta (trava as menores do mesmo grupo) |
-| **Geofence** | Cerca operacional de 2,0 km do ativo |
+| **Geofence** | Cerca operacional — padrão 2,0 km do ativo, configurável por coordenação |
+| **Segurança da Operação** | Camada composta de priorização (classificação × criticidade) — ver `configuracoes_operacionais` |
+| **Configurações Operacionais** | Tela admin (perfil "Administrador") para ajustar geofence/trava/escopo/ordem por coordenação, com vigência automática |
 
 ---
 
@@ -112,3 +114,5 @@ SAP  →  Motor SGO  →  Campo  →  Banco / Evidências  →  Retorno SAP
 | **OS bloqueadas visíveis (🔒)** | Transparência para o técnico |
 | **Horário único na baixa em massa** | Agilidade sem perder rastreabilidade |
 | **Deck HTML standalone (base64)** | Portabilidade total, F11 fullscreen, sem dependências |
+| **Geofence/trava/ordem configuráveis por coordenação, com vigência** | Cenários operacionais especiais (plano de guerra) sem mexer em código — e sem risco de esquecer uma trava de segurança desligada (expira sozinha) |
+| **Config expira "na leitura", sem cron** | `vigente_desde`/`vigente_ate` comparados a `datetime.now()` a cada leitura — simples, sem infraestrutura de job agendado |

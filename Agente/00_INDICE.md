@@ -1,8 +1,8 @@
 # 🚂 SGO Eletroeletrônica MRS — Contexto do Agente
 ## Índice Mestre para o Agente Copilot / Claude
 
-> 📌 **Status atual:** App em produção (Render) ✅ — Apresentação executiva v10 concluída 🎨
-> 📅 **Última atualização:** 09/07/2026
+> 📌 **Status atual:** App em produção (Render) ✅ — Apresentação executiva v11 concluída 🎨 — Configurações Operacionais em homologação (`dev`) 🟡
+> 📅 **Última atualização:** 13/07/2026
 > 👤 **Mantenedor:** Julio Cesar de Oliveira Paz
 > 🌐 **Distribuição:** PWA em HTTPS (nunca `file://`) · API no Render · Banco Neon
 
@@ -21,7 +21,7 @@
 | 07 | `07_ROADMAP.md` | Em produção · Curto prazo · Futuro |
 | 08 | `08_GLOSSARIO_SGO.md` | Termos, endpoints, campos e regras operacionais |
 
-> 🎨 A **apresentação executiva** (deck v10) tem um subagente dedicado:
+> 🎨 A **apresentação executiva** (deck v11) tem um subagente dedicado:
 > `.claude/agents/pitch-builder.md`. O app tem o `.claude/agents/sgo-dev.md`.
 
 ---
@@ -30,7 +30,7 @@
 
 ### Ao iniciar uma conversa
 1. Leia os 8 arquivos de contexto.
-2. Confirme o **alvo** da sessão: **App SGO** (`app.py`/`api.py`/PWA) ou **Apresentação v10** (`gerar_pitch_v10.py`).
+2. Confirme o **alvo** da sessão: **App SGO** (`app.py`/`api.py`/PWA) ou **Apresentação v11** (`gerar_pitch_v11.py`).
 3. Pergunte por **bloqueios** ou decisões pendentes.
 4. Sugira o **próximo passo** mais lógico.
 
@@ -42,8 +42,8 @@
 5. Entregue o **bloco completo da sessão alterada**.
 
 ### Ao entregar a apresentação (deck)
-1. Edite o **gerador Python** (`gerar_pitch_v10.py`), não o HTML final.
-2. Mantenha a **paleta v10** (dourado `#f3b13c` + cyan `#39d6e8`, fundo escuro).
+1. Edite o **gerador Python** (`gerar_pitch_v11.py`), não o HTML final.
+2. Mantenha a **paleta v8/dourado** (`#f3b13c` + cyan `#39d6e8`, fundo escuro).
 3. Preserve **acentuação PT-BR** correta.
 4. Nada de imagem estática sem FX (spots, sparks, malha pulsante).
 
@@ -55,6 +55,7 @@
 ---
 
 ## 🚦 Próximo passo imediato
+- [ ] Promover Configurações Operacionais de `dev` para `main` (após validação do Julio).
 - [ ] Retomar contato TI MRS (hospedagem corporativa / SSO-AD).
 - [ ] Evoluções de UX no apontamento de campo.
 - [ ] Consolidar dashboards executivos (visibilidade de uso).
@@ -66,6 +67,7 @@
 | Versão | Data | Mudanças |
 |---|---|---|
 | 1.0 | 09/07/2026 | Pacote de contexto inicial do SGO (app + apresentação v10) |
+| 1.1 | 13/07/2026 | Rateio de HH + fix "Trab. real" (export SAP); fix PWA offline (Limpar Filas); Configurações Operacionais por coordenação (`dev`); modelo de priorização "Segurança da Operação"; apresentação v11 |
 
 ---
 

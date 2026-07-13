@@ -33,8 +33,27 @@ if df_recomendado.empty or "Ativo" not in df_recomendado.columns:
 ## 🎯 Padrão de Priorização (VIGENTE)
 
 - OS **Muito Alta** (`Criticidade_rank = 1`) **trava as menores do MESMO grupo** (`Ativo × Tipo de Intervalo`), **independente da data**.
-- Filas **CI** e **SI** são **independentes**.
+- Filas **CI** e **SI** são **independentes** — Tipo de Intervalo é **filtro prévio** (`filtro_intervalo_sel`), não critério de desempate.
 - OS bloqueadas ficam **VISÍVEIS** (sombreado + 🔒). O bloqueio afeta **só a ordenação/backlog**, nunca esconde.
+- **Ambos os comportamentos acima são o PADRÃO** — configuráveis por coordenação via `configuracoes_operacionais` (ver abaixo). Nunca hardcode um novo valor fixo sem checar se já existe override.
+
+### Modelo "Segurança da Operação" (ordenação padrão, 13/07/2026)
+Critério de ordenação passou a ser uma camada composta, não 5 critérios independentes:
+```
+TOP1 = Classificacao "Segurança" + Criticidade "Muito Alta"
+TOP2 = Classificacao "Confiabilidade e Segurança" + Criticidade "Muito Alta"
+TOP3 = Classificacao "Segurança" + Criticidade em [Alta, Média, Baixa]
+TOP4 = tudo o mais (inclusive Confiabilidade Muito Alta)
+```
+Dentro de cada TOP: `Criticidade → Atraso ao vencimento → Proximidade`. Ordem padrão dos 4 critérios: `seguranca_operacional,criticidade,atraso,proximidade` (constante `CRITERIOS_ORDEM_PADRAO`, sessão 4.2). **Não decompor** a Segurança da Operação de volta em 3 critérios de classificação separados — a interação Muito Alta × classificação é intencional (ver `03_HISTORICO_PROJETO.md`).
+
+## 🛠️ Padrão de Configurações Operacionais
+
+- Tabela `configuracoes_operacionais` (PK `coordenacao`); lida por `carregar_config_operacional()` (duplicada em `app.py`/`api.py`, mesmo padrão de `COORDENADAS_FIXAS`).
+- **Expira na leitura** — compara `vigente_desde`/`vigente_ate` com `datetime.now()` a cada chamada; nunca precisa de cron/job.
+- **Geofence**: sem teto (livre, por decisão do Julio). **Trava de prioridade**: quando desativada, vira aviso informativo (não remove a informação de quais OS são Muito Alta).
+- Pacote **PWA offline é snapshot estático** — a trava de prioridade é embutida como constante JS no momento da publicação (`gerar_html_offline`); mudanças na config só valem para pacotes republicados. Geofence, ao contrário, é validado sempre no servidor (`api.py`), então reflete a mudança mesmo em pacotes já baixados.
+- Tela fica em página dedicada (`render_tela_config_operacional`, `tela_atual = "config_operacional"`), igual ao padrão do ícone "⚙️ Dados" — não usar `st.sidebar.expander` para telas administrativas novas.
 
 ---
 
@@ -46,7 +65,7 @@ if df_recomendado.empty or "Ativo" not in df_recomendado.columns:
 | GPS obrigatório | Sem GPS → **não grava** |
 | Coordenada `0,0` | API rejeita com **HTTP 400** |
 | Leitura de EXIF / fallback pela foto | ❌ **REMOVIDO — nunca reintroduzir** |
-| Geofence | **2,0 km** (Haversine) |
+| Geofence | **2,0 km** (Haversine) — padrão, configurável por coordenação |
 | Bypass de teste | `debug_token = "mrs2026"` |
 
 > ⚠️ **Não reencodar/comprimir a foto no cliente** de forma que altere metadados — o padrão atual é GPS do navegador; qualquer fallback antigo por EXIF está descontinuado.
@@ -128,7 +147,7 @@ st.query_params.clear()
 
 ---
 
-# 🎨 Padrões da Apresentação (deck v10)
+# 🎨 Padrões da Apresentação (deck v11)
 
 ## Paleta (v8 / dourado)
 ```css
@@ -140,9 +159,9 @@ st.query_params.clear()
 ```
 
 ## Regras do gerador
-- Edite **`gerar_pitch_v10.py`** (Python), **não** o HTML final.
+- Edite **`gerar_pitch_v11.py`** (Python), **não** o HTML final.
 - Imagens e logos **embutidos em base64** (Pillow + numpy) → arquivo único.
-- Saída: `SGO_Eletroeletronica_MRS_v10.html`. Rodar: `python gerar_pitch_v10.py` (imagens na mesma pasta).
+- Saída: `SGO_Eletroeletronica_MRS_v11.html`. Rodar: `python gerar_pitch_v11.py` (imagens na mesma pasta).
 - **9 `<section class="slide">`**; slide 1 tem `class="slide active"`.
 - **Sem imagens estáticas** — sempre FX: `spots`, `sparks`, matrix radial, malha pulsante (`gmark`/`gpulse`), sparks de encerramento.
 - **Acentuação PT-BR correta** em todo texto novo (Priorização, Execução, Governança, Inteligência, geográfica…).
