@@ -2550,17 +2550,30 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     }}
 
     async function limparFila() {{
-        const ok = confirm("Deseja realmente apagar toda a fila local e reiniciar o pacote offline?");
+        const ok = confirm("Deseja realmente apagar a fila de pendentes locais? OS ja sincronizadas continuam ocultas da lista.");
         if (!ok) return;
 
+        // Apaga somente os registros "pendente". Preserva os "sincronizado", pois
+        // osGravadasSet depende deles para nao reexibir uma OS ja baixada (bug: OS
+        // sincronizada reaparecendo na lista apos "Limpar Filas e Reiniciar").
         await new Promise((resolve, reject) => {{
-            const req = txStore("readwrite").clear();
-            req.onsuccess = () => resolve(true);
+            const store = txStore("readwrite");
+            const idx = store.index("status_sync");
+            const req = idx.openCursor(IDBKeyRange.only("pendente"));
+            req.onsuccess = (event) => {{
+                const cursor = event.target.result;
+                if (cursor) {{
+                    cursor.delete();
+                    cursor.continue();
+                }} else {{
+                    resolve(true);
+                }}
+            }};
             req.onerror = () => reject(req.error);
         }});
 
         await atualizarFila();
-        setSyncMsg("Fila local apagada com sucesso.", "yellow");
+        setSyncMsg("Fila de pendentes apagada com sucesso.", "yellow");
     }}
 """
 #endregion 3.12
