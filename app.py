@@ -186,7 +186,7 @@ def init_db():
                 geofence_km NUMERIC(6,2) NOT NULL DEFAULT 2.0,
                 trava_prioridade_ativa BOOLEAN NOT NULL DEFAULT TRUE,
                 escopo_dados VARCHAR(50) NOT NULL DEFAULT 'todos',
-                ordem_criterios VARCHAR(255) NOT NULL DEFAULT 'confiabilidade_seguranca,seguranca,confiabilidade,criticidade,atraso,intervalo,proximidade',
+                ordem_criterios VARCHAR(255) NOT NULL DEFAULT 'seguranca_operacional,criticidade,atraso,proximidade',
                 ordem_criticidade VARCHAR(100) NOT NULL DEFAULT 'Muito Alta,Alta,Média,Baixa',
                 vigente_desde TIMESTAMP NULL,
                 vigente_ate TIMESTAMP NULL,
@@ -1877,9 +1877,9 @@ def render_tela_config_operacional():
     st.markdown("---")
 
     _rotulos_criterios = {
-        "confiabilidade_seguranca": "Confiabilidade e Segurança", "seguranca": "Segurança",
-        "confiabilidade": "Confiabilidade", "criticidade": "Criticidade",
-        "atraso": "Atraso ao vencimento", "intervalo": "Tipo de Intervalo",
+        "seguranca_operacional": "Segurança da Operação (Muito Alta Segurança > Muito Alta Confiab.+Seg. > Alta/Média/Baixa Segurança > Demais)",
+        "criticidade": "Criticidade (desempate dentro do mesmo nível de segurança)",
+        "atraso": "Atraso ao vencimento",
         "proximidade": "Proximidade geográfica",
     }
     _chave_por_rotulo = {v: k for k, v in _rotulos_criterios.items()}
@@ -1956,6 +1956,26 @@ def render_tela_config_operacional():
 
         st.markdown("---")
         st.markdown("**Ordem dos critérios de priorização** (clique na ordem desejada)")
+        with st.expander("ℹ️ Como funciona a ordem padrão (referência)", expanded=False):
+            st.markdown("""
+O cascateamento funciona em camadas: o 1º critério decide a ordem primeiro; só quando duas OS
+empatam nele é que o critério seguinte entra para desempatar.
+
+| Camada | Critério | O que entra |
+|---|---|---|
+| 1 | 🔴 **TOP 1** | Segurança + Muito Alta |
+| 2 | 🟠 **TOP 2** | Confiabilidade e Segurança + Muito Alta |
+| 3 | 🟡 **TOP 3** | Segurança + Alta / Média / Baixa |
+| 4 | ⚪ **TOP 4 (Demais)** | Tudo o que não se encaixa acima — inclusive Confiabilidade Muito Alta |
+
+Dentro de cada TOP: **Criticidade → Atraso ao vencimento → Proximidade geográfica.**
+
+**Tipo de Intervalo não entra nesse cascateamento** — ele é um filtro separado (Com Intervalo /
+Sem Intervalo) que o técnico escolhe antes; dentro da fila escolhida, aplica-se o mesmo
+cascateamento acima.
+
+Ordem padrão do sistema: `Segurança da Operação → Criticidade → Atraso → Proximidade`.
+            """)
         ordem_labels_default = [_rotulos_criterios[c] for c in config_atual["ordem_criterios"] if c in _rotulos_criterios]
         ordem_sel = st.multiselect(
             "Critérios", list(_rotulos_criterios.values()), default=ordem_labels_default,
@@ -3024,7 +3044,7 @@ COORDENADAS_FIXAS = {
 #endregion 4.1
 
 #region 4.2: Configuração Operacional por Coordenação (Plano de Guerra)
-CRITERIOS_ORDEM_PADRAO = ["confiabilidade_seguranca", "seguranca", "confiabilidade", "criticidade", "atraso", "intervalo", "proximidade"]
+CRITERIOS_ORDEM_PADRAO = ["seguranca_operacional", "criticidade", "atraso", "proximidade"]
 NIVEIS_CRITICIDADE_PADRAO = ["Muito Alta", "Alta", "Média", "Baixa"]
 
 DEFAULTS_CONFIG_OPERACIONAL = {
@@ -4737,17 +4757,24 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         if com_coord.empty:
                             df_recomendado = com_coord
                         else:
-                            # Ordem dos critérios de priorização (configurável por coordenação). Os 3
-                            # subtipos de Segurança/Confiabilidade viram colunas binárias independentes
-                            # (0 = é desse subtipo, 1 = não é), permitindo reordenar cada um separadamente
-                            # em relação aos demais critérios — não só como um bloco fixo.
-                            classif_col = com_coord.get("Classificacao", pd.Series("Confiabilidade", index=com_coord.index))
-                            com_coord["_rank_confseg"] = (classif_col != "Confiabilidade e Segurança").astype(int)
-                            com_coord["_rank_seg"] = (classif_col != "Segurança").astype(int)
-                            com_coord["_rank_conf"] = (classif_col != "Confiabilidade").astype(int)
-
-                            _base_map_intervalo = {"Com Intervalo": 1, "Sem Intervalo": 2}
-                            com_coord["_rank_intervalo"] = com_coord.get("Tipo_Intervalo", pd.Series("N/D", index=com_coord.index)).map(_base_map_intervalo).fillna(3)
+                            # "Segurança da Operação": camada composta (classificação + criticidade),
+                            # não um cascateamento simples — Muito Alta de Segurança sempre acima de
+                            # Alta/Média/Baixa de Segurança, que por sua vez fica acima de tudo o mais
+                            # (inclusive Muito Alta de Confiabilidade pura, que não é item de segurança).
+                            # TOP1=Segurança+MuitoAlta, TOP2=Confiab.+Seg.+MuitoAlta, TOP3=Segurança+demais
+                            # níveis, TOP4=todo o resto. Tipo de Intervalo NÃO entra aqui: já é filtrado
+                            # à parte (filtro_intervalo_sel) antes da roteirização chegar neste ponto.
+                            classif_col = com_coord.get("Classificacao", pd.Series("Confiabilidade", index=com_coord.index)).astype(str)
+                            crit_col = com_coord.get("Criticidade", pd.Series("", index=com_coord.index)).astype(str)
+                            com_coord["_rank_seguranca_operacional"] = np.select(
+                                [
+                                    (classif_col == "Segurança") & (crit_col == "Muito Alta"),
+                                    (classif_col == "Confiabilidade e Segurança") & (crit_col == "Muito Alta"),
+                                    (classif_col == "Segurança") & (crit_col.isin(["Alta", "Média", "Baixa"])),
+                                ],
+                                [0, 1, 2],
+                                default=3
+                            )
 
                             # Ordem de Criticidade (filtro paralelo): reordena Muito Alta/Alta/Média/Baixa
                             # dentro do critério "criticidade" sem afetar o Criticidade_rank fixo usado
@@ -4756,14 +4783,13 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             com_coord["_rank_criticidade_custom"] = com_coord.get("Criticidade", pd.Series("", index=com_coord.index)).map(_mapa_ordem_crit).fillna(99)
 
                             _mapa_criterio_coluna = {
-                                "confiabilidade_seguranca": "_rank_confseg", "seguranca": "_rank_seg",
-                                "confiabilidade": "_rank_conf", "criticidade": "_rank_criticidade_custom",
-                                "atraso": "Ordem_Prazo", "intervalo": "_rank_intervalo",
-                                "proximidade": "Distancia_km",
+                                "seguranca_operacional": "_rank_seguranca_operacional",
+                                "criticidade": "_rank_criticidade_custom",
+                                "atraso": "Ordem_Prazo", "proximidade": "Distancia_km",
                             }
                             ordem_sort = [_mapa_criterio_coluna[c] for c in config_rota["ordem_criterios"] if c in _mapa_criterio_coluna]
                             if not ordem_sort:
-                                ordem_sort = ["Ordem_Prazo", "Criticidade_rank", "Distancia_km"]
+                                ordem_sort = ["_rank_seguranca_operacional", "_rank_criticidade_custom", "Ordem_Prazo", "Distancia_km"]
 
                             df_recomendado = com_coord[com_coord["Distancia_km"] <= raio_busca_km].sort_values(by=ordem_sort)
 
