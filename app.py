@@ -2076,7 +2076,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     if "Descrição Longa" in df_pendentes.columns:
         colunas_export.append("Descrição Longa")
 
-    df_export = df_pendentes.head(100)[colunas_export].fillna("")
+    df_export = df_pendentes[colunas_export].fillna("")
 
     # Sanitização crítica para evitar quebra de HTML/JS
     os_json = df_export.to_json(orient="records", force_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
@@ -4794,18 +4794,6 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             df_recomendado = com_coord[com_coord["Distancia_km"] <= raio_busca_km].sort_values(by=ordem_sort)
 
                 st.info(f"**{len(df_recomendado)} OS pendentes** encontradas no raio de {raio_busca_km} km.")
-
-                # O pacote offline (gerar_html_offline) inclui só as 100 OS mais prioritárias
-                # (limite de tamanho de arquivo para o celular) — avisa quando corta, em vez de
-                # simplesmente omitir o restante sem explicação.
-                LIMITE_PACOTE_OFFLINE = 100
-                if len(df_recomendado) > LIMITE_PACOTE_OFFLINE:
-                    st.warning(
-                        f"⚠️ O raio encontrou **{len(df_recomendado)} OS**, mas o pacote offline (PWA) "
-                        f"inclui apenas as **{LIMITE_PACOTE_OFFLINE} mais prioritárias** (limite de tamanho "
-                        "do arquivo para o celular). As demais **não** entram na rota publicada — reduza o "
-                        "raio ou filtre por Ativo/Mês para cobrir o restante em outra rota."
-                    )
 
                 # --- ENTREGA OFFLINE: PWA em HTTPS (único caminho — resolve GPS offline sem file://) ---
                 if not df_recomendado.empty:
