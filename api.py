@@ -258,6 +258,57 @@ COORDENADAS_FIXAS = {
 }
 
 # ==============================================================================
+# CONFIGURAÇÃO OPERACIONAL POR COORDENAÇÃO (Plano de Guerra)
+# ==============================================================================
+DEFAULTS_CONFIG_OPERACIONAL = {"geofence_km": 2.0, "trava_prioridade_ativa": True}
+
+
+def carregar_config_operacional(coordenacao: str) -> dict:
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT geofence_km, trava_prioridade_ativa, vigente_ate "
+            "FROM configuracoes_operacionais WHERE coordenacao = %s",
+            (coordenacao,)
+        )
+        row = cur.fetchone()
+        cur.close()
+    except Exception:
+        row = None
+    finally:
+        if conn is not None: release_connection(conn)
+
+    if row is None:
+        return dict(DEFAULTS_CONFIG_OPERACIONAL)
+
+    geofence_km, trava_ativa, vigente_ate = row
+    if vigente_ate is not None and vigente_ate < datetime.now():
+        return dict(DEFAULTS_CONFIG_OPERACIONAL)
+
+    return {"geofence_km": float(geofence_km), "trava_prioridade_ativa": bool(trava_ativa)}
+
+
+def obter_coordenacao_da_os(os_id: str) -> str:
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT coordenacao FROM os_programadas WHERE os = %s", (str(os_id).strip(),))
+        row = cur.fetchone()
+        cur.close()
+    except Exception:
+        row = None
+    finally:
+        if conn is not None: release_connection(conn)
+
+    if row and row[0]:
+        return str(row[0]).strip()
+    return "Paranapiacaba"
+
+
+# ==============================================================================
 # APP FASTAPI (PRODUÇÃO)
 # ==============================================================================
 app_api = FastAPI(title="SGO MRS - API Produção", docs_url=None, redoc_url=None, openapi_url=None)
@@ -302,14 +353,18 @@ async def sincronizar_baixa_offline(
     if lat_browser == 0.0 and lon_browser == 0.0:
         raise HTTPException(status_code=400, detail="Localizacao obrigatoria nao recebida. Ative o GPS do aparelho e capture a localizacao antes de sincronizar a baixa.")
 
-    # 3) Validação Antifraude por geofencing
+    # 3) Validação Antifraude por geofencing (limite configurável por coordenação)
     coordenada_ativo = COORDENADAS_FIXAS.get(ativo_id[:3], COORDENADAS_FIXAS["IPA"])
     lat_ativo, lon_ativo = coordenada_ativo[0], coordenada_ativo[1]
 
     dist_km = haversine_vectorized(lat_final, lon_final, pd.Series([lat_ativo]), pd.Series([lon_ativo]))[0]
 
-    if dist_km > 2.0:
-        raise HTTPException(status_code=403, detail=f"Bloqueio Geográfico: O apontamento foi realizado a {dist_km:.1f}km do ativo (Limite máximo: 2.0km). Verifique seu GPS.")
+    coordenacao_os = obter_coordenacao_da_os(os_id)
+    config_op = carregar_config_operacional(coordenacao_os)
+    geofence_limite_km = config_op["geofence_km"]
+
+    if dist_km > geofence_limite_km:
+        raise HTTPException(status_code=403, detail=f"Bloqueio Geográfico: O apontamento foi realizado a {dist_km:.1f}km do ativo (Limite máximo: {geofence_limite_km:.1f}km). Verifique seu GPS.")
 
     # 4) Datas / horários
     hora_apontamento = datetime.fromisoformat(data_hora_local.replace("Z", "+00:00")).astimezone(timezone(timedelta(hours=-3)))
