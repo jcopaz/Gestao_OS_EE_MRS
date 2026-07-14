@@ -3195,7 +3195,7 @@ def obter_base_padrao_usuario():
 #endregion
 
 #region SESSÃO 5: ETL (Carregamento e Tratamento)
-ETL_VERSION = "v7_especialidade"
+ETL_VERSION = "v8_especialidade_prefixo"
 
 #region 5.1: Tratamento Principal (tratar_df_os + _resolver_patio)
 def tratar_df_os(df: pd.DataFrame):
@@ -3208,7 +3208,9 @@ def tratar_df_os(df: pd.DataFrame):
     col_data_prog = pick_first_existing(df, ["DATA INICIAL PROGRAMADA", "DATA PROGRAMADA"])
     col_status = pick_first_existing(df, ["STATUS DA OPERAÇÃO", "STATUS", "STATUS_OPERACAO"])
     col_desc = pick_first_existing(df, ["DESCRIÇÃO LONGA", "DESCRICAO LONGA", "TEXTO LONGO"])
-    col_especialidade = pick_first_existing(df, ["ESPECIALIDADE", "ESPECIALIDADE_CAN"])
+    # Cabeçalho real varia por coordenação ("ESPECIALIDADE IPA", "ESPECIALIDADE IPG", etc.) --
+    # pega qualquer coluna que COMECE com "ESPECIALIDADE", em vez de exigir nome exato.
+    col_especialidade = next((c for c in df.columns if str(c).strip().upper().startswith("ESPECIALIDADE")), None)
 
     missing = []
     if not col_os: missing.append("ORDEM SERVICO")
