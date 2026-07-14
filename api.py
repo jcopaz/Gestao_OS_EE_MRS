@@ -398,7 +398,7 @@ async def sincronizar_baixa_offline(
         os_id=os_id,
         status="Realizado",
         realizado_em_str=formatar_dt_br(hora_apontamento),
-        coordenacao="Sincronização Offline",
+        coordenacao=coordenacao_os,
         concluido_por=usuario,
         geolocalizacao_baixa=geo_string,
         equipe=equipe_formatada,
