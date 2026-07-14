@@ -211,9 +211,9 @@ def upsert_baixa(os_id, status, realizado_em_str, coordenacao, concluido_por, ge
             INSERT INTO baixas (
                 os, status, realizado_em, coordenacao, concluido_por,
                 geolocalizacao_baixa, equipe, data_inicio, hora_inicio,
-                data_fim, hora_fim
+                data_fim, hora_fim, atualizado_em
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (os) DO UPDATE SET
                 status = EXCLUDED.status,
                 realizado_em = EXCLUDED.realizado_em,
@@ -223,7 +223,8 @@ def upsert_baixa(os_id, status, realizado_em_str, coordenacao, concluido_por, ge
                 data_inicio = EXCLUDED.data_inicio,
                 hora_inicio = EXCLUDED.hora_inicio,
                 data_fim = EXCLUDED.data_fim,
-                hora_fim = EXCLUDED.hora_fim;
+                hora_fim = EXCLUDED.hora_fim,
+                atualizado_em = NOW();
             """,
             (str(os_id), str(status), str(realizado_em_str), str(coordenacao), str(concluido_por), str(geolocalizacao_baixa), str(equipe), str(data_inicio), str(hora_inicio), str(data_fim), str(hora_fim))
         )

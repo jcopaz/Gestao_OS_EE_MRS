@@ -220,6 +220,12 @@ def init_db():
             cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS hora_inicio VARCHAR(50);")
             cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS data_fim VARCHAR(50);")
             cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS hora_fim VARCHAR(50);")
+            # atualizado_em (TIMESTAMP real) -- realizado_em e VARCHAR "DD/MM/AAAA HH:MM", e MAX()
+            # em texto compara alfabeticamente, nao cronologicamente (dia "13" nao supera dia "23"
+            # de um mes anterior). Isso fazia o cache de _hash_baixas() nao invalidar quando uma
+            # baixa nova/atualizada tinha data lexicograficamente "menor" que o maximo ja no banco,
+            # mantendo a OS aparecendo como pendente na Roteirizacao mesmo ja baixada (13/07/2026).
+            cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS atualizado_em TIMESTAMP DEFAULT NOW();")
         except Exception: conn.rollback()
         
         # Criar o admin mestre se não existir
@@ -572,12 +578,12 @@ def upsert_baixa(os_id: str, status: str, realizado_em_str: str, coordenacao: st
     try:
         cur = conn.cursor()
         cur.execute("""
-            INSERT INTO baixas (os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO baixas (os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim, atualizado_em)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (os) DO UPDATE SET
                 status = EXCLUDED.status, realizado_em = EXCLUDED.realizado_em, concluido_por = EXCLUDED.concluido_por,
                 geolocalizacao_baixa = EXCLUDED.geolocalizacao_baixa, equipe = EXCLUDED.equipe, data_inicio = EXCLUDED.data_inicio,
-                hora_inicio = EXCLUDED.hora_inicio, data_fim = EXCLUDED.data_fim, hora_fim = EXCLUDED.hora_fim;
+                hora_inicio = EXCLUDED.hora_inicio, data_fim = EXCLUDED.data_fim, hora_fim = EXCLUDED.hora_fim, atualizado_em = NOW();
         """, (str(os_id), str(status), str(realizado_em_str), str(coordenacao), str(concluido_por), str(geolocalizacao_baixa), str(equipe), str(data_inicio), str(hora_inicio), str(data_fim), str(hora_fim)))
         conn.commit()
         cur.close()
@@ -3645,8 +3651,10 @@ def _hash_baixas():
         cur = conn.cursor()
         # ON CONFLICT (os) DO UPDATE NAO altera COUNT nem MAX(os): re-baixa de uma OS ja
         # existente mantinha o hash igual -> cache do overlay ficava velho -> a OS baixada
-        # continuava aparecendo como disponivel. Inclui MAX(realizado_em) p/ detectar updates.
-        cur.execute("SELECT COUNT(*), COALESCE(MAX(os),''), COALESCE(MAX(realizado_em),'') FROM baixas")
+        # continuava aparecendo como disponivel. MAX(atualizado_em) (TIMESTAMP real, nao texto)
+        # detecta qualquer INSERT/UPDATE de forma cronologicamente confiavel -- MAX(realizado_em)
+        # (VARCHAR "DD/MM/AAAA HH:MM") comparava alfabeticamente e podia nao mudar (13/07/2026).
+        cur.execute("SELECT COUNT(*), COALESCE(MAX(os),''), COALESCE(MAX(atualizado_em)::text,'') FROM baixas")
         row = cur.fetchone()
         cur.close()
         return f"{row[0]}_{row[1]}_{row[2]}"
