@@ -450,8 +450,14 @@ def _garantir_tabela_pwa():
 async def publicar_pacote(
     api_key: str = Security(validar_api_key),
     usuario: str = Form(...),
-    html: str = Form(...),
+    html: UploadFile = File(...),
 ):
+    # "html" vem como arquivo, nao campo de formulario -- campos de formulario comuns tem
+    # teto de 1MB no Starlette/python-multipart; sem o limite de 100 OS por pacote (removido
+    # a pedido), o HTML de uma rota grande passa disso facilmente.
+    html_bytes = await html.read()
+    html_str = html_bytes.decode("utf-8")
+
     _garantir_tabela_pwa()
     pacote_id = uuid.uuid4().hex[:12]
 
@@ -460,7 +466,7 @@ async def publicar_pacote(
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO pwa_pacotes (id, usuario, html) VALUES (%s, %s, %s);",
-            (pacote_id, str(usuario), str(html)),
+            (pacote_id, str(usuario), html_str),
         )
         conn.commit()
         cur.close()

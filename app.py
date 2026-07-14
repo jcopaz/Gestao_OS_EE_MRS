@@ -4890,7 +4890,11 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                                     pass
                             resp_pub = requests.post(
                                 f"{base_api}/publicar_pacote",
-                                data={"usuario": usuario_pwa, "html": pacote_html_bytes.decode("utf-8")},
+                                data={"usuario": usuario_pwa},
+                                # "html" vai como arquivo (nao campo de formulario) -- campos de
+                                # formulario comuns tem teto de 1MB no Starlette; sem o limite de
+                                # 100 OS por pacote, o HTML pode passar disso facilmente.
+                                files={"html": ("pacote.html", pacote_html_bytes, "text/html")},
                                 headers={"x-api-key": st.secrets.get("OFFLINE_API_KEY", "")},
                                 timeout=30,
                             )
