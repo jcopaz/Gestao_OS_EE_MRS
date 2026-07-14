@@ -3336,9 +3336,13 @@ def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, bai
     if df_baixas.empty: return df_base
     df_base["Ordem servico"] = df_base["Ordem servico"].astype(str)
 
-    if escopo_usuario != "Todas":
-        df_baixas = df_baixas[df_baixas["coordenacao"].str.contains(escopo_usuario, case=False, na=False, regex=False)]
-
+    # REMOVIDO (14/07/2026): filtro redundante de df_baixas por texto de coordenacao/escopo.
+    # df_base ja vem escopado por coordenacao (carregar_base_sem_overlay), e o merge abaixo e
+    # por "Ordem servico" (PRIMARY KEY em baixas) -- entao esse filtro extra nao protegia nada,
+    # so causava falso-negativo: qualquer diferenca de acentuacao/espaco/maiuscula em
+    # baixas.coordenacao (ou o valor "Sincronizacao Offline" gravado pelo fluxo antigo do PWA)
+    # descartava a baixa inteira antes do merge, deixando a OS aparecer como pendente mesmo
+    # ja concluida, para qualquer usuario logado com escopo != "Todas".
     colunas_overlay = ["Status da Operação", "Data/Hora Realizado", "Concluído por", "Geolocalização de Baixa"]
     for col in colunas_overlay:
         if col not in df_base.columns: df_base[col] = ""
