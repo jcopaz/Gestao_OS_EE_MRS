@@ -2102,6 +2102,11 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     else:
         df_pendentes["Tipo_Intervalo"] = "N/D"
         colunas_export.append("Tipo_Intervalo")
+    if "Especialidade" in df_pendentes.columns:
+        colunas_export.append("Especialidade")
+    else:
+        df_pendentes["Especialidade"] = "N/D"
+        colunas_export.append("Especialidade")
     if "Descrição Longa" in df_pendentes.columns:
         colunas_export.append("Descrição Longa")
 
@@ -2252,6 +2257,12 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             <div class="card">
                 <h2>🧭 Dados Operacionais</h2>
                 <div class="toolbar">
+                    <div class="field">
+                        <label for="filtroEspecialidade">🛠️ Filtrar por Especialidade</label>
+                        <select id="filtroEspecialidade">
+                            <option value="">Todas as Especialidades</option>
+                        </select>
+                    </div>
                     <div class="field">
                         <label for="filtroAtivo">🔍 Filtrar por Ativo</label>
                         <select id="filtroAtivo">
@@ -2478,6 +2489,24 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         }});
     }}
 
+    function popularFiltroEspecialidades() {{
+        const sel = document.getElementById("filtroEspecialidade");
+        if (!sel) return;
+
+        sel.innerHTML = '<option value="">Todas as Especialidades</option>';
+
+        const especialidadesUnicas = [...new Set(
+            OS_DATA.map(item => String(item.Especialidade || "").trim()).filter(v => v && v.toUpperCase() !== "N/D")
+        )].sort((a, b) => a.localeCompare(b, "pt-BR"));
+
+        especialidadesUnicas.forEach((especialidade) => {{
+            const opt = document.createElement("option");
+            opt.value = especialidade;
+            opt.textContent = especialidade;
+            sel.appendChild(opt);
+        }});
+    }}
+
     function gruposCriticosBloqueados(lista) {{
         // Um grupo = (Ativo | Tipo de Intervalo). Só bloqueia as demais OS do MESMO
         // grupo. Assim, Muito Alta "Com Intervalo" não trava as "Sem Intervalo" e vice-versa.
@@ -2499,6 +2528,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     function renderListaOS() {{
         const filtro = String(document.getElementById("filtroAtivo").value || "").trim().toUpperCase();
         const filtroMes = String(document.getElementById("filtroMes").value || "").trim();
+        const filtroEspecialidadeEl = document.getElementById("filtroEspecialidade");
+        const filtroEspecialidade = filtroEspecialidadeEl ? String(filtroEspecialidadeEl.value || "").trim().toUpperCase() : "";
         const osList = document.getElementById("osList");
         osList.innerHTML = "";
 
@@ -2508,11 +2539,13 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 const ativo = String(item.Ativo || "").trim().toUpperCase();
                 const mes = String(item.MesAno || "").trim();
                 const interv = String(item.Tipo_Intervalo || "N/D").trim();
+                const especialidade = String(item.Especialidade || "").trim().toUpperCase();
                 const osId = String(item["Ordem servico"] || "").trim();
                 return !osGravadasSet.has(osId)
                     && (!filtro || ativo === filtro)
                     && (!filtroMes || mes === filtroMes)
-                    && (!filtroIntervalo || interv === filtroIntervalo);
+                    && (!filtroIntervalo || interv === filtroIntervalo)
+                    && (!filtroEspecialidade || especialidade === filtroEspecialidade);
             }});
 
         const gruposBloq = gruposCriticosBloqueados(listaBase);
@@ -2537,6 +2570,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             const patio = String(item.Patio || "").trim();
             const criticidade = String(item.Criticidade || "").trim();
             const intervalo = String(item.Tipo_Intervalo || "N/D").trim();
+            const especialidadeItem = String(item.Especialidade || "").trim();
             const desc = String(item["Descrição Longa"] || "").trim();
             const isCritica = criticidade.toUpperCase() === "MUITO ALTA";
             const grupoItem = ativo.toUpperCase() + " | " + intervalo.toUpperCase();
@@ -2556,6 +2590,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 <div class="os-meta"><strong>Ativo:</strong> ${{ativo}}</div>
                 <div class="os-meta"><strong>Atividade:</strong> ${{atividade}}</div>
                 <div class="os-meta"><strong>Pátio:</strong> ${{patio}}</div>
+                ${{especialidadeItem && especialidadeItem.toUpperCase() !== "N/D" ? `<div class="os-meta"><strong>Especialidade:</strong> ${{especialidadeItem}}</div>` : ""}}
                 ${{desc ? `<div class="desc-box" style="margin: 10px 0;"><strong>Descrição:</strong><br>${{desc}}</div>` : ""}}
 
                 <div class="os-grid os-time-individual" style="margin-top: 10px;">
@@ -2994,6 +3029,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         await carregarOsGravadas();
         setStatusOnline();
         popularEquipe();
+        popularFiltroEspecialidades();
         popularFiltroAtivos();
         popularFiltroMeses();
         renderListaOS();
@@ -3002,6 +3038,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         window.addEventListener("online", setStatusOnline);
         window.addEventListener("offline", setStatusOnline);
 
+        document.getElementById("filtroEspecialidade").addEventListener("change", renderListaOS);
         document.getElementById("filtroAtivo").addEventListener("change", renderListaOS);
         document.getElementById("filtroMes").addEventListener("change", renderListaOS);
         document.getElementById("btnIntTodas").addEventListener("click", () => setFiltroIntervalo(""));
@@ -3158,7 +3195,7 @@ def obter_base_padrao_usuario():
 #endregion
 
 #region SESSÃO 5: ETL (Carregamento e Tratamento)
-ETL_VERSION = "v6_leitura_crua_status_avancado"
+ETL_VERSION = "v7_especialidade"
 
 #region 5.1: Tratamento Principal (tratar_df_os + _resolver_patio)
 def tratar_df_os(df: pd.DataFrame):
@@ -3171,6 +3208,7 @@ def tratar_df_os(df: pd.DataFrame):
     col_data_prog = pick_first_existing(df, ["DATA INICIAL PROGRAMADA", "DATA PROGRAMADA"])
     col_status = pick_first_existing(df, ["STATUS DA OPERAÇÃO", "STATUS", "STATUS_OPERACAO"])
     col_desc = pick_first_existing(df, ["DESCRIÇÃO LONGA", "DESCRICAO LONGA", "TEXTO LONGO"])
+    col_especialidade = pick_first_existing(df, ["ESPECIALIDADE", "ESPECIALIDADE_CAN"])
 
     missing = []
     if not col_os: missing.append("ORDEM SERVICO")
@@ -3203,6 +3241,7 @@ def tratar_df_os(df: pd.DataFrame):
     df["PATIO_CAN"] = df["ATIVO_CAN"].apply(_resolver_patio)
     df["DATA_PROG_CAN"] = df[col_data_prog].apply(parse_data_programada)
     df["DESC_LONGA_CAN"] = df[col_desc].astype(str).str.strip() if col_desc else ""
+    df["ESPECIALIDADE_CAN"] = df[col_especialidade].astype(str).str.strip() if col_especialidade else "N/D"
     
     col_sem_int = pick_first_existing(df, ["SEM INTERVALO", "S_I", "SEM_INTERVALO"])
     col_com_int = pick_first_existing(df, ["COM INTERVALO", "C_I", "COM_INTERVALO"])
@@ -3240,7 +3279,7 @@ def tratar_df_os(df: pd.DataFrame):
         "Data inicial programada": df["DATA_PROG_CAN"], "Status da Operação": df["STATUS_CAN"],
         "Data/Hora Realizado": "", "Concluído por": "", "Hxh Plano": df["HXH_CAN"],
         "Criticidade_rank": df["Criticidade_rank"], "Nivel_Prioridade": df["Nivel_Prioridade"],
-        "TIPO_INTERVALO_CAN": df["TIPO_INTERVALO_CAN"],
+        "TIPO_INTERVALO_CAN": df["TIPO_INTERVALO_CAN"], "Especialidade": df["ESPECIALIDADE_CAN"],
     })
     return df_out
 
@@ -4872,6 +4911,9 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 
 def _aplicar_filtros_cronograma(df_in: pd.DataFrame) -> pd.DataFrame:
     dfx = df_in.copy()
+    especialidade_s = st.session_state.get("campo_filtro_especialidade_os", "Todas as Especialidades")
+    if especialidade_s != "Todas as Especialidades" and "Especialidade" in dfx.columns:
+        dfx = dfx[dfx["Especialidade"].astype(str).str.strip() == str(especialidade_s).strip()]
     ativo_s = st.session_state.get("campo_filtro_ativo_os", "Todos os Ativos na Rota")
     if ativo_s != "Todos os Ativos na Rota":
         dfx = dfx[dfx["Ativo"].astype(str).str.strip() == str(ativo_s).strip()]
@@ -5351,21 +5393,31 @@ def _render_cronograma(df_recomendado: pd.DataFrame):
 @st.fragment
 def bloco_roteirizacao_interativo():
     if not df_recomendado.empty:
+        _especialidades_disp = (
+            sorted(df_recomendado["Especialidade"].dropna().astype(str).str.strip().unique().tolist())
+            if "Especialidade" in df_recomendado.columns else []
+        )
         _ativos_disp = sorted(df_recomendado["Ativo"].dropna().astype(str).str.strip().unique().tolist())
         _dt_meses = pd.to_datetime(df_recomendado["dt_prog_filtro"], errors="coerce").dropna()
         _meses_disp = sorted(_dt_meses.dt.strftime("%m/%Y").unique().tolist(), key=lambda mv: (mv[3:], mv[:2]))
     else:
+        _especialidades_disp = []
         _ativos_disp = []
         _meses_disp = []
+    _opcoes_especialidades = ["Todas as Especialidades"] + [e for e in _especialidades_disp if e and e != "N/D"]
     _opcoes_ativos = ["Todos os Ativos na Rota"] + _ativos_disp
     _opcoes_meses = ["Todos os Meses"] + _meses_disp
 
+    if st.session_state.get("campo_filtro_especialidade_os") not in _opcoes_especialidades:
+        st.session_state["campo_filtro_especialidade_os"] = "Todas as Especialidades"
     if st.session_state.get("campo_filtro_ativo_os") not in _opcoes_ativos:
         st.session_state["campo_filtro_ativo_os"] = "Todos os Ativos na Rota"
     if st.session_state.get("campo_filtro_mes_os") not in _opcoes_meses:
         st.session_state["campo_filtro_mes_os"] = "Todos os Meses"
 
-    col_f_ativo, col_f_mes = st.columns(2)
+    col_f_especialidade, col_f_ativo, col_f_mes = st.columns(3)
+    with col_f_especialidade:
+        st.selectbox("🛠️ Filtrar por Especialidade:", _opcoes_especialidades, key="campo_filtro_especialidade_os")
     with col_f_ativo:
         st.selectbox("🔍 Filtrar OS do cronograma por Ativo:", _opcoes_ativos, key="campo_filtro_ativo_os")
     with col_f_mes:
