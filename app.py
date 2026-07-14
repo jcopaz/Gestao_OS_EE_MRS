@@ -214,6 +214,29 @@ def init_db():
         except Exception: conn.rollback()
 
         try:
+            # UNIQUE(ativo, atividade) fazia a foto de uma OS sobrescrever a de outra sempre que
+            # duas execucoes caiam no mesmo ativo+atividade (comum em inspecoes recorrentes, e
+            # sempre no caso da baixa offline, que gravava atividade="Baixa Offline" fixo para
+            # toda OS do mesmo ativo). A foto era enviada normalmente, so era perdida no upsert.
+            # Corrige a chave para os_referencia (uma linha de evidencia por OS de verdade).
+            cur.execute("""
+                DELETE FROM evidencias a USING evidencias b
+                WHERE a.os_referencia = b.os_referencia
+                  AND a.os_referencia IS NOT NULL AND a.os_referencia <> ''
+                  AND a.id < b.id;
+            """)
+            cur.execute("ALTER TABLE evidencias DROP CONSTRAINT IF EXISTS evidencias_ativo_atividade_key;")
+            cur.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'evidencias_os_referencia_key') THEN
+                        ALTER TABLE evidencias ADD CONSTRAINT evidencias_os_referencia_key UNIQUE (os_referencia);
+                    END IF;
+                END $$;
+            """)
+        except Exception: conn.rollback()
+
+        try:
             cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS geolocalizacao_baixa VARCHAR(255);")
             cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS equipe TEXT;")
             cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS data_inicio VARCHAR(50);")
@@ -641,8 +664,8 @@ def upsert_evidencia(ativo: str, atividade: str, foto_url: str, os_referencia: s
         cur.execute("""
             INSERT INTO evidencias (ativo, atividade, foto_url, os_referencia, concluido_por, geolocalizacao, data_upload)
             VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-            ON CONFLICT (ativo, atividade) DO UPDATE SET
-                foto_url = EXCLUDED.foto_url, os_referencia = EXCLUDED.os_referencia,
+            ON CONFLICT (os_referencia) DO UPDATE SET
+                ativo = EXCLUDED.ativo, atividade = EXCLUDED.atividade, foto_url = EXCLUDED.foto_url,
                 concluido_por = EXCLUDED.concluido_por, geolocalizacao = EXCLUDED.geolocalizacao, data_upload = CURRENT_TIMESTAMP;
         """, (str(ativo), str(atividade), str(foto_url), str(os_referencia), str(concluido_por), str(geolocalizacao)))
         conn.commit()
@@ -5255,7 +5278,7 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
                         if "Atividade ativo" in df_match.columns else "N_A"
                     )
 
-                    nome_foto = re.sub(r"[^\w\-.]", "_", f"{ativo_val}__{atividade_val}.jpg")
+                    nome_foto = re.sub(r"[^\w\-.]", "_", f"{ativo_val}__{atividade_val}__OS{os_id}.jpg")
                     url_foto = upload_foto_supabase(foto_da_os.getvalue(), nome_foto)
 
                     upsert_evidencia(

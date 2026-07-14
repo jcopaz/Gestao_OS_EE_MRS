@@ -188,9 +188,10 @@ def upsert_evidencia(ativo: str, atividade: str, foto_url: str, os_referencia: s
                 ativo, atividade, foto_url, os_referencia, concluido_por, geolocalizacao, data_upload
             )
             VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-            ON CONFLICT (ativo, atividade) DO UPDATE SET
+            ON CONFLICT (os_referencia) DO UPDATE SET
+                ativo = EXCLUDED.ativo,
+                atividade = EXCLUDED.atividade,
                 foto_url = EXCLUDED.foto_url,
-                os_referencia = EXCLUDED.os_referencia,
                 concluido_por = EXCLUDED.concluido_por,
                 geolocalizacao = EXCLUDED.geolocalizacao,
                 data_upload = CURRENT_TIMESTAMP;
