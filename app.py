@@ -5076,23 +5076,28 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
     st.markdown("#### 📷 Evidências Fotográficas")
     st.caption("Registre a evidência de cada OS. A imagem será comprimida automaticamente.")
 
-    # REVERTIDO (16/07/2026): a versao "uma foto por vez" (que escondia o
-    # file_uploader das OS ja prontas) causava o Streamlit ESQUECER o arquivo ja
-    # enviado assim que o widget parava de ser renderizado -- a foto sumia e a OS
-    # voltava a pedir upload do zero, as vezes so no clique de "Concluir e Gravar"
-    # (perda real de OS confirmada pelo time em 16/07/2026). O file_uploader do
-    # Streamlit so mantem o arquivo de forma confiavel se for renderizado em TODO
-    # rerun -- por isso volta a mostrar todos os campos juntos, como era antes de
-    # 15/07/2026. O risco de ClientDisconnect por upload simultaneo continua
-    # existindo, mas e preferivel a perda silenciosa de evidencia.
-    fotos_por_os = {
-        str(os_id): st.file_uploader(
-            f"📸 Evidência da OS {os_id}",
+    # Sequenciamento por DESABILITAR, nao por esconder (16/07/2026): a tentativa
+    # anterior (commit 90648b1) removia da tela o file_uploader das OS ja prontas
+    # para liberar o da proxima -- isso fazia o Streamlit ESQUECER o arquivo ja
+    # enviado, porque o file_uploader so mantem o valor de forma confiavel quando
+    # renderizado em TODO rerun (causou perda real de OS em 16/07/2026, revertido
+    # no commit 40f9148). Desta vez TODOS os campos continuam sendo renderizados
+    # sempre (mesma chave, nunca somem) -- so o "disabled" muda, que e um
+    # parametro oficial do widget e nao afeta a identidade/valor guardado.
+    fotos_por_os = {}
+    _bloqueado = False
+    for _idx_foto, _os_id_raw in enumerate(os_selecionadas, start=1):
+        _os_id_foto = str(_os_id_raw).strip()
+        _arquivo = st.file_uploader(
+            f"📸 Evidência da OS {_os_id_foto} ({_idx_foto}/{len(os_selecionadas)})",
             type=["jpg", "jpeg", "png"],
-            key=f"foto_{os_id}"
+            key=f"foto_{_os_id_foto}",
+            disabled=_bloqueado
         )
-        for os_id in os_selecionadas
-    }
+        fotos_por_os[_os_id_foto] = _arquivo
+        if _arquivo is None and not _bloqueado:
+            # Essa e a proxima pendente -- trava as OS seguintes ate ela ser preenchida.
+            _bloqueado = True
 
     conn = get_connection()
     try:
