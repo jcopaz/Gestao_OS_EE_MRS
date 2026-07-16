@@ -5076,26 +5076,23 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
     st.markdown("#### 📷 Evidências Fotográficas")
     st.caption("Registre a evidência de cada OS. A imagem será comprimida automaticamente.")
 
-    # Uma foto por vez, nao todas simultaneamente: varios uploads grandes ao mesmo
-    # tempo numa rede de campo instavel causavam ClientDisconnect em baixa em massa
-    # (13-15/07/2026). Libera o campo da proxima OS so depois que a foto da atual
-    # terminar de subir -- reduz o pico de banda simultanea sem mexer no componente
-    # nativo do Streamlit (mais seguro que interceptar o upload via JS).
-    fotos_por_os = {}
-    _pendente_mostrada = False
-    for _idx_foto, _os_id_raw in enumerate(os_selecionadas, start=1):
-        _os_id_foto = str(_os_id_raw).strip()
-        _foto_atual = st.session_state.get(f"foto_{_os_id_foto}")
-        fotos_por_os[_os_id_foto] = _foto_atual
-        if _foto_atual is not None:
-            st.caption(f"✅ Foto da OS {_os_id_foto} pronta ({_idx_foto}/{len(os_selecionadas)}).")
-        elif not _pendente_mostrada:
-            st.file_uploader(
-                f"📸 Evidência da OS {_os_id_foto} ({_idx_foto}/{len(os_selecionadas)})",
-                type=["jpg", "jpeg", "png"],
-                key=f"foto_{_os_id_foto}"
-            )
-            _pendente_mostrada = True
+    # REVERTIDO (16/07/2026): a versao "uma foto por vez" (que escondia o
+    # file_uploader das OS ja prontas) causava o Streamlit ESQUECER o arquivo ja
+    # enviado assim que o widget parava de ser renderizado -- a foto sumia e a OS
+    # voltava a pedir upload do zero, as vezes so no clique de "Concluir e Gravar"
+    # (perda real de OS confirmada pelo time em 16/07/2026). O file_uploader do
+    # Streamlit so mantem o arquivo de forma confiavel se for renderizado em TODO
+    # rerun -- por isso volta a mostrar todos os campos juntos, como era antes de
+    # 15/07/2026. O risco de ClientDisconnect por upload simultaneo continua
+    # existindo, mas e preferivel a perda silenciosa de evidencia.
+    fotos_por_os = {
+        str(os_id): st.file_uploader(
+            f"📸 Evidência da OS {os_id}",
+            type=["jpg", "jpeg", "png"],
+            key=f"foto_{os_id}"
+        )
+        for os_id in os_selecionadas
+    }
 
     conn = get_connection()
     try:
