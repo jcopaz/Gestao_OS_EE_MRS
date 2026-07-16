@@ -140,6 +140,7 @@ st.query_params.clear()
 - ❌ Reintroduzir leitura de EXIF / fallback de GPS pela foto.
 - ❌ Inventar novas camadas arquiteturais.
 - ❌ Instruções genéricas sem citar a **sessão exata**.
+- ❌ Mudar **como/quando um widget stateful do Streamlit é renderizado** entre reruns (esconder, mostrar condicionalmente, trocar de key) sem testar em dispositivo real antes de produção — mesmo usando parâmetro oficial do widget. "API documentada" não é garantia de comportamento previsível quando o *padrão de uso* foge do comum (ex.: `st.file_uploader` esconder/mostrar condicionalmente **esquece o arquivo já carregado** entre reruns — causou perda real de OS em 16/07/2026, ver histórico). Preferir `disabled=True` (widget sempre renderizado, nunca sai da árvore) a condicionalmente criar/remover o widget.
 
 ### Saída preferida do agente
 - Entregar o **bloco completo da sessão alterada** (ou o trecho exato com contexto suficiente).
