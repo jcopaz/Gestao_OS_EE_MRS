@@ -1,8 +1,8 @@
 # 🚂 SGO Eletroeletrônica MRS — Contexto do Agente
 ## Índice Mestre para o Agente Copilot / Claude
 
-> 📌 **Status atual:** App em produção (Render) ✅ — Apresentação executiva v11 concluída 🎨 — Configurações Operacionais em homologação (`dev`) 🟡
-> 📅 **Última atualização:** 13/07/2026
+> 📌 **Status atual:** App em produção (Render) ✅ — estável desde 16/07/2026 (24h sem imprevisto confirmadas, tag `estavel-2026-07-17`, ver `09_APRENDIZADOS_E_ERROS.md`) — Apresentação executiva v11 concluída 🎨
+> 📅 **Última atualização:** 17/07/2026
 > 👤 **Mantenedor:** Julio Cesar de Oliveira Paz
 > 🌐 **Distribuição:** PWA em HTTPS (nunca `file://`) · API no Render · Banco Neon
 

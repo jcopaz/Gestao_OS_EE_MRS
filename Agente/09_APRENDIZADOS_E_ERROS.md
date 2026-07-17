@@ -5,6 +5,12 @@
 > mudança em área já listada aqui — o mesmo tipo de erro já custou tempo real da equipe de
 > campo mais de uma vez.
 
+> ✅ **Ponto de referência de estabilidade:** commit `7beb220` / tag git `estavel-2026-07-17` —
+> confirmado pelo Julio sem nenhum imprevisto de 16/07 para 17/07/2026, depois da regressão
+> grave do upload de fotos (ver abaixo). Se uma mudança futura quebrar algo, comparar contra
+> esse ponto (`git diff estavel-2026-07-17 -- app.py api.py`) antes de qualquer outra
+> investigação.
+
 ---
 
 ## 09-11/07/2026 — Contaminação de baixas entre ciclos (Backlog zerado)
