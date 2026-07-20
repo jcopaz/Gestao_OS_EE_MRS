@@ -4510,14 +4510,25 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         real_cat = (df_bar_cat[df_bar_cat["Status_norm"].isin(_status_concluida_dashboard)].groupby("Classificacao").size())
                         cats = ["Confiabilidade e Segurança", "Segurança", "Confiabilidade"]
                         val_plan, val_real = [int(plan_cat.get(c, 0)) for c in cats], [int(real_cat.get(c, 0)) for c in cats]
+                        # Representatividade: % do Realizado sobre o Planejado da própria categoria.
+                        data_real_cat = [
+                            {
+                                "value": v,
+                                "label": {
+                                    "show": True, "position": "right", "color": "#475569",
+                                    "formatter": f"{v} ({(v / p * 100):.1f}%)" if p > 0 else f"{v} (0%)",
+                                },
+                            }
+                            for v, p in zip(val_real, val_plan)
+                        ]
 
                         st_echarts(options={
                             "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}}, "legend": {"bottom": "0%"},
-                            "grid": {"left": "3%", "right": "10%", "bottom": "15%", "top": "10%", "containLabel": True},
+                            "grid": {"left": "3%", "right": "14%", "bottom": "15%", "top": "10%", "containLabel": True},
                             "xAxis": {"type": "value", "boundaryGap": [0, 0.01]}, "yAxis": {"type": "category", "data": cats, "axisLabel": {"interval": 0}},
                             "series": [
                                 {"name": "Planejado", "type": "bar", "data": val_plan, "itemStyle": {"color": cor_plan}, "label": {"show": True, "position": "right", "color": "#475569"}},
-                                {"name": "Realizado", "type": "bar", "data": val_real, "itemStyle": {"color": cor_real}, "label": {"show": True, "position": "right", "color": "#475569"}}
+                                {"name": "Realizado", "type": "bar", "data": data_real_cat, "itemStyle": {"color": cor_real}}
                             ]
                         }, height="380px", theme="streamlit", key="aba1_bar_horiz")
                 #endregion 10.2.2
@@ -4531,11 +4542,23 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         x_turnos = ["Turno Dia (07h-19h)", "Administrativo (08h-17h30)", "Turno Noite (19h-07h)"]
                         _cnt_t = df_visao_base[df_visao_base["Status_norm"].isin(_status_concluida_dashboard)].groupby("Turno").size()
                         y_vals = [int(_cnt_t.get(t, 0)) for t in x_turnos]
+                        # Representatividade: % que o turno representa do total Realizado (soma dos 3 turnos).
+                        _total_turnos = sum(y_vals)
+                        data_turno = [
+                            {
+                                "value": v, "name": t, "itemStyle": {"color": _cor_turno.get(t, "#94A3B8")},
+                                "label": {
+                                    "show": True, "position": "inside", "color": "#FFFFFF", "fontWeight": "bold",
+                                    "formatter": f"{v} ({(v / _total_turnos * 100):.1f}%)" if _total_turnos > 0 else f"{v} (0%)",
+                                },
+                            }
+                            for t, v in zip(x_turnos, y_vals)
+                        ]
                         st_echarts(options={
                             "tooltip": {"trigger": "axis"}, "xAxis": {"type": "category", "data": x_turnos, "axisLabel": {"interval": 0, "fontSize": 10}}, "yAxis": {"type": "value"},
                             "toolbox": {"show": True, "feature": {"magicType": {"type": ["line", "bar"], "title": {"line": "Linha", "bar": "Barra"}}, "restore": {"title": "Restaurar"}, "saveAsImage": {"title": "Salvar Imagem"}}},
                             "grid": {"left": "5%", "right": "5%", "bottom": "15%", "top": "15%", "containLabel": True},
-                            "series": [{"type": "bar", "barWidth": "55%", "label": {"show": True, "position": "inside", "formatter": "{c}", "color": "#FFFFFF", "fontWeight": "bold"}, "data": [{"value": v, "name": t, "itemStyle": {"color": _cor_turno.get(t, "#94A3B8")}} for t, v in zip(x_turnos, y_vals)]}],
+                            "series": [{"type": "bar", "barWidth": "55%", "data": data_turno}],
                         }, height="350px", theme="streamlit", key="aba1_barra")
 
                         with col_g6:
