@@ -130,7 +130,13 @@ def hash_senha(senha):
 
 _status_prazo  = {"REALIZADO"}
 _status_atraso = {"REALIZADO FORA DA DATA DE PROGRAMAÇÃO", "REALIZADO FORA DO PRAZO"}
-_status_aberto = {"NÃO REALIZADO", "NAO REALIZADO", "PENDENTE", "ATRASADO", ""}
+# ABER NRAV = vistoria feita a campo, mas atividade não concluída (linha ocupada/desvio).
+# A OS continua aberta de fato (por isso soma em _status_aberto -- Roteirização/pendências/
+# calendário seguem tratando como tarefa aberta), mas conta como Concluída só para o cálculo
+# de Meta na Dashboard/Visão Gerencial (_status_concluida_dashboard / _status_aberto_dashboard).
+_status_aberto = {"NÃO REALIZADO", "NAO REALIZADO", "PENDENTE", "ATRASADO", "ABER NRAV", ""}
+_status_concluida_dashboard = _status_prazo | _status_atraso | {"ABER NRAV"}
+_status_aberto_dashboard = _status_aberto - {"ABER NRAV"}
 #endregion 1.3
 
 #region 1.4: Inicialização do Banco de Dados (init_db)
@@ -908,8 +914,8 @@ def aplicar_filtros_sidebar(
     if turnos_selecionados and "Turno_Filtro" in df.columns: 
         df = df[df["Turno_Filtro"].isin(turnos_selecionados)]
     if status_sel != "Todos" and "Status_norm" in df.columns:
-        if status_sel == "Todas Concluídas": df = df[df["Status_norm"].isin(_status_prazo | _status_atraso)]
-        elif status_sel == "Concluídas no Prazo": df = df[df["Status_norm"].isin(_status_prazo)]
+        if status_sel == "Todas Concluídas": df = df[df["Status_norm"].isin(_status_concluida_dashboard)]
+        elif status_sel == "Concluídas no Prazo": df = df[df["Status_norm"].isin(_status_prazo | {"ABER NRAV"})]
         elif status_sel == "Concluídas com Atraso": df = df[df["Status_norm"].isin(_status_atraso)]
         elif status_sel == "Pendentes": df = df[df["Status_norm"].isin(_status_aberto)]
         elif status_sel == "Atrasado": df = df[df["Status_norm"] == "ATRASADO"]
@@ -3207,6 +3213,10 @@ def tratar_df_os(df: pd.DataFrame):
     col_hxh = pick_first_existing(df, ["HXH PLANO", "HXH_PLANO"])
     col_data_prog = pick_first_existing(df, ["DATA INICIAL PROGRAMADA", "DATA PROGRAMADA"])
     col_status = pick_first_existing(df, ["STATUS DA OPERAÇÃO", "STATUS", "STATUS_OPERACAO"])
+    # Coluna "STATUS" (crua, coluna G da Base de OS) carrega códigos como ABER/ABER NRAV/CONC.
+    # Em layouts que também têm "STATUS DA OPERAÇÃO" (sempre "Liberado" nesse formato), col_status
+    # acima resolve para essa coluna morta -- por isso lemos "STATUS" separadamente aqui.
+    col_status_raw = pick_first_existing(df, ["STATUS"])
     col_desc = pick_first_existing(df, ["DESCRIÇÃO LONGA", "DESCRICAO LONGA", "TEXTO LONGO"])
     # Cabeçalho real varia por coordenação ("ESPECIALIDADE IPA", "ESPECIALIDADE IPG", etc.) --
     # pega qualquer coluna que COMECE com "ESPECIALIDADE", em vez de exigir nome exato.
@@ -3267,6 +3277,8 @@ def tratar_df_os(df: pd.DataFrame):
         if "REALIZADO" in st_atual:
             if "FORA" in st_atual or "ATRASO" in st_atual: return "Realizado Fora da Data de Programação"
             return "Realizado"
+        st_raw = str(row[col_status_raw]).strip().upper() if col_status_raw and pd.notna(row[col_status_raw]) else ""
+        if st_raw == "ABER NRAV": return "ABER NRAV"
         dp = row["DATA_PROG_CAN"]
         if pd.isna(dp): return "Pendente"
         if dp.date() >= hoje_data: return "Pendente"
@@ -4075,10 +4087,10 @@ st.markdown("---")
 
 #region 9.3: Cálculo dos KPIs + CSS dos Cards (Dark Mode)
 total_os = len(df_filtrado)
-realizado_prazo = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_prazo)])
+realizado_prazo = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_prazo | {"ABER NRAV"})])
 realizado_atraso = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_atraso)])
 realizado_total = realizado_prazo + realizado_atraso
-nao_realizado = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_aberto)])
+nao_realizado = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_aberto_dashboard)])
 taxa_conclusao = (realizado_total / total_os * 100) if total_os > 0 else 0.0
 
 st.markdown("""
@@ -4251,7 +4263,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         # Isso evita que uma OS programada em maio/junho, mas realizada fora
                         # desse intervalo, estique o eixo do gráfico.
                         df_real_area = df_area[
-                            df_area["Status_norm"].isin(_status_prazo | _status_atraso)
+                            df_area["Status_norm"].isin(_status_concluida_dashboard)
                         ].copy()
 
                         df_real_area = df_real_area[
@@ -4405,7 +4417,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         st.caption("Comparativo de volume total e execução.")
                         df_bar_cat = df_visao_base.copy()
                         plan_cat = df_bar_cat.groupby("Classificacao").size()
-                        real_cat = (df_bar_cat[df_bar_cat["Status_norm"].isin(_status_prazo | _status_atraso)].groupby("Classificacao").size())
+                        real_cat = (df_bar_cat[df_bar_cat["Status_norm"].isin(_status_concluida_dashboard)].groupby("Classificacao").size())
                         cats = ["Confiabilidade e Segurança", "Segurança", "Confiabilidade"]
                         val_plan, val_real = [int(plan_cat.get(c, 0)) for c in cats], [int(real_cat.get(c, 0)) for c in cats]
 
@@ -4427,7 +4439,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     with col_g3:
                         st.markdown("#### Realizado por Turno")
                         x_turnos = ["Turno Dia (07h-19h)", "Administrativo (08h-17h30)", "Turno Noite (19h-07h)"]
-                        _cnt_t = df_visao_base[df_visao_base["Status_norm"].isin(_status_prazo | _status_atraso)].groupby("Turno").size()
+                        _cnt_t = df_visao_base[df_visao_base["Status_norm"].isin(_status_concluida_dashboard)].groupby("Turno").size()
                         y_vals = [int(_cnt_t.get(t, 0)) for t in x_turnos]
                         st_echarts(options={
                             "tooltip": {"trigger": "axis"}, "xAxis": {"type": "category", "data": x_turnos, "axisLabel": {"interval": 0, "fontSize": 10}}, "yAxis": {"type": "value"},
@@ -4443,7 +4455,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             # Para evitar datas fora da janela visual selecionada, limitamos o eixo X
                             # explicitamente ao intervalo start_date/end_date.
                             df_linhas_plot = df_visao_base[
-                                df_visao_base["Status_norm"].isin(_status_prazo | _status_atraso)
+                                df_visao_base["Status_norm"].isin(_status_concluida_dashboard)
                             ].dropna(subset=["dia_realizado"]).copy()
 
                             if not df_linhas_plot.empty:
