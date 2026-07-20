@@ -2270,10 +2270,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                         </select>
                     </div>
                     <div class="field">
-                        <label for="filtroAtivo">🔍 Filtrar por Ativo</label>
-                        <select id="filtroAtivo">
-                            <option value="">Todos os Ativos na Rota</option>
-                        </select>
+                        <label for="filtroAtivo">🔍 Filtrar por Ativo (Ctrl/Cmd+clique ou toque múltiplo — vazio = todos)</label>
+                        <select id="filtroAtivo" multiple size="4"></select>
                     </div>
                     <div class="field">
                         <label for="filtroMes">🗓️ Filtrar por Mês</label>
@@ -2459,7 +2457,9 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         const sel = document.getElementById("filtroAtivo");
         if (!sel) return;
 
-        sel.innerHTML = '<option value="">Todos os Ativos na Rota</option>';
+        // Multisseleção (autorizado em reunião): lista vazia = sem filtro (Todos os Ativos).
+        const selecionadosAntes = new Set(Array.from(sel.selectedOptions).map(o => o.value));
+        sel.innerHTML = "";
 
         const ativosUnicos = [...new Set(
             OS_DATA.map(item => String(item.Ativo || "").trim()).filter(v => v)
@@ -2469,6 +2469,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             const opt = document.createElement("option");
             opt.value = ativo;
             opt.textContent = ativo;
+            if (selecionadosAntes.has(ativo)) opt.selected = true;
             sel.appendChild(opt);
         }});
     }}
@@ -2532,7 +2533,12 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     }}
 
     function renderListaOS() {{
-        const filtro = String(document.getElementById("filtroAtivo").value || "").trim().toUpperCase();
+        // Multisseleção de Ativos: conjunto vazio = sem filtro (Todos os Ativos).
+        const filtroSet = new Set(
+            Array.from(document.getElementById("filtroAtivo").selectedOptions)
+                .map(o => String(o.value || "").trim().toUpperCase())
+                .filter(v => v)
+        );
         const filtroMes = String(document.getElementById("filtroMes").value || "").trim();
         const filtroEspecialidadeEl = document.getElementById("filtroEspecialidade");
         const filtroEspecialidade = filtroEspecialidadeEl ? String(filtroEspecialidadeEl.value || "").trim().toUpperCase() : "";
@@ -2548,7 +2554,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 const especialidade = String(item.Especialidade || "").trim().toUpperCase();
                 const osId = String(item["Ordem servico"] || "").trim();
                 return !osGravadasSet.has(osId)
-                    && (!filtro || ativo === filtro)
+                    && (filtroSet.size === 0 || filtroSet.has(ativo))
                     && (!filtroMes || mes === filtroMes)
                     && (!filtroIntervalo || interv === filtroIntervalo)
                     && (!filtroEspecialidade || especialidade === filtroEspecialidade);
@@ -4792,14 +4798,14 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                 if "raio_aplicado" not in st.session_state:
                     st.session_state["raio_aplicado"] = 1
                 if "ativo_aplicado" not in st.session_state:
-                    st.session_state["ativo_aplicado"] = "Todos os Ativos na Rota"
+                    st.session_state["ativo_aplicado"] = []
 
                 # Slider agora é só ENTRADA (default 1 km); não dispara cálculo sozinho
                 st.slider("📏 Raio de Atuação Visual (km):", 0, 50, 1, 1, key="slider_raio_atuacao")
 
                 if st.button("🔎 Filtrar", use_container_width=True, type="primary", key="btn_filtrar_rota"):
                     st.session_state["raio_aplicado"] = int(st.session_state["slider_raio_atuacao"])
-                    st.session_state["ativo_aplicado"] = st.session_state.get("campo_filtro_ativo_os", "Todos os Ativos na Rota")
+                    st.session_state["ativo_aplicado"] = st.session_state.get("campo_filtro_ativo_os", [])
                     st.rerun()
 
                 # Mapa + cronograma usam SEMPRE o raio já aplicado
@@ -4932,9 +4938,10 @@ def _aplicar_filtros_cronograma(df_in: pd.DataFrame) -> pd.DataFrame:
     especialidade_s = st.session_state.get("campo_filtro_especialidade_os", "Todas as Especialidades")
     if especialidade_s != "Todas as Especialidades" and "Especialidade" in dfx.columns:
         dfx = dfx[dfx["Especialidade"].astype(str).str.strip() == str(especialidade_s).strip()]
-    ativo_s = st.session_state.get("campo_filtro_ativo_os", "Todos os Ativos na Rota")
-    if ativo_s != "Todos os Ativos na Rota":
-        dfx = dfx[dfx["Ativo"].astype(str).str.strip() == str(ativo_s).strip()]
+    ativos_s = st.session_state.get("campo_filtro_ativo_os", [])
+    if ativos_s and "Ativo" in dfx.columns:
+        _ativos_sel = {str(a).strip() for a in ativos_s}
+        dfx = dfx[dfx["Ativo"].astype(str).str.strip().isin(_ativos_sel)]
     mes_s = st.session_state.get("campo_filtro_mes_os", "Todos os Meses")
     if mes_s != "Todos os Meses" and "dt_prog_filtro" in dfx.columns:
         _dtm = pd.to_datetime(dfx["dt_prog_filtro"], errors="coerce")
@@ -5437,13 +5444,15 @@ def bloco_roteirizacao_interativo():
         _ativos_disp = []
         _meses_disp = []
     _opcoes_especialidades = ["Todas as Especialidades"] + [e for e in _especialidades_disp if e and e != "N/D"]
-    _opcoes_ativos = ["Todos os Ativos na Rota"] + _ativos_disp
     _opcoes_meses = ["Todos os Meses"] + _meses_disp
 
     if st.session_state.get("campo_filtro_especialidade_os") not in _opcoes_especialidades:
         st.session_state["campo_filtro_especialidade_os"] = "Todas as Especialidades"
-    if st.session_state.get("campo_filtro_ativo_os") not in _opcoes_ativos:
-        st.session_state["campo_filtro_ativo_os"] = "Todos os Ativos na Rota"
+    # Multiseleção de Ativos (autorizado em reunião — colaborador pode filtrar e dar baixa
+    # em massa em mais de um Ativo ao mesmo tempo). Lista vazia = sem filtro (Todos os Ativos).
+    st.session_state["campo_filtro_ativo_os"] = [
+        a for a in st.session_state.get("campo_filtro_ativo_os", []) if a in _ativos_disp
+    ]
     if st.session_state.get("campo_filtro_mes_os") not in _opcoes_meses:
         st.session_state["campo_filtro_mes_os"] = "Todos os Meses"
 
@@ -5451,7 +5460,11 @@ def bloco_roteirizacao_interativo():
     with col_f_especialidade:
         st.selectbox("🛠️ Filtrar por Especialidade:", _opcoes_especialidades, key="campo_filtro_especialidade_os")
     with col_f_ativo:
-        st.selectbox("🔍 Filtrar OS do cronograma por Ativo:", _opcoes_ativos, key="campo_filtro_ativo_os")
+        st.multiselect(
+            "🔍 Filtrar OS do cronograma por Ativo (vazio = todos):",
+            _ativos_disp,
+            key="campo_filtro_ativo_os"
+        )
     with col_f_mes:
         st.selectbox("🗓️ Filtrar por Mês (programação):", _opcoes_meses, key="campo_filtro_mes_os")
 
