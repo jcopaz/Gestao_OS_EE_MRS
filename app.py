@@ -2121,11 +2121,21 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     # Sanitização crítica para evitar quebra de HTML/JS
     os_json = df_export.to_json(orient="records", force_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
 
-    usuarios_equipe = ["Sozinho (Nenhum)"]
+    # Equipe/matrícula do pacote offline só traz colegas da MESMA lotação (escopo) do dono
+    # do pacote -- Paranapiacaba só vê Paranapiacaba, Piaçaguera só vê Piaçaguera. "Todas"
+    # (perfis Gerência/Administrador) continua vendo todo mundo. Lista vazia no dropdown =
+    # "Sozinho (Nenhum)" (mesma convenção do multiselect online), por isso não entra aqui.
+    usuarios_equipe = []
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT username FROM usuarios")
+        cur.execute("SELECT escopo FROM usuarios WHERE username = %s", (usuario,))
+        _row_escopo = cur.fetchone()
+        escopo_dono = str(_row_escopo[0]).strip() if _row_escopo and _row_escopo[0] else "Todas"
+        if escopo_dono == "Todas":
+            cur.execute("SELECT username FROM usuarios")
+        else:
+            cur.execute("SELECT username FROM usuarios WHERE escopo = %s", (escopo_dono,))
         for row in cur.fetchall():
             username = str(row[0]).strip()
             if username and username != usuario:
@@ -2192,6 +2202,15 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         .btn-success {{ background: #059669; color: #FFFFFF; }}
         .btn-danger {{ background: #DC2626; color: #FFFFFF; }}
         .btn-secondary {{ background: #E2E8F0; color: #0F172A; }}
+        .ms {{ position: relative; }}
+        .ms-btn {{ width: 100%; text-align: left; padding: 10px 12px; border: 1px solid #CBD5E1; border-radius: 10px; font-size: 14px; background: #FFFFFF; cursor: pointer; color: #0F172A; }}
+        .ms-panel {{ display: none; position: absolute; z-index: 30; top: calc(100% + 4px); left: 0; right: 0; background: #FFFFFF; border: 1px solid #CBD5E1; border-radius: 10px; box-shadow: 0 8px 20px rgba(15,23,42,0.18); padding: 8px; max-height: 260px; overflow-y: auto; }}
+        .ms-panel.open {{ display: block; }}
+        .ms-search {{ width: 100%; padding: 8px 10px; border: 1px solid #CBD5E1; border-radius: 8px; font-size: 13px; margin-bottom: 8px; }}
+        .ms-option {{ display: flex; align-items: center; gap: 8px; padding: 7px 4px; font-size: 14px; border-radius: 6px; cursor: pointer; }}
+        .ms-option:hover {{ background: #F1F5F9; }}
+        .ms-option input {{ width: auto; margin: 0; }}
+        .ms-empty {{ font-size: 13px; color: #94A3B8; padding: 6px 4px; }}
         .info-box {{ padding: 12px; border-radius: 10px; margin-bottom: 12px; font-size: 14px; }}
         .info-blue {{ background: #EFF6FF; color: #1D4ED8; border: 1px solid #BFDBFE; }}
         .info-yellow {{ background: #FEF3C7; color: #92400E; border: 1px solid #FCD34D; }}
@@ -2270,8 +2289,14 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                         </select>
                     </div>
                     <div class="field">
-                        <label for="filtroAtivo">🔍 Filtrar por Ativo (Ctrl/Cmd+clique ou toque múltiplo — vazio = todos)</label>
-                        <select id="filtroAtivo" multiple size="4"></select>
+                        <label>🔍 Filtrar por Ativo (vazio = todos)</label>
+                        <div class="ms" id="msAtivo">
+                            <button type="button" class="ms-btn" id="msAtivoBtn">Todos os Ativos ▾</button>
+                            <div class="ms-panel" id="msAtivoPanel">
+                                <input type="text" class="ms-search" id="msAtivoSearch" placeholder="Buscar ativo...">
+                                <div class="ms-list" id="msAtivoList"></div>
+                            </div>
+                        </div>
                     </div>
                     <div class="field">
                         <label for="filtroMes">🗓️ Filtrar por Mês</label>
@@ -2288,8 +2313,14 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                         </div>
                     </div>
                     <div class="field">
-                        <label for="acompanhanteGlobal">👥 Acompanhante / Equipe (aplica a todas as OS)</label>
-                        <select id="acompanhanteGlobal"></select>
+                        <label>👥 Acompanhante / Equipe (aplica a todas as OS — vazio = sozinho)</label>
+                        <div class="ms" id="msEquipe">
+                            <button type="button" class="ms-btn" id="msEquipeBtn">Sozinho (Nenhum) ▾</button>
+                            <div class="ms-panel" id="msEquipePanel">
+                                <input type="text" class="ms-search" id="msEquipeSearch" placeholder="Buscar pessoa...">
+                                <div class="ms-list" id="msEquipeList"></div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -2442,36 +2473,90 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         el.className = "info-box " + (tipo === "red" ? "info-red" : tipo === "yellow" ? "info-yellow" : "info-blue");
     }}
 
-    function popularEquipe() {{
-        const sel = document.getElementById("acompanhanteGlobal");
-        sel.innerHTML = "";
-        USUARIOS_EQUIPE.forEach((nome) => {{
-            const opt = document.createElement("option");
-            opt.value = nome;
-            opt.textContent = nome;
-            sel.appendChild(opt);
+    // Dropdown de multisseleção pesquisável/recolhível (autorizado em reunião com os
+    // Gestores). Reaproveitado tanto no filtro de Ativo quanto no de Equipe/Acompanhante --
+    // fecha ao clicar fora, filtra por texto digitado, e o botão mostra um resumo da seleção.
+    function criarMultiSelectDropdown(prefixo, placeholderVazio, onChange) {{
+        const btn = document.getElementById(prefixo + "Btn");
+        const panel = document.getElementById(prefixo + "Panel");
+        const busca = document.getElementById(prefixo + "Search");
+        const lista = document.getElementById(prefixo + "List");
+        let opcoesAtuais = [];
+        const selecionados = new Set();
+
+        function atualizarBotao() {{
+            if (selecionados.size === 0) btn.textContent = placeholderVazio + " ▾";
+            else if (selecionados.size === 1) btn.textContent = [...selecionados][0] + " ▾";
+            else btn.textContent = selecionados.size + " selecionados ▾";
+        }}
+
+        function renderLista(filtroTexto) {{
+            const termo = String(filtroTexto || "").trim().toLowerCase();
+            lista.innerHTML = "";
+            const filtradas = opcoesAtuais.filter((op) => !termo || op.toLowerCase().includes(termo));
+            if (filtradas.length === 0) {{
+                const vazio = document.createElement("div");
+                vazio.className = "ms-empty";
+                vazio.textContent = "Nenhum resultado.";
+                lista.appendChild(vazio);
+                return;
+            }}
+            filtradas.forEach((op) => {{
+                const linha = document.createElement("label");
+                linha.className = "ms-option";
+                const chk = document.createElement("input");
+                chk.type = "checkbox";
+                chk.checked = selecionados.has(op);
+                chk.addEventListener("change", () => {{
+                    if (chk.checked) selecionados.add(op); else selecionados.delete(op);
+                    atualizarBotao();
+                    if (onChange) onChange();
+                }});
+                const txt = document.createElement("span");
+                txt.textContent = op;
+                linha.appendChild(chk);
+                linha.appendChild(txt);
+                lista.appendChild(linha);
+            }});
+        }}
+
+        btn.addEventListener("click", (e) => {{
+            e.stopPropagation();
+            const abrindo = !panel.classList.contains("open");
+            panel.classList.toggle("open", abrindo);
+            if (abrindo) {{ busca.value = ""; renderLista(""); busca.focus(); }}
         }});
+        busca.addEventListener("input", () => renderLista(busca.value));
+        busca.addEventListener("click", (e) => e.stopPropagation());
+        document.addEventListener("click", (e) => {{
+            if (!panel.contains(e.target) && e.target !== btn) panel.classList.remove("open");
+        }});
+
+        return {{
+            setOptions(novasOpcoes) {{
+                opcoesAtuais = novasOpcoes.slice();
+                [...selecionados].forEach((s) => {{ if (!opcoesAtuais.includes(s)) selecionados.delete(s); }});
+                atualizarBotao();
+                renderLista(busca.value);
+            }},
+            getSelected() {{ return [...selecionados]; }}
+        }};
+    }}
+
+    let msAtivo = null;
+    let msEquipe = null;
+
+    function popularEquipe() {{
+        if (!msEquipe) return;
+        msEquipe.setOptions(USUARIOS_EQUIPE.slice());
     }}
 
     function popularFiltroAtivos() {{
-        const sel = document.getElementById("filtroAtivo");
-        if (!sel) return;
-
-        // Multisseleção (autorizado em reunião): lista vazia = sem filtro (Todos os Ativos).
-        const selecionadosAntes = new Set(Array.from(sel.selectedOptions).map(o => o.value));
-        sel.innerHTML = "";
-
+        if (!msAtivo) return;
         const ativosUnicos = [...new Set(
             OS_DATA.map(item => String(item.Ativo || "").trim()).filter(v => v)
         )].sort((a, b) => a.localeCompare(b, "pt-BR"));
-
-        ativosUnicos.forEach((ativo) => {{
-            const opt = document.createElement("option");
-            opt.value = ativo;
-            opt.textContent = ativo;
-            if (selecionadosAntes.has(ativo)) opt.selected = true;
-            sel.appendChild(opt);
-        }});
+        msAtivo.setOptions(ativosUnicos);
     }}
 
     function popularFiltroMeses() {{
@@ -2535,9 +2620,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     function renderListaOS() {{
         // Multisseleção de Ativos: conjunto vazio = sem filtro (Todos os Ativos).
         const filtroSet = new Set(
-            Array.from(document.getElementById("filtroAtivo").selectedOptions)
-                .map(o => String(o.value || "").trim().toUpperCase())
-                .filter(v => v)
+            (msAtivo ? msAtivo.getSelected() : []).map(v => String(v || "").trim().toUpperCase())
         );
         const filtroMes = String(document.getElementById("filtroMes").value || "").trim();
         const filtroEspecialidadeEl = document.getElementById("filtroEspecialidade");
@@ -2762,7 +2845,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             return;
         }}
 
-        const acompanhanteGlobal = document.getElementById("acompanhanteGlobal").value || "Sozinho (Nenhum)";
+        const acompanhanteGlobal = (msEquipe ? msEquipe.getSelected() : []).join(", ");
 
         // Horario unico (baixa em massa): um horario replica para TODAS as OS com foto.
         const chkUnico = document.getElementById("horarioUnicoGlobal");
@@ -2843,7 +2926,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 os_id: String(osItem["Ordem servico"] || "").trim(),
                 ativo_id: String(osItem["Ativo"] || "").trim(),
                 usuario: USUARIO_LOGADO,
-                acompanhante: acompanhanteGlobal === "Sozinho (Nenhum)" ? "" : acompanhanteGlobal,
+                acompanhante: acompanhanteGlobal,
                 horario_inicio: inicio.length === 5 ? `${{inicio}}:00` : inicio,
                 horario_fim: fim.length === 5 ? `${{fim}}:00` : fim,
                 data_inicio_exec: brData(dataIni),
@@ -3040,6 +3123,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         await abrirDB();
         await carregarOsGravadas();
         setStatusOnline();
+        msAtivo = criarMultiSelectDropdown("msAtivo", "Todos os Ativos", renderListaOS);
+        msEquipe = criarMultiSelectDropdown("msEquipe", "Sozinho (Nenhum)", null);
         popularEquipe();
         popularFiltroEspecialidades();
         popularFiltroAtivos();
@@ -3051,7 +3136,6 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         window.addEventListener("offline", setStatusOnline);
 
         document.getElementById("filtroEspecialidade").addEventListener("change", renderListaOS);
-        document.getElementById("filtroAtivo").addEventListener("change", renderListaOS);
         document.getElementById("filtroMes").addEventListener("change", renderListaOS);
         document.getElementById("btnIntTodas").addEventListener("click", () => setFiltroIntervalo(""));
         document.getElementById("btnIntCI").addEventListener("click", () => setFiltroIntervalo("Com Intervalo"));
@@ -5120,9 +5204,16 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
 
     conn = get_connection()
     try:
-        df_users_equipe = pd.read_sql_query("SELECT username FROM usuarios", conn)
+        df_users_equipe = pd.read_sql_query("SELECT username, escopo FROM usuarios", conn)
     finally:
         release_connection(conn)
+
+    # Equipe/matrícula só pode indicar colegas da MESMA lotação (escopo) do usuário logado --
+    # Paranapiacaba só vê Paranapiacaba, Piaçaguera só vê Piaçaguera. "Todas" (perfis
+    # Gerência/Administrador) continua vendo todo mundo, sem restrição.
+    escopo_logado = st.session_state.get("escopo", "Todas")
+    if escopo_logado != "Todas" and "escopo" in df_users_equipe.columns:
+        df_users_equipe = df_users_equipe[df_users_equipe["escopo"].astype(str).str.strip() == str(escopo_logado).strip()]
 
     lista_equipe_disp = df_users_equipe["username"].dropna().astype(str).tolist()
     usr_logado = st.session_state.get("username", "")
