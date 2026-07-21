@@ -4584,18 +4584,23 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 
                     with col_meta2:
                         st.markdown("#### Aderência Ponderada (Resultado)")
+                        st.metric("Resultado Ponderado Total", f"{_resultado_total:.2f}%")
+                        _cores_bucket_meta = ["#3B82F6", "#F59E0B", "#8B5CF6"]
                         st_echarts(options={
-                            "tooltip": {"trigger": "item", "formatter": "{b}: {c}%"},
+                            "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}, "formatter": "{b}: {c}%"},
+                            "grid": {"left": "5%", "right": "5%", "bottom": "10%", "top": "12%", "containLabel": True},
+                            "xAxis": {"type": "category", "data": [l["bucket"] for l in _linhas_meta], "axisLabel": {"interval": 0, "fontSize": 11}},
+                            "yAxis": {"type": "value", "name": "Resultado (%)", "max": 40},
                             "series": [{
-                                "type": "gauge",
-                                "min": 0, "max": 100,
-                                "progress": {"show": True, "width": 16},
-                                "axisLine": {"lineStyle": {"width": 16}},
-                                "pointer": {"show": False},
-                                "detail": {"valueAnimation": True, "formatter": "{value}%", "fontSize": 28, "color": "#1E293B"},
-                                "data": [{"value": round(_resultado_total, 2), "name": "Resultado Ponderado"}],
+                                "type": "bar",
+                                "barWidth": "50%",
+                                "data": [
+                                    {"value": round(l["resultado"], 2), "itemStyle": {"color": _cores_bucket_meta[i]}}
+                                    for i, l in enumerate(_linhas_meta)
+                                ],
+                                "label": {"show": True, "position": "top", "formatter": "{c}%", "fontWeight": "bold", "color": "#334155"},
                             }],
-                        }, height="260px", theme="streamlit", key="aba1_meta_gauge")
+                        }, height="300px", theme="streamlit", key="aba1_meta_bar_resultado")
 
                         for l in _linhas_meta:
                             st.caption(
@@ -4788,6 +4793,20 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     # do Streamlit pela nuvem. LinkColumn renderiza o link de evidência sem precisar
                     # de HTML cru.
                     df_display = df_lista[colunas_ordem].copy()
+
+                    # Exportação em ";" (não ","): "Descrição Longa" e "Geolocalização de Baixa"
+                    # ("Lat: X, Lon: Y") trazem vírgula dentro do próprio texto -- CSV separado por
+                    # vírgula quebra a organização das colunas ao abrir/ordenar no Excel. O ícone
+                    # nativo do st.dataframe (canto da tabela) continua exportando em ",".
+                    csv_lista_os = df_display.to_csv(index=False, sep=";").encode("utf-8-sig")
+                    st.download_button(
+                        "⬇️ Baixar CSV (separado por ;)",
+                        data=csv_lista_os,
+                        file_name="lista_detalhada_os.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+
                     st.dataframe(
                         df_display,
                         use_container_width=True,
