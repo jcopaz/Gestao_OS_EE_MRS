@@ -6337,9 +6337,30 @@ if st.session_state.get("tela_atual") == "governanca":
         with col_l3_c1:
             st.markdown("#### 🔝 Top Técnicos: OS por Pátio")
             df_freq = df_gov_f.groupby(["concluido_por", "Patio"]).size().reset_index(name="Qtd")
-            tecnicos_top, patios_top = df_freq["concluido_por"].unique().tolist(), sorted(df_freq["Patio"].unique().tolist())
+            patios_top = sorted(df_freq["Patio"].unique().tolist())
+            # Ordena por volume total (desc) -- facilita achar quem mais concluiu de cara,
+            # em vez da ordem crua de aparição no dataframe.
+            tecnicos_top = (
+                df_freq.groupby("concluido_por")["Qtd"].sum().sort_values(ascending=False).index.tolist()
+            )
             series_top = [{"name": patio, "type": "bar", "stack": "total", "data": [int(df_freq[(df_freq["concluido_por"] == tec) & (df_freq["Patio"] == patio)]["Qtd"].iloc[0]) if not df_freq[(df_freq["concluido_por"] == tec) & (df_freq["Patio"] == patio)].empty else 0 for tec in tecnicos_top], "label": {"show": False}} for patio in patios_top]
-            st_echarts(options={ "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}}, "legend": {"bottom": "0%", "textStyle": {"fontSize": 10}}, "grid": {"left": "5%", "right": "5%", "bottom": "18%", "top": "10%", "containLabel": True}, "xAxis": {"type": "category", "data": tecnicos_top, "axisLabel": {"interval": 0, "rotate": 30, "fontSize": 10}}, "yAxis": {"type": "value"}, "series": series_top }, height="440px", theme="streamlit", key="gov_top_tec")
+            # Com muitos técnicos, o eixo X fica ilegível mesmo rotacionado -- dataZoom mostra
+            # só os ~12 primeiros (já os de maior volume, por causa da ordenação acima) e
+            # permite arrastar/rolar pra ver o resto, em vez de espremer tudo de uma vez.
+            _qtd_tec = len(tecnicos_top)
+            _end_zoom = round(min(100, (12 / _qtd_tec) * 100), 1) if _qtd_tec > 0 else 100
+            st_echarts(options={
+                "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
+                "legend": {"bottom": "12%", "textStyle": {"fontSize": 10}},
+                "grid": {"left": "5%", "right": "5%", "bottom": "28%", "top": "10%", "containLabel": True},
+                "xAxis": {"type": "category", "data": tecnicos_top, "axisLabel": {"interval": 0, "rotate": 45, "fontSize": 10}},
+                "yAxis": {"type": "value"},
+                "dataZoom": [
+                    {"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": _end_zoom, "bottom": "0%"},
+                    {"type": "inside", "xAxisIndex": [0], "start": 0, "end": _end_zoom}
+                ],
+                "series": series_top
+            }, height="480px", theme="streamlit", key="gov_top_tec")
 
         with col_l3_c2:
             st.markdown("#### 📊 Variabilidade de Execução")
