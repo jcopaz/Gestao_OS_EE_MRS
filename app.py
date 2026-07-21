@@ -6134,11 +6134,12 @@ if st.session_state.get("tela_atual") == "governanca":
             st_echarts(
                 options={
                     "tooltip": {"trigger": "item"},
-                    "legend": {"orient": "horizontal", "bottom": "0%"},
+                    "legend": {"orient": "horizontal", "bottom": "0%", "textStyle": {"fontSize": 11}},
                     "series": [
                         {
                             "type": "pie",
-                            "radius": ["40%", "70%"],
+                            "radius": ["38%", "62%"],
+                            "center": ["50%", "42%"],
                             "data": [
                                 {
                                     "value": int(r["Volume"]),
@@ -6169,16 +6170,19 @@ if st.session_state.get("tela_atual") == "governanca":
             st_echarts(
                 options={
                     "tooltip": {"trigger": "axis"},
+                    "grid": {"left": "3%", "right": "8%", "bottom": "6%", "top": "5%", "containLabel": True},
                     "xAxis": {"type": "value"},
                     "yAxis": {
                         "type": "category",
-                        "data": df_classif["Classificacao"].tolist()
+                        "data": df_classif["Classificacao"].tolist(),
+                        "axisLabel": {"fontSize": 11}
                     },
                     "series": [
                         {
                             "type": "bar",
                             "data": df_classif["Tempo_Medio"].round(1).tolist(),
-                            "itemStyle": {"color": "#F59E0B"}
+                            "itemStyle": {"color": "#F59E0B"},
+                            "label": {"show": True, "position": "right", "color": "#475569", "fontSize": 11}
                         }
                     ]
                 },
@@ -6291,28 +6295,30 @@ if st.session_state.get("tela_atual") == "governanca":
                 df_aderencia = df_aderencia.dropna(subset=["y_login_frac", "y_baixa_frac"]).sort_values("Data_Real_Pure")
 
                 if not df_aderencia.empty:
-                    # Tooltip pre-formatado em Python (HTML na dimensao 3) e referenciado via
-                    # template nativo "{@[3]}" do ECharts -- evita JsCode, que parou de ser
-                    # serializado apos a nuvem forcar upgrade do Streamlit.
+                    # Tooltip pre-formatado em Python, no campo "name" de cada ponto -- "{@[3]}"
+                    # (dimensao por indice) parou de ser interpretado pelo ECharts apos a nuvem
+                    # forcar upgrade do Streamlit (mesmo tipo de quebra que ja tinha acontecido
+                    # com JsCode antes). "{b}" (nome do dado) e um token basico e estavel do
+                    # formatter, entao usamos ele em vez de depender de sintaxe de dimensao.
                     login_data = [
-                        [
-                            row["x_date"], round(row["y_login_frac"], 2), row["username"],
-                            f'<b>{row["username"]}</b><br>Login: {row["dt_login_calc"].strftime("%H:%M")}<br>Data: {row["x_date"]}'
-                        ]
+                        {
+                            "value": [row["x_date"], round(row["y_login_frac"], 2)],
+                            "name": f'<b>{row["username"]}</b><br>Login: {row["dt_login_calc"].strftime("%H:%M")}<br>Data: {row["x_date"]}'
+                        }
                         for _, row in df_aderencia.iterrows()
                     ]
                     baixa_data = [
-                        [
-                            row["x_date"], round(row["y_baixa_frac"], 2), row["username"],
-                            f'<b>{row["username"]}</b><br>Primeira Baixa: {row["dt_baixa_1os"].strftime("%H:%M")}<br>Data: {row["x_date"]}'
-                        ]
+                        {
+                            "value": [row["x_date"], round(row["y_baixa_frac"], 2)],
+                            "name": f'<b>{row["username"]}</b><br>Primeira Baixa: {row["dt_baixa_1os"].strftime("%H:%M")}<br>Data: {row["x_date"]}'
+                        }
                         for _, row in df_aderencia.iterrows()
                     ]
 
                     st_echarts(options={
                         "tooltip": {
                             "trigger": "item",
-                            "formatter": "{@[3]}"
+                            "formatter": "{b}"
                         },
                         "legend": {"data": ["Login", "Primeira Baixa"], "bottom": "0%"},
                         "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}],
