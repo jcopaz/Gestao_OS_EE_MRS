@@ -6122,10 +6122,10 @@ if st.session_state.get("tela_atual") == "governanca":
             )
 #endregion 11.4
 
-#region 11.5: Produtividade Individual, Esforço e Heatmap
+#region 11.5: Produtividade Individual, Esforço, Tipo de OS x Frequência e Aderência (2 colunas)
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("---")
-        col_l2_c1, col_l2_c2, col_l2_c3 = st.columns(3, gap="medium")
+        col_l2_c1, col_l2_c2 = st.columns(2, gap="medium")
 
         with col_l2_c1:
             st.markdown("#### 👥 Produtividade Individual")
@@ -6150,7 +6150,7 @@ if st.session_state.get("tela_atual") == "governanca":
                         }
                     ]
                 },
-                height="320px",
+                height="380px",
                 key="gov_donut_criticidade"
             )
 
@@ -6182,11 +6182,14 @@ if st.session_state.get("tela_atual") == "governanca":
                         }
                     ]
                 },
-                height="320px",
+                height="380px",
                 key="gov_esforco_classe"
             )
 
-        with col_l2_c3:
+        st.markdown("<br>", unsafe_allow_html=True); st.markdown("---")
+        col_l2b_c1, col_l2b_c2 = st.columns(2, gap="medium")
+
+        with col_l2b_c1:
             st.markdown("#### 🔁 Tipo de OS x Frequência")
 
             agg_heatmap = (
@@ -6253,18 +6256,13 @@ if st.session_state.get("tela_atual") == "governanca":
                         }
                     ]
                 },
-                height="320px",
+                height="420px",
                 key="gov_heatmap_freq"
             )
-#endregion 11.5
 
-#region 11.6: Aderência, Top Técnicos e Variabilidade
-        st.markdown("<br>", unsafe_allow_html=True); st.markdown("---")
-        col_l3_c1, col_l3_c2, col_l3_c3 = st.columns(3, gap="medium")
-
-        with col_l3_c1:
+        with col_l2b_c2:
             st.markdown("#### 🕒 Aderência: Login vs. Apontamento")
-            
+
             df_logs_local = df_logs.copy()
             df_logs_local["dt_login_calc"] = pd.to_datetime(df_logs_local["data_hora_login"], errors="coerce")
             df_logs_local["Data_Real_Pure"] = df_logs_local["dt_login_calc"].dt.date
@@ -6285,13 +6283,13 @@ if st.session_state.get("tela_atual") == "governanca":
             if not df_aderencia.empty:
                 dt_login = df_aderencia["dt_login_calc"]
                 dt_baixa = df_aderencia["dt_baixa_1os"]
-                
+
                 df_aderencia["x_date"] = dt_login.dt.strftime("%d/%m")
                 df_aderencia["y_login_frac"] = dt_login.dt.hour + dt_login.dt.minute / 60.0
                 df_aderencia["y_baixa_frac"] = dt_baixa.dt.hour + dt_baixa.dt.minute / 60.0
-                
+
                 df_aderencia = df_aderencia.dropna(subset=["y_login_frac", "y_baixa_frac"]).sort_values("Data_Real_Pure")
-                
+
                 if not df_aderencia.empty:
                     # Tooltip pre-formatado em Python (HTML na dimensao 3) e referenciado via
                     # template nativo "{@[3]}" do ECharts -- evita JsCode, que parou de ser
@@ -6321,27 +6319,32 @@ if st.session_state.get("tela_atual") == "governanca":
                         "grid": {"top": "10%", "bottom": "25%", "left": "12%", "right": "5%"},
                         "xAxis": {"type": "category", "data": sorted(df_aderencia["x_date"].unique().tolist())},
                         "yAxis": { "type": "value", "name": "Horário", "min": 0, "max": 24, "interval": 4, "axisLabel": { "formatter": "{value}:00" } },
-                        "series": [ 
-                            {"name": "Login", "type": "scatter", "data": login_data, "symbolSize": 10, "itemStyle": {"color": "#3B82F6"}}, 
-                            {"name": "Primeira Baixa", "type": "scatter", "data": baixa_data, "symbolSize": 10, "itemStyle": {"color": "#10B981"}} 
-                        ] 
-                    }, height="400px", theme="streamlit", key="gov_scatter_aderencia")
+                        "series": [
+                            {"name": "Login", "type": "scatter", "data": login_data, "symbolSize": 10, "itemStyle": {"color": "#3B82F6"}},
+                            {"name": "Primeira Baixa", "type": "scatter", "data": baixa_data, "symbolSize": 10, "itemStyle": {"color": "#10B981"}}
+                        ]
+                    }, height="420px", theme="streamlit", key="gov_scatter_aderencia")
                 else:
                     st.info("Dados de horário insuficientes para plotar o gráfico de aderência.")
-            else: 
+            else:
                 st.info("Dados insuficientes para cruzar login com apontamento.")
+#endregion 11.5
 
-        with col_l3_c2:
+#region 11.6: Top Técnicos e Variabilidade (2 colunas)
+        st.markdown("<br>", unsafe_allow_html=True); st.markdown("---")
+        col_l3_c1, col_l3_c2 = st.columns(2, gap="medium")
+
+        with col_l3_c1:
             st.markdown("#### 🔝 Top Técnicos: OS por Pátio")
             df_freq = df_gov_f.groupby(["concluido_por", "Patio"]).size().reset_index(name="Qtd")
             tecnicos_top, patios_top = df_freq["concluido_por"].unique().tolist(), sorted(df_freq["Patio"].unique().tolist())
             series_top = [{"name": patio, "type": "bar", "stack": "total", "data": [int(df_freq[(df_freq["concluido_por"] == tec) & (df_freq["Patio"] == patio)]["Qtd"].iloc[0]) if not df_freq[(df_freq["concluido_por"] == tec) & (df_freq["Patio"] == patio)].empty else 0 for tec in tecnicos_top], "label": {"show": False}} for patio in patios_top]
-            st_echarts(options={ "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}}, "legend": {"bottom": "0%", "textStyle": {"fontSize": 10}}, "grid": {"left": "5%", "right": "5%", "bottom": "18%", "top": "10%", "containLabel": True}, "xAxis": {"type": "category", "data": tecnicos_top, "axisLabel": {"interval": 0, "rotate": 30, "fontSize": 10}}, "yAxis": {"type": "value"}, "series": series_top }, height="400px", theme="streamlit", key="gov_top_tec")
+            st_echarts(options={ "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}}, "legend": {"bottom": "0%", "textStyle": {"fontSize": 10}}, "grid": {"left": "5%", "right": "5%", "bottom": "18%", "top": "10%", "containLabel": True}, "xAxis": {"type": "category", "data": tecnicos_top, "axisLabel": {"interval": 0, "rotate": 30, "fontSize": 10}}, "yAxis": {"type": "value"}, "series": series_top }, height="440px", theme="streamlit", key="gov_top_tec")
 
-        with col_l3_c3:
+        with col_l3_c2:
             st.markdown("#### 📊 Variabilidade de Execução")
             df_var = df_gov_f.groupby("concluido_por")["Tempo_Minutos"].mean().fillna(0).reset_index().sort_values("Tempo_Minutos", ascending=True)
-            st_echarts(options={ "tooltip": {"trigger": "axis"}, "grid": {"left": "5%", "right": "8%", "bottom": "10%", "top": "10%", "containLabel": True}, "xAxis": {"type": "value", "name": "Minutos"}, "yAxis": {"type": "category", "data": df_var["concluido_por"].tolist(), "axisLabel": {"fontSize": 10}}, "series": [{"type": "bar", "data": df_var["Tempo_Minutos"].round(1).tolist(), "itemStyle": {"color": "#8B5CF6"}, "label": {"show": True, "position": "right", "formatter": "{c} min", "fontSize": 10}}] }, height="400px", theme="streamlit", key="gov_variab")
+            st_echarts(options={ "tooltip": {"trigger": "axis"}, "grid": {"left": "5%", "right": "8%", "bottom": "10%", "top": "10%", "containLabel": True}, "xAxis": {"type": "value", "name": "Minutos"}, "yAxis": {"type": "category", "data": df_var["concluido_por"].tolist(), "axisLabel": {"fontSize": 10}}, "series": [{"type": "bar", "data": df_var["Tempo_Minutos"].round(1).tolist(), "itemStyle": {"color": "#8B5CF6"}, "label": {"show": True, "position": "right", "formatter": "{c} min", "fontSize": 10}}] }, height="440px", theme="streamlit", key="gov_variab")
 #endregion 11.6
 
 #region 11.7: Tabela de Auditoria GPS
