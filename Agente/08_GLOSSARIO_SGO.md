@@ -19,7 +19,9 @@
 | **Roteirização** | Agrupamento/ordenação de OS por proximidade |
 | **Raio de atuação** | Distância de busca de OS (inicial **1 km**) |
 | **Evidência** | Foto obrigatória da execução |
-| **Segurança da Operação** | Camada composta de priorização: TOP1 (Segurança+Muito Alta) → TOP2 (Confiab.+Seg.+Muito Alta) → TOP3 (Segurança+Alta/Média/Baixa) → TOP4 (demais) |
+| **Segurança da Operação** | Camada composta de priorização (atualizado 21/07/2026): Rank0 (Segurança+Muito Alta) → Rank1 (Confiabilidade+Muito Alta) → Rank2 (Confiabilidade+Alta/Média/Baixa) → Rank3 (demais). "Confiabilidade e Segurança" **não existe** como classificação — confirmado com especialistas MRS |
+| **Classificação** | Só existe **Segurança** ou **Confiabilidade** (a partir do código da Atividade Ativo: `_SEG_` → Segurança, `_CONF_` → Confiabilidade, default → Confiabilidade) |
+| **Prioridade 1 / Prioridade 2,3,4** | Nomenclatura do scorecard de Meta = Criticidade Muito Alta / Criticidade Alta,Média,Baixa (fora do bucket Segurança). Peso fixo: Segurança 40%, Prioridade 1 25%, Prioridade 2,3,4 35% |
 | **Plano de Guerra** | Cenário operacional excepcional (ex.: Piaçaguera 13/07/2026) que motivou tornar geofence/trava/ordem configuráveis por coordenação |
 | **Configurações Operacionais** | Tela admin (aba própria) para ajustar geofence, trava de prioridade, escopo de dados e ordem de critérios por coordenação, com vigência automática |
 | **Vigência (vigente_desde / vigente_ate)** | Janela de validade de um override de configuração — fora dela, volta ao padrão sozinho, sem cron |

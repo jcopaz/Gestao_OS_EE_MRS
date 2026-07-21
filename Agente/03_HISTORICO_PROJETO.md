@@ -32,7 +32,7 @@
 - OS bloqueadas ficam **VISÍVEIS** (sombreado + 🔒) — nunca ocultas.
 - Essa trava e o motor de ordenação agora são **configuráveis por coordenação** (ver "Configurações Operacionais" abaixo) — o comportamento acima é o **padrão**, usado sempre que não houver override ativo.
 
-### Motor de Priorização — modelo "Segurança da Operação" (13/07/2026)
+### Motor de Priorização — modelo "Segurança da Operação" (13/07/2026, revisado 21/07/2026)
 Substituiu o cascateamento simples de 5 critérios independentes por uma **camada composta** (classificação + criticidade), validada com o Julio:
 - **TOP 1** = Classificação Segurança + Criticidade Muito Alta.
 - **TOP 2** = Classificação Confiabilidade e Segurança + Criticidade Muito Alta.
@@ -40,6 +40,8 @@ Substituiu o cascateamento simples de 5 critérios independentes por uma **camad
 - **TOP 4** = todo o resto — **inclusive** Confiabilidade Muito Alta (não é item de segurança, então não fura fila).
 - Dentro de cada TOP: desempate por **Criticidade → Atraso ao vencimento → Proximidade**.
 - Ordem padrão do sistema: `Segurança da Operação → Criticidade → Atraso → Proximidade` (4 critérios; Tipo de Intervalo não é um deles).
+
+> ⚠️ **Revisado em 21/07/2026**: especialistas MRS confirmaram que a classificação "Confiabilidade e Segurança" (TOP 2 acima) **não existe na prática** — toda OS é ou Segurança ou Confiabilidade. Novo modelo: Rank0=Segurança+MuitoAlta, Rank1=Confiabilidade+MuitoAlta, Rank2=Confiabilidade+Alta/Média/Baixa, Rank3=resto. Ver `05_PADROES_TECNICOS.md` para o modelo vigente — o bloco acima é só histórico da decisão original de 13/07.
 
 ### Configurações Operacionais por Coordenação — "Plano de Guerra" (13/07/2026)
 Piaçaguera pediu para suspender a trava de Muito Alta durante um plano de guerra. Criada tela dedicada (aba própria, como o ícone "⚙️ Dados"), acessível a um novo **perfil "Administrador"** (permissão granular `Configurações Operacionais`), com os seguintes controles **por coordenação**:

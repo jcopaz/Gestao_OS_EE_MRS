@@ -37,15 +37,28 @@ if df_recomendado.empty or "Ativo" not in df_recomendado.columns:
 - OS bloqueadas ficam **VISÍVEIS** (sombreado + 🔒). O bloqueio afeta **só a ordenação/backlog**, nunca esconde.
 - **Ambos os comportamentos acima são o PADRÃO** — configuráveis por coordenação via `configuracoes_operacionais` (ver abaixo). Nunca hardcode um novo valor fixo sem checar se já existe override.
 
-### Modelo "Segurança da Operação" (ordenação padrão, 13/07/2026)
-Critério de ordenação passou a ser uma camada composta, não 5 critérios independentes:
+### Modelo "Segurança da Operação" (ordenação padrão, atualizado em 21/07/2026)
+> ⚠️ Correção de negócio validada com **especialistas MRS** em 21/07/2026: **não existe** a classificação "Confiabilidade e Segurança" — toda OS é **ou** Segurança **ou** Confiabilidade, nunca as duas. O modelo TOP1-4 de 13/07 (que tinha um TOP2 "Confiabilidade e Segurança") foi substituído. Ver [[correcao-classificacao-seguranca-2026-07-21]] na memória.
+
+Classificação (`classificar_atividade`, a partir do código da Atividade Ativo):
 ```
-TOP1 = Classificacao "Segurança" + Criticidade "Muito Alta"
-TOP2 = Classificacao "Confiabilidade e Segurança" + Criticidade "Muito Alta"
-TOP3 = Classificacao "Segurança" + Criticidade em [Alta, Média, Baixa]
-TOP4 = tudo o mais (inclusive Confiabilidade Muito Alta)
+Qualquer coisa com "_SEG_"  -> Segurança
+Qualquer coisa com "_CONF_" -> Confiabilidade
+Default -> Confiabilidade
 ```
-Dentro de cada TOP: `Criticidade → Atraso ao vencimento → Proximidade`. Ordem padrão dos 4 critérios: `seguranca_operacional,criticidade,atraso,proximidade` (constante `CRITERIOS_ORDEM_PADRAO`, sessão 4.2). **Não decompor** a Segurança da Operação de volta em 3 critérios de classificação separados — a interação Muito Alta × classificação é intencional (ver `03_HISTORICO_PROJETO.md`).
+
+Critério de ordenação é uma camada composta, não 4 critérios independentes:
+```
+Rank 0 = Classificacao "Segurança" + Criticidade "Muito Alta"
+Rank 1 = Classificacao "Confiabilidade" + Criticidade "Muito Alta"
+Rank 2 = Classificacao "Confiabilidade" + Criticidade em [Alta, Média, Baixa]
+Rank 3 = tudo o mais (default)
+```
+Confirmado com o Julio: não existe "Segurança + Alta/Média/Baixa" na prática — toda OS de Segurança já nasce Muito Alta, por isso essa combinação não tem rank próprio (cairia no rank 3 por eliminação, mas não deve ocorrer com dado real).
+
+Dentro de cada rank: `Criticidade → Atraso ao vencimento → Proximidade`. Ordem padrão dos 4 critérios: `seguranca_operacional,criticidade,atraso,proximidade` (constante `CRITERIOS_ORDEM_PADRAO`, sessão 4.2). **Não decompor** a Segurança da Operação de volta em critérios de classificação separados — a interação Muito Alta × classificação é intencional.
+
+**Peso fixo de Meta** (igual para todas as coordenações, painel de Aderência): Segurança 40% · Prioridade 1 (Muito Alta, fora de Segurança) 25% · Prioridade 2/3/4 (Alta/Média/Baixa, fora de Segurança) 35%. Resultado = Aderência% × Peso por linha.
 
 ## 🛠️ Padrão de Configurações Operacionais
 

@@ -457,8 +457,11 @@ def pick_first_existing(df: pd.DataFrame, candidates: list[str]) -> str | None:
 
 #region 3.1.2: Classificação de Atividades e Criticidade
 def classificar_atividade(atividade: str) -> str:
+    # Correção de negócio validada com especialistas MRS (21/07/2026): não existe
+    # "Confiabilidade e Segurança" -- toda OS é Segurança OU Confiabilidade, nunca as
+    # duas. Regra simples por substring: qualquer coisa com "_SEG_" -> Segurança,
+    # qualquer coisa com "_CONF_" -> Confiabilidade (default).
     s = str(atividade).upper()
-    if "_MAN_CONF_" in s: return "Confiabilidade e Segurança"
     if "_SEG_" in s: return "Segurança"
     if "_CONF_" in s: return "Confiabilidade"
     return "Confiabilidade"
@@ -479,8 +482,10 @@ def extrair_criticidade(prioridade: str):
     return 4, "Baixa"
 
 def calcular_nivel_prioridade(classificacao: str, criticidade_rank: int) -> int:
-    base_map = {"Confiabilidade e Segurança": 1, "Segurança": 2, "Confiabilidade": 3}
-    base = base_map.get(classificacao, 3)
+    # Segurança sempre à frente de Confiabilidade, em qualquer criticidade (base 1x < 2x);
+    # dentro de cada classificação, criticidade_rank (1=Muito Alta..4=Baixa) desempata.
+    base_map = {"Segurança": 1, "Confiabilidade": 2}
+    base = base_map.get(classificacao, 2)
     return base * 10 + int(criticidade_rank)
 #endregion 3.1.2
 
@@ -1912,7 +1917,7 @@ def render_tela_config_operacional():
     st.markdown("---")
 
     _rotulos_criterios = {
-        "seguranca_operacional": "Segurança da Operação (Muito Alta Segurança > Muito Alta Confiab.+Seg. > Alta/Média/Baixa Segurança > Demais)",
+        "seguranca_operacional": "Segurança da Operação (Segurança Muito Alta > Confiabilidade Muito Alta > Confiabilidade Alta/Média/Baixa > Demais)",
         "criticidade": "Criticidade (desempate dentro do mesmo nível de segurança)",
         "atraso": "Atraso ao vencimento",
         "proximidade": "Proximidade geográfica",
@@ -1999,9 +2004,9 @@ empatam nele é que o critério seguinte entra para desempatar.
 | Camada | Critério | O que entra |
 |---|---|---|
 | 1 | 🔴 **TOP 1** | Segurança + Muito Alta |
-| 2 | 🟠 **TOP 2** | Confiabilidade e Segurança + Muito Alta |
-| 3 | 🟡 **TOP 3** | Segurança + Alta / Média / Baixa |
-| 4 | ⚪ **TOP 4 (Demais)** | Tudo o que não se encaixa acima — inclusive Confiabilidade Muito Alta |
+| 2 | 🟠 **TOP 2** | Confiabilidade + Muito Alta |
+| 3 | 🟡 **TOP 3** | Confiabilidade + Alta / Média / Baixa |
+| 4 | ⚪ **TOP 4 (Demais)** | Tudo o que não se encaixa acima |
 
 Dentro de cada TOP: **Criticidade → Atraso ao vencimento → Proximidade geográfica.**
 
@@ -3852,7 +3857,7 @@ lista_planos_mes = (
     sorted(df_visao["Plano_Mes_Referencia"].dropna().astype(str).str.strip().replace("", pd.NA).dropna().unique().tolist())
     if "Plano_Mes_Referencia" in df_visao.columns else []
 )
-lista_classificacoes = ["Confiabilidade e Segurança", "Segurança", "Confiabilidade"]
+lista_classificacoes = ["Segurança", "Confiabilidade"]
 lista_criticidades = ["Muito Alta", "Alta", "Média", "Baixa"]
 lista_turnos = ["Turno Dia (07h-19h)", "Administrativo (08h-17h30)", "Turno Noite (19h-07h)", "Pendente (Sem Turno)"]
 status_opcoes = ["Todos", "Todas Concluídas", "Concluídas no Prazo", "Concluídas com Atraso", "Pendentes", "Atrasado"]
@@ -4475,7 +4480,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         st.markdown("#### Matriz: Prioridade vs Classificação")
                         st.caption("Volume total de OS planejadas (Cor indica concentração)")
                         agg = df_visao_base.copy().groupby(["Classificacao", "Criticidade"]).size().reset_index(name="Total")
-                        ordem_class = ["Confiabilidade", "Segurança", "Confiabilidade e Segurança"]
+                        ordem_class = ["Confiabilidade", "Segurança"]
                         ordem_crit = ["Muito Alta", "Alta", "Média", "Baixa"]
 
                         if not agg.empty:
@@ -4508,7 +4513,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         df_bar_cat = df_visao_base.copy()
                         plan_cat = df_bar_cat.groupby("Classificacao").size()
                         real_cat = (df_bar_cat[df_bar_cat["Status_norm"].isin(_status_concluida_dashboard)].groupby("Classificacao").size())
-                        cats = ["Confiabilidade e Segurança", "Segurança", "Confiabilidade"]
+                        cats = ["Segurança", "Confiabilidade"]
                         val_plan, val_real = [int(plan_cat.get(c, 0)) for c in cats], [int(real_cat.get(c, 0)) for c in cats]
                         # Representatividade: % do Realizado sobre o Planejado da própria categoria.
                         data_real_cat = [
@@ -4532,6 +4537,72 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             ]
                         }, height="380px", theme="streamlit", key="aba1_bar_horiz")
                 #endregion 10.2.2
+
+#region 10.2.2b: Aderência Ponderada da Meta (Segurança / Prioridade 1 / Prioridade 2,3,4)
+                with st.expander("Aderência Ponderada da Meta (Segurança / Prioridade)", expanded=True):
+                    st.caption("Peso fixo por bucket, igual para todas as coordenações: Segurança 40% · Prioridade 1 (Muito Alta) 25% · Prioridade 2, 3 e 4 35%.")
+                    df_meta = df_visao_base.copy()
+                    _classif_meta = df_meta.get("Classificacao", pd.Series("Confiabilidade", index=df_meta.index)).astype(str)
+                    _crit_meta = df_meta.get("Criticidade", pd.Series("", index=df_meta.index)).astype(str)
+                    _mask_seguranca = _classif_meta == "Segurança"
+                    _mask_prio1 = (_classif_meta == "Confiabilidade") & (_crit_meta == "Muito Alta")
+                    _mask_prio234 = (_classif_meta == "Confiabilidade") & (_crit_meta.isin(["Alta", "Média", "Baixa"]))
+                    _mask_realizado_meta = df_meta["Status_norm"].isin(_status_concluida_dashboard)
+
+                    _buckets_meta = [
+                        ("Segurança", _mask_seguranca, 40.0),
+                        ("Prioridade 1 (Muito Alta)", _mask_prio1, 25.0),
+                        ("Prioridade 2, 3 e 4", _mask_prio234, 35.0),
+                    ]
+                    _linhas_meta = []
+                    for _nome, _mask, _peso in _buckets_meta:
+                        _ordens = int(_mask.sum())
+                        _realizado = int((_mask & _mask_realizado_meta).sum())
+                        _aderencia = (_realizado / _ordens * 100) if _ordens > 0 else 0.0
+                        _resultado = _aderencia * _peso / 100.0
+                        _linhas_meta.append({
+                            "bucket": _nome, "ordens": _ordens, "realizado": _realizado,
+                            "nao_realizado": _ordens - _realizado, "aderencia": _aderencia,
+                            "peso": _peso, "resultado": _resultado,
+                        })
+                    _resultado_total = sum(l["resultado"] for l in _linhas_meta)
+
+                    col_meta1, col_meta2 = st.columns(2, gap="medium")
+                    with col_meta1:
+                        st.markdown("#### Ordens x Realizado por Bucket")
+                        st_echarts(options={
+                            "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
+                            "legend": {"bottom": "0%"},
+                            "grid": {"left": "3%", "right": "5%", "bottom": "18%", "top": "10%", "containLabel": True},
+                            "xAxis": {"type": "category", "data": [l["bucket"] for l in _linhas_meta], "axisLabel": {"interval": 0, "fontSize": 11}},
+                            "yAxis": {"type": "value"},
+                            "series": [
+                                {"name": "Ordens (Plano)", "type": "bar", "data": [l["ordens"] for l in _linhas_meta], "itemStyle": {"color": cor_plan}, "label": {"show": True, "position": "top"}},
+                                {"name": "Realizado", "type": "bar", "data": [l["realizado"] for l in _linhas_meta], "itemStyle": {"color": cor_real}, "label": {"show": True, "position": "top"}},
+                            ],
+                        }, height="360px", theme="streamlit", key="aba1_meta_bar")
+
+                    with col_meta2:
+                        st.markdown("#### Aderência Ponderada (Resultado)")
+                        st_echarts(options={
+                            "tooltip": {"trigger": "item", "formatter": "{b}: {c}%"},
+                            "series": [{
+                                "type": "gauge",
+                                "min": 0, "max": 100,
+                                "progress": {"show": True, "width": 16},
+                                "axisLine": {"lineStyle": {"width": 16}},
+                                "pointer": {"show": False},
+                                "detail": {"valueAnimation": True, "formatter": "{value}%", "fontSize": 28, "color": "#1E293B"},
+                                "data": [{"value": round(_resultado_total, 2), "name": "Resultado Ponderado"}],
+                            }],
+                        }, height="260px", theme="streamlit", key="aba1_meta_gauge")
+
+                        for l in _linhas_meta:
+                            st.caption(
+                                f"**{l['bucket']}**: {l['ordens']} ordens · {l['realizado']} realizado · "
+                                f"Aderência {l['aderencia']:.2f}% × Peso {l['peso']:.0f}% = **{l['resultado']:.2f}%**"
+                            )
+#endregion 10.2.2b
 
 #region 10.2.3: Execução por Turno e Acumulado
                 with st.expander("Execução por Turno e Acumulado", expanded=True):
@@ -4959,19 +5030,21 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             df_recomendado = com_coord
                         else:
                             # "Segurança da Operação": camada composta (classificação + criticidade),
-                            # não um cascateamento simples — Muito Alta de Segurança sempre acima de
-                            # Alta/Média/Baixa de Segurança, que por sua vez fica acima de tudo o mais
-                            # (inclusive Muito Alta de Confiabilidade pura, que não é item de segurança).
-                            # TOP1=Segurança+MuitoAlta, TOP2=Confiab.+Seg.+MuitoAlta, TOP3=Segurança+demais
-                            # níveis, TOP4=todo o resto. Tipo de Intervalo NÃO entra aqui: já é filtrado
-                            # à parte (filtro_intervalo_sel) antes da roteirização chegar neste ponto.
+                            # não um cascateamento simples. Correção de negócio validada com
+                            # especialistas MRS (21/07/2026): não existe "Confiabilidade e Segurança" --
+                            # toda OS é Segurança OU Confiabilidade. Rank0=Segurança+MuitoAlta (toda OS
+                            # de Segurança já nasce Muito Alta, não existe Segurança+Alta/Média/Baixa na
+                            # prática), Rank1=Confiabilidade+MuitoAlta, Rank2=Confiabilidade+demais
+                            # níveis, Rank3=todo o resto (default/fallback). Tipo de Intervalo NÃO entra
+                            # aqui: já é filtrado à parte (filtro_intervalo_sel) antes da roteirização
+                            # chegar neste ponto.
                             classif_col = com_coord.get("Classificacao", pd.Series("Confiabilidade", index=com_coord.index)).astype(str)
                             crit_col = com_coord.get("Criticidade", pd.Series("", index=com_coord.index)).astype(str)
                             com_coord["_rank_seguranca_operacional"] = np.select(
                                 [
                                     (classif_col == "Segurança") & (crit_col == "Muito Alta"),
-                                    (classif_col == "Confiabilidade e Segurança") & (crit_col == "Muito Alta"),
-                                    (classif_col == "Segurança") & (crit_col.isin(["Alta", "Média", "Baixa"])),
+                                    (classif_col == "Confiabilidade") & (crit_col == "Muito Alta"),
+                                    (classif_col == "Confiabilidade") & (crit_col.isin(["Alta", "Média", "Baixa"])),
                                 ],
                                 [0, 1, 2],
                                 default=3
@@ -6204,7 +6277,7 @@ if st.session_state.get("tela_atual") == "governanca":
             )
 
             p_list = sorted(df_gov_f["Patio"].dropna().unique().tolist())
-            c_list = ["Confiabilidade e Segurança", "Segurança", "Confiabilidade"]
+            c_list = ["Segurança", "Confiabilidade"]
 
             h_data = []
             max_v = 0
@@ -6511,6 +6584,19 @@ if st.session_state.get("tela_atual") == "governanca":
                 )
 
             return "color: #065F46;"
+
+        # Exportação em ";" (não ","): "Localização do Celular" traz "Lat: X, Lon: Y" com
+        # vírgula dentro do próprio texto -- CSV separado por vírgula quebra a organização
+        # das colunas ao abrir/ordenar no Excel. O botão nativo de download do st.dataframe
+        # (ícone no canto da tabela) continua exportando em "," -- usar este botão abaixo.
+        csv_auditoria = df_auditoria.to_csv(index=False, sep=";").encode("utf-8-sig")
+        st.download_button(
+            "⬇️ Baixar CSV (separado por ;)",
+            data=csv_auditoria,
+            file_name="auditoria_apontamentos_gps.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
 
         st.dataframe(
             df_auditoria

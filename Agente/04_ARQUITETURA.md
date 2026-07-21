@@ -97,7 +97,7 @@ SAP  →  Motor SGO  →  Campo  →  Banco / Evidências  →  Retorno SAP
 | **Tipo de Intervalo** | CI (Com Intervalo) / SI (Sem Intervalo) — filas independentes; é um **filtro prévio**, não entra no cascateamento de prioridade |
 | **Criticidade_rank** | 1 = Muito Alta (trava as menores do mesmo grupo) |
 | **Geofence** | Cerca operacional — padrão 2,0 km do ativo, configurável por coordenação |
-| **Segurança da Operação** | Camada composta de priorização (classificação × criticidade) — ver `configuracoes_operacionais` |
+| **Segurança da Operação** | Camada composta de priorização (classificação × criticidade) — ver `configuracoes_operacionais`. Atualizado 21/07/2026: só existe classificação Segurança **ou** Confiabilidade (não existe "Confiabilidade e Segurança") — ver `05_PADROES_TECNICOS.md` |
 | **Configurações Operacionais** | Tela admin (perfil "Administrador") para ajustar geofence/trava/escopo/ordem por coordenação, com vigência automática |
 
 ---
