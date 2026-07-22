@@ -6574,7 +6574,7 @@ if st.session_state.get("tela_atual") == "governanca":
                 # Sombreamento vertical de Sábado/Domingo (pedido de 22/07/2026).
                 areas_fim_semana = [
                     [
-                        {"xAxis": _r["x_date"], "itemStyle": {"color": "#F59E0B", "opacity": 0.10}},
+                        {"xAxis": _r["x_date"], "itemStyle": {"color": "#3B82F6", "opacity": 0.12}},
                         {"xAxis": _r["x_date"]}
                     ]
                     for _, _r in _datas_unicas.iterrows()
@@ -6582,7 +6582,7 @@ if st.session_state.get("tela_atual") == "governanca":
                 ]
                 # Sombreamento horizontal do período noturno 00:00-06:00 (pedido de 22/07/2026).
                 area_madrugada = [
-                    {"yAxis": 0, "itemStyle": {"color": "#64748B", "opacity": 0.12}},
+                    {"yAxis": 0, "itemStyle": {"color": "#F59E0B", "opacity": 0.14}},
                     {"yAxis": 6}
                 ]
 
