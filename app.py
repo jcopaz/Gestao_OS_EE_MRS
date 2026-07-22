@@ -1457,12 +1457,17 @@ def render_tela_admin():
             return None
 
     def _coord_por_centro_trabalho(valor, coord_fallback):
+        # Prefixo exato (mesmo padrão do upload de OS Programadas, seção 3.8.1) -- "contém
+        # IPG em qualquer parte do texto" dava falso positivo quando o Centro de Trabalho
+        # trazia um código combinado/ambíguo, sobrescrevendo Paranapiacaba (selecionado
+        # corretamente no dropdown pelo usuário) por Piaçaguera. Confirmado em 22/07/2026:
+        # import de baixas em massa do IPA gravou coordenacao="Piaçaguera" em 3.810 linhas.
         centro = _normalizar_nome_coluna(valor)
 
-        if "IPG" in centro or "PIACAGUERA" in centro:
+        if centro.startswith("E.SP.IPG") or centro.startswith("PIACAGUERA"):
             return "Piaçaguera"
 
-        if "IPA" in centro or "PARANAPIACABA" in centro:
+        if centro.startswith("E.SP.IPA") or centro.startswith("PARANAPIACABA"):
             return "Paranapiacaba"
 
         return coord_fallback
@@ -3551,8 +3556,20 @@ def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, bai
     # comparar contra a data-alvo derrubava baixas reais e recentes (com foto/GPS confirmados),
     # tratando "adiantou o serviço" como "baixa velha de ciclo já fechado". Ver histórico de
     # investigação de 11/07/2026 (SQL direto no Neon confirmou >100 OS afetadas).
+    #
+    # EXCEÇÃO (22/07/2026): baixas administrativas (Baixa IW47 / Importação IW47 / Baixa Manual)
+    # pulam essa checagem de data. São catch-up de backlog: o trabalho de campo costuma ter sido
+    # executado ANTES do plano do mês ser (re)carregado no SGO, o que derrubava >2/3 de um import
+    # em massa real (confirmado via SQL: 2.629 de 3.810 baixas do IPA bloqueadas em 22/07/2026).
+    # Baixas com GPS/foto reais do app continuam 100% sujeitas à checagem de data -- e mesmo essas
+    # já são protegidas contra sobrescrita pelo IW47 por uma trava separada no INSERT (upsert_baixa
+    # só atualiza se ainda não houver foto/evidência/geolocalização real registrada para a OS).
+    _geo_baixado = df_base.get("Geolocalização de Baixa_baixado", pd.Series("", index=df_base.index)).astype(str).str.strip()
+    _baixa_administrativa = _geo_baixado.isin({"Baixa IW47", "Importação IW47", "Baixa Manual"})
     baixa_do_ciclo_atual = _dt_realizado_baixa.notna() & (
-        _dt_upload_ciclo.isna() | (_dt_realizado_baixa.dt.normalize() >= _dt_upload_ciclo.dt.normalize())
+        _baixa_administrativa
+        | _dt_upload_ciclo.isna()
+        | (_dt_realizado_baixa.dt.normalize() >= _dt_upload_ciclo.dt.normalize())
     )
 
     for col in colunas_overlay:
