@@ -6598,7 +6598,11 @@ if st.session_state.get("tela_atual") == "governanca":
                 # localizacao (lat/lon) no lugar da data, que ja aparece no eixo X.
                 def _local_legivel(valor):
                     texto = str(valor).strip()
-                    return texto if texto and texto.lower() not in ("nan", "none", "null") else "Localização não registrada"
+                    if not texto or texto.lower() in ("nan", "none", "null"): return "Localização não registrada"
+                    # geolocalizacao_baixa vem como "Endereço/Nome do Local (Lat: X, Lon: Y)" --
+                    # extrai só o "Lat: X, Lon: Y", descartando o endereço (pedido de 22/07/2026).
+                    m = re.search(r"Lat:\s*-?\d+\.?\d*,\s*Lon:\s*-?\d+\.?\d*", texto)
+                    return m.group(0) if m else texto
 
                 login_data = [
                     {
