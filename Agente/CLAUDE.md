@@ -43,7 +43,9 @@ O agente atua em **duas frentes**:
 2. **Investigue a estrutura** (o bloco/`#region` atual) antes de propor lógica.
 3. **Patch cirúrgico** — corrija **por sessão**, nunca reescreva o arquivo inteiro.
 4. **Valide:** `python -m py_compile app.py api.py` + `node --check` na JS do PWA.
-5. **Entregue** o bloco completo da sessão alterada, dizendo **onde colar**.
+5. **Antes de promover `dev` → `main`**, se a mudança mexeu em lógica de negócio, priorização, segurança/GPS ou dado sensível: rodar uma revisão de qualidade (skill `security-guidance` e/ou `receiving-code-review`) além do `py_compile`. Objetivo: pegar o bug **antes** do deploy — um ciclo de "usuário reporta bug em produção → investigar → corrigir → redeployar" custa muito mais (tempo e tokens) do que uma revisão rápida antes de subir.
+6. **Tarefa grande ou requisito ambíguo** (ex.: mudança de regra de negócio, feature com vários passos): usar a skill `writing-plans` e/ou `brainstorming` antes de sair codando, em vez de implementar por tentativa e erro.
+7. **Entregue** o bloco completo da sessão alterada, dizendo **onde colar**.
 
 ---
 
