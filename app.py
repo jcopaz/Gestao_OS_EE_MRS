@@ -6569,16 +6569,15 @@ if st.session_state.get("tela_atual") == "governanca":
                     .drop_duplicates()
                     .sort_values("Data_Real_Pure")
                 )
-                categorias_x = _datas_unicas["x_date"].tolist()
-
-                # Sombreamento vertical de Sábado/Domingo (pedido de 22/07/2026).
-                areas_fim_semana = [
-                    [
-                        {"xAxis": _r["x_date"], "itemStyle": {"color": "#3B82F6", "opacity": 0.12}},
-                        {"xAxis": _r["x_date"]}
-                    ]
-                    for _, _r in _datas_unicas.iterrows()
+                # Sábado/Domingo em negrito/vermelho no rótulo do eixo X -- o markArea vertical
+                # por categoria (tentativa anterior) não pintava a coluna de forma confiável no
+                # ECharts, então a marcação de fim de semana passou a ser feita diretamente no
+                # rótulo da data (pedido de 22/07/2026).
+                categorias_x = [
+                    {"value": _r["x_date"], "textStyle": {"color": "#DC2626", "fontWeight": "bold"}}
                     if _r["Data_Real_Pure"].weekday() >= 5  # 5=Sábado, 6=Domingo
+                    else _r["x_date"]
+                    for _, _r in _datas_unicas.iterrows()
                 ]
                 # Sombreamento horizontal do período noturno 00:00-06:00 (pedido de 22/07/2026).
                 area_madrugada = [
@@ -6620,7 +6619,7 @@ if st.session_state.get("tela_atual") == "governanca":
                         {
                             "name": "Login", "type": "scatter", "data": login_data, "symbolSize": 10,
                             "itemStyle": {"color": "#3B82F6"},
-                            "markArea": {"silent": True, "data": [area_madrugada] + areas_fim_semana}
+                            "markArea": {"silent": True, "data": [area_madrugada]}
                         },
                         {"name": "Primeira Baixa", "type": "scatter", "data": baixa_data, "symbolSize": 10, "itemStyle": {"color": "#10B981"}}
                     ]
