@@ -5975,25 +5975,25 @@ if st.session_state.get("tela_atual") == "governanca":
 #endregion 11.1
 
 #region 11.2: Carregamento de dados de auditoria
-@st.cache_data(show_spinner=False, ttl=300)
-def _carregar_baixas_logs_governanca():
-    # Cache adicionado em 22/07/2026 -- plano Neon Free perto do teto de Network transfer
-    # (5GB/mes). Sem cache, a tabela "baixas" inteira era relida a cada rerun (inclusive ao
-    # clicar em "Aplicar Filtros" na sidebar, que forca rerun completo do app). TTL de 5min
-    # é aceitável pra uma tela de auditoria/governança.
-    conn = get_connection()
-    try:
-        df_b = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim FROM baixas", conn)
-        df_l = pd.read_sql_query("SELECT username, data_hora_login FROM logs_acesso", conn)
-    finally:
-        release_connection(conn)
-    return df_b, df_l
+    @st.cache_data(show_spinner=False, ttl=300)
+    def _carregar_baixas_logs_governanca():
+        # Cache adicionado em 22/07/2026 -- plano Neon Free perto do teto de Network transfer
+        # (5GB/mes). Sem cache, a tabela "baixas" inteira era relida a cada rerun (inclusive ao
+        # clicar em "Aplicar Filtros" na sidebar, que forca rerun completo do app). TTL de 5min
+        # é aceitável pra uma tela de auditoria/governança.
+        conn = get_connection()
+        try:
+            df_b = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim FROM baixas", conn)
+            df_l = pd.read_sql_query("SELECT username, data_hora_login FROM logs_acesso", conn)
+        finally:
+            release_connection(conn)
+        return df_b, df_l
 
-@st.cache_data(show_spinner=False, ttl=300)
-def _carregar_usuarios_nome_governanca():
-    conn = get_connection()
-    try: return pd.read_sql_query("SELECT username, nome FROM usuarios", conn)
-    finally: release_connection(conn)
+    @st.cache_data(show_spinner=False, ttl=300)
+    def _carregar_usuarios_nome_governanca():
+        conn = get_connection()
+        try: return pd.read_sql_query("SELECT username, nome FROM usuarios", conn)
+        finally: release_connection(conn)
 
     with st.spinner("Compilando logs de auditoria e telemetria..."):
         if st.session_state.get("chk_sim", False): df_baixas_full, df_logs = st.session_state.get("df_baixas_sim", pd.DataFrame()), st.session_state.get("df_logs_sim", pd.DataFrame())
