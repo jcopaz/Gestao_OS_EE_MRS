@@ -466,6 +466,25 @@ def classificar_atividade(atividade: str) -> str:
     if "_CONF_" in s: return "Confiabilidade"
     return "Confiabilidade"
 
+def extrair_grupo_ativo(atividade: str) -> str:
+    # Extrai o "Grupo de Ativo" a partir do código da Atividade Ativo (coluna D da Base de
+    # OS): tudo o que vem depois do marcador "_C_I_"/"_S_I_" e antes do próximo "_" (que
+    # antecede o código numérico final, ex.: "_0180"). Regra e exceção validadas com o
+    # Julio em 22/07/2026 a partir de dado real:
+    #   EE_INS_CONF_S_I_CAIXA DE LOCAÇÃO_0180 -> "CAIXA DE LOCAÇÃO"
+    #   EE_INS_CONF_C_I_BARRAMENTO 3KV_0360   -> "BARRAMENTO 3KV"
+    #   EE_INS_CONF_S_I_AES FIBRA OTICA_0090  -> "FIBRA OTICA" ("AES" é prefixo de
+    #     site solto e é descartado -- só quando é a PRIMEIRA palavra isolada do trecho
+    #     extraído; em "BAT ESTAC AES-FO" o "AES" faz parte do nome e não é removido).
+    s = str(atividade).strip().upper()
+    m = re.search(r"_[CS]_I_(.+?)_\d+$", s)
+    if not m:
+        return "N/D"
+    grupo = m.group(1).strip()
+    if grupo.startswith("AES "):
+        grupo = grupo[4:].strip()
+    return grupo or "N/D"
+
 def extrair_criticidade(prioridade: str):
     p = str(prioridade).strip()
     m = re.match(r"^\s*([1-4])\s*[-–]?\s*(.*)$", p)
@@ -897,7 +916,8 @@ def preparar_df_visao(df_base: pd.DataFrame, filtro_visao: str) -> pd.DataFrame:
 def aplicar_filtros_sidebar(
     df_visao: pd.DataFrame, patios_selecionados: list, classif_selecionadas: list,
     turnos_selecionados: list, start_date, end_date, status_sel: str = "Todos", intervalo_sel: str = "Todas",
-    crit_selecionadas: list = None, exec_start_date=None, exec_end_date=None
+    crit_selecionadas: list = None, exec_start_date=None, exec_end_date=None,
+    grupos_ativo_selecionados: list = None, ativos_selecionados: list = None
 ) -> pd.DataFrame:
     df = df_visao.copy()
     if "dt_prog_filtro" in df.columns:
@@ -914,9 +934,13 @@ def aplicar_filtros_sidebar(
         df = df[df["Criticidade"].isin(crit_selecionadas)]
     if patios_selecionados: 
         df = df[df["Patio"].isin(patios_selecionados)]
-    if classif_selecionadas: 
+    if classif_selecionadas:
         df = df[df["Classificacao"].isin(classif_selecionadas)]
-    if turnos_selecionados and "Turno_Filtro" in df.columns: 
+    if grupos_ativo_selecionados and "Grupo_Ativo" in df.columns:
+        df = df[df["Grupo_Ativo"].isin(grupos_ativo_selecionados)]
+    if ativos_selecionados and "Ativo" in df.columns:
+        df = df[df["Ativo"].isin(ativos_selecionados)]
+    if turnos_selecionados and "Turno_Filtro" in df.columns:
         df = df[df["Turno_Filtro"].isin(turnos_selecionados)]
     if status_sel != "Todos" and "Status_norm" in df.columns:
         if status_sel == "Todas Concluídas": df = df[df["Status_norm"].isin(_status_concluida_dashboard)]
@@ -3366,6 +3390,7 @@ def tratar_df_os(df: pd.DataFrame):
     df["TIPO_INTERVALO_CAN"] = df.apply(_classificar_intervalo, axis=1) if (col_sem_int or col_com_int) else "N/D"
 
     df["Classificacao"] = df["ATIVIDADE_CAN"].apply(classificar_atividade)
+    df["GRUPO_ATIVO_CAN"] = df["ATIVIDADE_CAN"].apply(extrair_grupo_ativo)
     crit = df["PRIORIDADE_CAN"].apply(extrair_criticidade)
     df["Criticidade_rank"] = [c[0] for c in crit]
     df["Criticidade"] = [c[1] for c in crit]
@@ -3389,6 +3414,7 @@ def tratar_df_os(df: pd.DataFrame):
     df_out = pd.DataFrame({
         "Ordem servico": df[col_os].astype(str).str.strip(),
         "Patio": df["PATIO_CAN"], "Ativo": df["ATIVO_CAN"], "Atividade ativo": df["ATIVIDADE_CAN"],
+        "Grupo_Ativo": df["GRUPO_ATIVO_CAN"],
         "Criticidade": df["Criticidade"], "Classificacao": df["Classificacao"], "Descrição Longa": df["DESC_LONGA_CAN"],
         "Data inicial programada": df["DATA_PROG_CAN"], "Status da Operação": df["STATUS_CAN"],
         "Data/Hora Realizado": "", "Concluído por": "", "Hxh Plano": df["HXH_CAN"],
@@ -3619,6 +3645,7 @@ def gerar_base_simulada(qtd: int = 800, seed: int = 42, pct_p: int = 45, pct_ok:
     })
 
     df["Classificacao"] = df["Atividade ativo"].apply(classificar_atividade)
+    df["Grupo_Ativo"] = df["Atividade ativo"].apply(extrair_grupo_ativo)
     crit = df["Prioridade"].apply(extrair_criticidade)
     df["Criticidade_rank"] = [c[0] for c in crit]
     df["Criticidade"] = [c[1] for c in crit]
@@ -3870,6 +3897,14 @@ if not valid_dates.empty: min_date, max_date = valid_dates.min().date(), valid_d
 else: min_date, max_date = datetime.now().date() - pd.Timedelta(days=30), datetime.now().date()
 
 lista_patios = sorted(df_visao["Patio"].dropna().astype(str).unique().tolist())
+lista_grupos_ativo = (
+    sorted(df_visao["Grupo_Ativo"].dropna().astype(str).unique().tolist())
+    if "Grupo_Ativo" in df_visao.columns else []
+)
+lista_ativos = (
+    sorted(df_visao["Ativo"].dropna().astype(str).unique().tolist())
+    if "Ativo" in df_visao.columns else []
+)
 lista_planos_mes = (
     sorted(df_visao["Plano_Mes_Referencia"].dropna().astype(str).str.strip().replace("", pd.NA).dropna().unique().tolist())
     if "Plano_Mes_Referencia" in df_visao.columns else []
@@ -3926,6 +3961,15 @@ def fragmento_filtros_sidebar_seguro():
         crit_default = _sanear_lista_filtro("filtro_criticidades", lista_criticidades, lista_criticidades)
         st.multiselect("Criticidade", lista_criticidades, default=crit_default, key="filtro_criticidades")
 
+        # Grupo de Ativo e Ativo (pedido de 22/07/2026): dá visão pro gestor filtrar por
+        # tipo de equipamento (Grupo de Ativo, extraído da Atividade Ativo) ou por um
+        # Ativo específico, sem depender de Pátio/Classificação.
+        grupo_ativo_default = _sanear_lista_filtro("filtro_grupos_ativo", lista_grupos_ativo, lista_grupos_ativo)
+        st.multiselect("Grupo de Ativo", lista_grupos_ativo, default=grupo_ativo_default, key="filtro_grupos_ativo")
+
+        ativos_default = _sanear_lista_filtro("filtro_ativos", lista_ativos, lista_ativos)
+        st.multiselect("Ativo", lista_ativos, default=ativos_default, key="filtro_ativos")
+
         turnos_default = _sanear_lista_filtro("filtro_turnos", lista_turnos, lista_turnos)
         st.multiselect("Turno", lista_turnos, default=turnos_default, key="filtro_turnos")
 
@@ -3956,6 +4000,8 @@ start_date = st.session_state.get("filtro_start_date", min_date)
 end_date = st.session_state.get("filtro_end_date", max_date)
 patios_selecionados = st.session_state.get("filtro_patios", list(lista_patios))
 classif_selecionadas = st.session_state.get("filtro_classificacoes", list(lista_classificacoes))
+grupos_ativo_selecionados = st.session_state.get("filtro_grupos_ativo", list(lista_grupos_ativo))
+ativos_selecionados = st.session_state.get("filtro_ativos", list(lista_ativos))
 turnos_selecionados = st.session_state.get("filtro_turnos", list(lista_turnos))
 status_sel = st.session_state.get("filtro_status_sel", "Todos")
 intervalo_sel = st.session_state.get("filtro_intervalo_sel", "Todas")
@@ -3968,7 +4014,8 @@ df_filtrado = aplicar_filtros_sidebar(
     df_visao=df_visao, patios_selecionados=patios_selecionados,
     classif_selecionadas=classif_selecionadas, turnos_selecionados=turnos_selecionados,
     start_date=start_date, end_date=end_date, status_sel=status_sel, intervalo_sel=intervalo_sel,
-    crit_selecionadas=crit_selecionadas, exec_start_date=exec_start_date, exec_end_date=exec_end_date
+    crit_selecionadas=crit_selecionadas, exec_start_date=exec_start_date, exec_end_date=exec_end_date,
+    grupos_ativo_selecionados=grupos_ativo_selecionados, ativos_selecionados=ativos_selecionados
 )
 #endregion 7.3
 #endregion
@@ -4797,11 +4844,44 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                 for c in colunas_ordem:
                     if c not in df_lista.columns: df_lista[c] = ""
 
-                # --- APLICA O FILTRO DA PESQUISA ---
+                # --- APLICA O FILTRO DA PESQUISA (drilldown: sugestões enquanto digita) ---
+                # Pedido de 22/07/2026: em vez de só filtrar a tabela por "contém", mostra as
+                # sugestões (OS/Pátio/Ativo que batem com o texto) numa lista pra escolher -- a
+                # pessoa pode digitar um trecho parcial e drilar até o valor exato antes de ver
+                # a tabela filtrada por ele.
                 if busca_os:
                     b_up = busca_os.upper()
-                    mask = (df_lista["OS"].astype(str).str.upper().str.contains(b_up)) | (df_lista["Patio"].astype(str).str.upper().str.contains(b_up)) | (df_lista["Ativo"].astype(str).str.upper().str.contains(b_up))
-                    df_lista = df_lista[mask]
+                    mask_busca = (
+                        df_lista["OS"].astype(str).str.upper().str.contains(b_up, na=False)
+                        | df_lista["Patio"].astype(str).str.upper().str.contains(b_up, na=False)
+                        | df_lista["Ativo"].astype(str).str.upper().str.contains(b_up, na=False)
+                    )
+                    df_candidatos_busca = df_lista[mask_busca]
+
+                    sugestoes_busca = sorted({
+                        v for v in (
+                            df_candidatos_busca["OS"].astype(str).tolist()
+                            + df_candidatos_busca["Patio"].astype(str).tolist()
+                            + df_candidatos_busca["Ativo"].astype(str).tolist()
+                        )
+                        if b_up in v.upper()
+                    })
+
+                    opcao_drilldown = st.selectbox(
+                        f"🔎 {len(sugestoes_busca)} sugestão(ões) — selecione pra filtrar exatamente, "
+                        "ou deixe em \"Todos os resultados\" pra ver tudo que bateu com a busca:",
+                        ["(Todos os resultados da busca)"] + sugestoes_busca,
+                        key="drilldown_lista_os"
+                    )
+
+                    if opcao_drilldown != "(Todos os resultados da busca)":
+                        df_lista = df_lista[
+                            (df_lista["OS"].astype(str) == opcao_drilldown)
+                            | (df_lista["Patio"].astype(str) == opcao_drilldown)
+                            | (df_lista["Ativo"].astype(str) == opcao_drilldown)
+                        ]
+                    else:
+                        df_lista = df_candidatos_busca
 
                 if not df_lista.empty:
                     # Tabela nativa do Streamlit (ordenação por clique na coluna já é nativa) em vez de
@@ -5905,19 +5985,33 @@ if st.session_state.get("tela_atual") == "governanca":
         if "Colaborador" not in df_gov_local.columns:
             df_gov_local["Colaborador"] = df_gov_local["concluido_por"].astype(str).str.strip()
 
+        # Participantes = executante (Colaborador) + co-executantes (campo "equipe", texto
+        # livre separado por vírgula). Antes o filtro só olhava "Colaborador" (executante) --
+        # quem entrava só como equipe/co-executante não aparecia na lista de opções nem
+        # batia no filtro, mesmo tendo participado da OS de fato (feedback de 22/07/2026).
+        def _lista_equipe_gov(valor):
+            texto = str(valor).strip()
+            if not texto or texto.lower() in ("nan", "none", "null", "sozinho", "sozinho (nenhum)"):
+                return []
+            return [p.strip() for p in texto.split(",") if p.strip()]
+
+        df_gov_local["Equipe_labels"] = df_gov_local.get("equipe", pd.Series("", index=df_gov_local.index)).apply(
+            lambda v: [label_colaborador_gov(m) for m in _lista_equipe_gov(v)]
+        )
+        df_gov_local["Participantes"] = df_gov_local.apply(
+            lambda r: [r["Colaborador"]] + r["Equipe_labels"], axis=1
+        )
+
         col_f1, col_f2, col_f3 = st.columns(3)
 
         with col_f1:
-            tecnicos_disp = sorted(
-                df_gov_local["Colaborador"]
-                .dropna()
-                .astype(str)
-                .unique()
-                .tolist()
-            )
+            _todos_participantes = set()
+            for _lst in df_gov_local["Participantes"]:
+                _todos_participantes.update(p for p in _lst if p)
+            tecnicos_disp = sorted(_todos_participantes)
 
             tec_selecionado = st.multiselect(
-                "👤 Filtrar Colaborador(es):",
+                "👤 Filtrar Colaborador(es) (executante ou co-executante):",
                 tecnicos_disp,
                 default=tecnicos_disp
             )
@@ -5962,7 +6056,7 @@ if st.session_state.get("tela_atual") == "governanca":
             d_inicio = d_fim = data_gov
 
         df_gov_f = df_gov_local[
-            (df_gov_local["Colaborador"].isin(tec_selecionado))
+            (df_gov_local["Participantes"].apply(lambda lst: any(p in tec_selecionado for p in lst)))
             & (df_gov_local["Patio"].isin(patio_selecionado))
             & (df_gov_local["Data_Real"] >= d_inicio)
             & (df_gov_local["Data_Real"] <= d_fim)
@@ -6451,14 +6545,16 @@ if st.session_state.get("tela_atual") == "governanca":
 
         with col_l3_c1:
             st.markdown("#### 🔝 Top Técnicos: OS por Pátio")
-            df_freq = df_gov_f.groupby(["concluido_por", "Patio"]).size().reset_index(name="Qtd")
+            # "Colaborador" (Nome (matrícula), com fallback pra matrícula crua) em vez de
+            # "concluido_por" cru -- pedido de 22/07/2026 pra facilitar leitura do gráfico.
+            df_freq = df_gov_f.groupby(["Colaborador", "Patio"]).size().reset_index(name="Qtd")
             patios_top = sorted(df_freq["Patio"].unique().tolist())
             # Ordena por volume total (desc) -- facilita achar quem mais concluiu de cara,
             # em vez da ordem crua de aparição no dataframe.
             tecnicos_top = (
-                df_freq.groupby("concluido_por")["Qtd"].sum().sort_values(ascending=False).index.tolist()
+                df_freq.groupby("Colaborador")["Qtd"].sum().sort_values(ascending=False).index.tolist()
             )
-            series_top = [{"name": patio, "type": "bar", "stack": "total", "data": [int(df_freq[(df_freq["concluido_por"] == tec) & (df_freq["Patio"] == patio)]["Qtd"].iloc[0]) if not df_freq[(df_freq["concluido_por"] == tec) & (df_freq["Patio"] == patio)].empty else 0 for tec in tecnicos_top], "label": {"show": False}} for patio in patios_top]
+            series_top = [{"name": patio, "type": "bar", "stack": "total", "data": [int(df_freq[(df_freq["Colaborador"] == tec) & (df_freq["Patio"] == patio)]["Qtd"].iloc[0]) if not df_freq[(df_freq["Colaborador"] == tec) & (df_freq["Patio"] == patio)].empty else 0 for tec in tecnicos_top], "label": {"show": False}} for patio in patios_top]
             # Com muitos técnicos, o eixo X fica ilegível mesmo rotacionado -- dataZoom mostra
             # só os ~12 primeiros (já os de maior volume, por causa da ordenação acima) e
             # permite arrastar/rolar pra ver o resto, em vez de espremer tudo de uma vez.
@@ -6479,8 +6575,8 @@ if st.session_state.get("tela_atual") == "governanca":
 
         with col_l3_c2:
             st.markdown("#### 📊 Variabilidade de Execução")
-            df_var = df_gov_f.groupby("concluido_por")["Tempo_Minutos"].mean().fillna(0).reset_index().sort_values("Tempo_Minutos", ascending=True)
-            st_echarts(options={ "tooltip": {"trigger": "axis"}, "grid": {"left": "5%", "right": "8%", "bottom": "10%", "top": "10%", "containLabel": True}, "xAxis": {"type": "value", "name": "Minutos"}, "yAxis": {"type": "category", "data": df_var["concluido_por"].tolist(), "axisLabel": {"fontSize": 10}}, "series": [{"type": "bar", "data": df_var["Tempo_Minutos"].round(1).tolist(), "itemStyle": {"color": "#8B5CF6"}, "label": {"show": True, "position": "right", "formatter": "{c} min", "fontSize": 10}}] }, height="440px", theme="streamlit", key="gov_variab")
+            df_var = df_gov_f.groupby("Colaborador")["Tempo_Minutos"].mean().fillna(0).reset_index().sort_values("Tempo_Minutos", ascending=True)
+            st_echarts(options={ "tooltip": {"trigger": "axis"}, "grid": {"left": "5%", "right": "8%", "bottom": "10%", "top": "10%", "containLabel": True}, "xAxis": {"type": "value", "name": "Minutos"}, "yAxis": {"type": "category", "data": df_var["Colaborador"].tolist(), "axisLabel": {"fontSize": 10}}, "series": [{"type": "bar", "data": df_var["Tempo_Minutos"].round(1).tolist(), "itemStyle": {"color": "#8B5CF6"}, "label": {"show": True, "position": "right", "formatter": "{c} min", "fontSize": 10}}] }, height="440px", theme="streamlit", key="gov_variab")
 #endregion 11.6
 
 #region 11.7: Tabela de Auditoria GPS
