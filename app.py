@@ -3933,6 +3933,26 @@ def fragmento_filtros_sidebar_seguro():
     if st.session_state.get("perfil") == "Técnico":
         return # Interrompe a função aqui, não desenha nada na sidebar!
 
+    # Aplica o reset ANTES de qualquer widget desta função ser instanciado nesta execução --
+    # o Streamlit proíbe escrever em st.session_state[key] depois que o widget dono dessa
+    # key já foi criado no mesmo rerun (StreamlitAPIException). O botão "Limpar Filtros"
+    # (mais abaixo) só marca esse pedido e chama st.rerun(); quem de fato reseta é este
+    # bloco, que roda primeiro na execução seguinte.
+    if st.session_state.pop("_solicitar_reset_filtros", False):
+        st.session_state["filtro_mes_referencia"] = "Todos"
+        st.session_state["filtro_start_date"] = min_date
+        st.session_state["filtro_end_date"] = max_date
+        st.session_state["filtro_exec_start_date"] = min_date
+        st.session_state["filtro_exec_end_date"] = max_date
+        st.session_state["filtro_patios"] = list(lista_patios)
+        st.session_state["filtro_classificacoes"] = list(lista_classificacoes)
+        st.session_state["filtro_grupos_ativo"] = list(lista_grupos_ativo)
+        st.session_state["filtro_ativos"] = list(lista_ativos)
+        st.session_state["filtro_criticidades"] = list(lista_criticidades)
+        st.session_state["filtro_turnos"] = list(lista_turnos)
+        st.session_state["filtro_intervalo_sel"] = "Todas"
+        st.session_state["filtro_status_sel"] = "Todos"
+
     st.markdown("### 📊 Filtros")
     
     with st.form("form_filtros"):
@@ -3989,21 +4009,12 @@ def fragmento_filtros_sidebar_seguro():
 
     # Fora do form (senão precisaria de outro clique em "Aplicar Filtros" pra valer) --
     # volta todos os filtros pro padrão "tudo selecionado / período inteiro", exatamente
-    # como no primeiro carregamento. Pedido de 22/07/2026.
+    # como no primeiro carregamento. Pedido de 22/07/2026. Só marca o pedido e reinicia --
+    # quem de fato reseta é o bloco no topo da função (ver comentário lá) para não violar
+    # a regra do Streamlit de não escrever em st.session_state[key] após o widget dono
+    # dessa key já ter sido instanciado neste rerun.
     if st.button("🧹 Limpar Filtros", use_container_width=True):
-        st.session_state["filtro_mes_referencia"] = "Todos"
-        st.session_state["filtro_start_date"] = min_date
-        st.session_state["filtro_end_date"] = max_date
-        st.session_state["filtro_exec_start_date"] = min_date
-        st.session_state["filtro_exec_end_date"] = max_date
-        st.session_state["filtro_patios"] = list(lista_patios)
-        st.session_state["filtro_classificacoes"] = list(lista_classificacoes)
-        st.session_state["filtro_grupos_ativo"] = list(lista_grupos_ativo)
-        st.session_state["filtro_ativos"] = list(lista_ativos)
-        st.session_state["filtro_criticidades"] = list(lista_criticidades)
-        st.session_state["filtro_turnos"] = list(lista_turnos)
-        st.session_state["filtro_intervalo_sel"] = "Todas"
-        st.session_state["filtro_status_sel"] = "Todos"
+        st.session_state["_solicitar_reset_filtros"] = True
         st.rerun()
 #endregion 7.3
 
