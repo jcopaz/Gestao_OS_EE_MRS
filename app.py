@@ -5984,7 +5984,7 @@ if st.session_state.get("tela_atual") == "governanca":
         conn = get_connection()
         try:
             df_b = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim FROM baixas", conn)
-            df_l = pd.read_sql_query("SELECT username, data_hora_login FROM logs_acesso", conn)
+            df_l = pd.read_sql_query("SELECT username, data_hora_login, geolocalizacao_login FROM logs_acesso", conn)
         finally:
             release_connection(conn)
         return df_b, df_l
@@ -6539,11 +6539,14 @@ if st.session_state.get("tela_atual") == "governanca":
         # Junta Data e Hora como Strings e converte nativamente com dayfirst=True
         df_gov_f["dt_baixa_calc"] = pd.to_datetime(df_gov_f["data_fim"].astype(str).str.strip() + " " + df_gov_f["hora_fim"].astype(str).str.strip(), dayfirst=True, errors="coerce")
 
+        # idxmin (em vez de min) pra trazer junto a geolocalizacao_baixa do registro exato da
+        # primeira baixa do dia -- necessario pro tooltip do grafico de Aderencia mostrar a
+        # localizacao real, e nao so o horario (pedido de 22/07/2026).
+        _idx_primeira_baixa = df_gov_f.dropna(subset=["dt_baixa_calc"]).groupby(["concluido_por", "Data_Real"])["dt_baixa_calc"].idxmin()
         df_primeira_baixa = (
-            df_gov_f
-            .groupby(["concluido_por", "Data_Real"])["dt_baixa_calc"]
-            .min()
-            .reset_index(name="dt_baixa_1os")
+            df_gov_f.loc[_idx_primeira_baixa, ["concluido_por", "Data_Real", "dt_baixa_calc", "geolocalizacao_baixa"]]
+            .rename(columns={"dt_baixa_calc": "dt_baixa_1os"})
+            .reset_index(drop=True)
         )
 
         # >> O DATAFRAME DA ADERÊNCIA RENASCE AQUI <<
@@ -6590,17 +6593,24 @@ if st.session_state.get("tela_atual") == "governanca":
                 # forcar upgrade do Streamlit (mesmo tipo de quebra que ja tinha acontecido
                 # com JsCode antes). "{b}" (nome do dado) e um token basico e estavel do
                 # formatter, entao usamos ele em vez de depender de sintaxe de dimensao.
+                # Texto em linha unica, sem tags HTML (<b>/<br> vinham sendo exibidos como
+                # texto literal em vez de renderizar -- feedback de 22/07/2026), e com a
+                # localizacao (lat/lon) no lugar da data, que ja aparece no eixo X.
+                def _local_legivel(valor):
+                    texto = str(valor).strip()
+                    return texto if texto and texto.lower() not in ("nan", "none", "null") else "Localização não registrada"
+
                 login_data = [
                     {
                         "value": [row["x_date"], round(row["y_login_frac"], 2)],
-                        "name": f'<b>{row["username"]}</b><br>Login: {row["dt_login_calc"].strftime("%H:%M")}<br>Data: {row["x_date"]}'
+                        "name": f'{row["username"]} — Login: {row["dt_login_calc"].strftime("%H:%M")} — {_local_legivel(row.get("geolocalizacao_login"))}'
                     }
                     for _, row in df_aderencia.iterrows()
                 ]
                 baixa_data = [
                     {
                         "value": [row["x_date"], round(row["y_baixa_frac"], 2)],
-                        "name": f'<b>{row["username"]}</b><br>Primeira Baixa: {row["dt_baixa_1os"].strftime("%H:%M")}<br>Data: {row["x_date"]}'
+                        "name": f'{row["username"]} — Primeira Baixa: {row["dt_baixa_1os"].strftime("%H:%M")} — {_local_legivel(row.get("geolocalizacao_baixa"))}'
                     }
                     for _, row in df_aderencia.iterrows()
                 ]
