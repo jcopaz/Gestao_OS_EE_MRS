@@ -3901,8 +3901,22 @@ lista_grupos_ativo = (
     sorted(df_visao["Grupo_Ativo"].dropna().astype(str).unique().tolist())
     if "Grupo_Ativo" in df_visao.columns else []
 )
+# Cascata (pedido de 22/07/2026): se algum(s) Grupo(s) de Ativo já estiver(em) selecionado(s)
+# (do último "Aplicar Filtros"), a lista de Ativo mostra só os ativos daqueles grupos --
+# evita o gestor ter que procurar o ativo específico numa lista com todos os grupos juntos.
+# Se um reset ("Limpar Filtros") estiver pendente, ignora a seleção antiga (senão o próprio
+# "Limpar" herdaria a lista de Ativo já estreitada pelo Grupo de Ativo anterior).
+_grupos_ativo_sel_atual = (
+    list(lista_grupos_ativo)
+    if st.session_state.get("_solicitar_reset_filtros", False)
+    else st.session_state.get("filtro_grupos_ativo", list(lista_grupos_ativo))
+)
+if _grupos_ativo_sel_atual and "Grupo_Ativo" in df_visao.columns:
+    _df_para_lista_ativos = df_visao[df_visao["Grupo_Ativo"].isin(_grupos_ativo_sel_atual)]
+else:
+    _df_para_lista_ativos = df_visao
 lista_ativos = (
-    sorted(df_visao["Ativo"].dropna().astype(str).unique().tolist())
+    sorted(_df_para_lista_ativos["Ativo"].dropna().astype(str).unique().tolist())
     if "Ativo" in df_visao.columns else []
 )
 lista_planos_mes = (
