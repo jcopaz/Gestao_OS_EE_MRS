@@ -702,7 +702,11 @@ def upsert_evidencia(ativo: str, atividade: str, foto_url: str, os_referencia: s
         cur.close()
     finally: release_connection(conn)
 
+@st.cache_data(show_spinner=False, ttl=300)
 def carregar_evidencias_df() -> pd.DataFrame:
+    # Cache adicionado em 22/07/2026 -- plano Neon Free (Network transfer perto do teto de
+    # 5GB/mes). Sem cache, essa tabela inteira era relida do banco a cada rerun da Lista
+    # Detalhada de OS. TTL curto (5min) pra não deixar link de evidência muito desatualizado.
     conn = get_connection()
     try: df = pd.read_sql_query("SELECT ativo, atividade, foto_url, os_referencia, data_upload FROM evidencias", conn)
     finally: release_connection(conn)
@@ -5971,13 +5975,30 @@ if st.session_state.get("tela_atual") == "governanca":
 #endregion 11.1
 
 #region 11.2: Carregamento de dados de auditoria
+@st.cache_data(show_spinner=False, ttl=300)
+def _carregar_baixas_logs_governanca():
+    # Cache adicionado em 22/07/2026 -- plano Neon Free perto do teto de Network transfer
+    # (5GB/mes). Sem cache, a tabela "baixas" inteira era relida a cada rerun (inclusive ao
+    # clicar em "Aplicar Filtros" na sidebar, que forca rerun completo do app). TTL de 5min
+    # é aceitável pra uma tela de auditoria/governança.
+    conn = get_connection()
+    try:
+        df_b = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim FROM baixas", conn)
+        df_l = pd.read_sql_query("SELECT username, data_hora_login FROM logs_acesso", conn)
+    finally:
+        release_connection(conn)
+    return df_b, df_l
+
+@st.cache_data(show_spinner=False, ttl=300)
+def _carregar_usuarios_nome_governanca():
+    conn = get_connection()
+    try: return pd.read_sql_query("SELECT username, nome FROM usuarios", conn)
+    finally: release_connection(conn)
+
     with st.spinner("Compilando logs de auditoria e telemetria..."):
         if st.session_state.get("chk_sim", False): df_baixas_full, df_logs = st.session_state.get("df_baixas_sim", pd.DataFrame()), st.session_state.get("df_logs_sim", pd.DataFrame())
         else:
-            conn = get_connection()
-            df_baixas_full = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim FROM baixas", conn)
-            df_logs = pd.read_sql_query("SELECT username, data_hora_login FROM logs_acesso", conn)
-            release_connection(conn)
+            df_baixas_full, df_logs = _carregar_baixas_logs_governanca()
 
         df_os_base = st.session_state.get("df_os", pd.DataFrame())
         if df_baixas_full.empty or df_os_base.empty: st.warning("Não há dados suficientes para auditoria."); st.stop()
@@ -5998,11 +6019,7 @@ if st.session_state.get("tela_atual") == "governanca":
         df_gov["Via_GPS"] = df_gov["geolocalizacao_baixa"].apply(lambda x: 0 if "Base" in str(x) or "Sede" in str(x) else 1)
         df_gov["Alta_Prioridade"] = df_gov["Criticidade_rank"].apply(lambda x: 1 if x in [1, 2] else 0)
 
-        try:
-            conn = get_connection()
-            df_users_gov = pd.read_sql_query("SELECT username, nome FROM usuarios", conn)
-        finally:
-            release_connection(conn)
+        df_users_gov = _carregar_usuarios_nome_governanca()
 
         mapa_nome_usuario_gov = {}
         if not df_users_gov.empty:
@@ -6438,149 +6455,180 @@ if st.session_state.get("tela_atual") == "governanca":
             )
 
         st.markdown("<br>", unsafe_allow_html=True); st.markdown("---")
-        col_l2b_c1, col_l2b_c2 = st.columns(2, gap="medium")
+        st.markdown("#### 🔁 Tipo de OS x Frequência")
 
-        with col_l2b_c1:
-            st.markdown("#### 🔁 Tipo de OS x Frequência")
+        agg_heatmap = (
+            df_gov_f
+            .groupby(["Patio", "Classificacao"])
+            .size()
+            .reset_index(name="Total")
+        )
 
-            agg_heatmap = (
-                df_gov_f
-                .groupby(["Patio", "Classificacao"])
-                .size()
-                .reset_index(name="Total")
-            )
+        p_list = sorted(df_gov_f["Patio"].dropna().unique().tolist())
+        c_list = ["Segurança", "Confiabilidade"]
 
-            p_list = sorted(df_gov_f["Patio"].dropna().unique().tolist())
-            c_list = ["Segurança", "Confiabilidade"]
+        h_data = []
+        max_v = 0
 
-            h_data = []
-            max_v = 0
+        for yi, c_n in enumerate(c_list):
+            for xi, p_n in enumerate(p_list):
+                filtro_h = agg_heatmap[
+                    (agg_heatmap["Patio"] == p_n)
+                    & (agg_heatmap["Classificacao"] == c_n)
+                ]
 
-            for yi, c_n in enumerate(c_list):
-                for xi, p_n in enumerate(p_list):
-                    filtro_h = agg_heatmap[
-                        (agg_heatmap["Patio"] == p_n)
-                        & (agg_heatmap["Classificacao"] == c_n)
-                    ]
+                val = int(filtro_h["Total"].iloc[0]) if not filtro_h.empty else 0
+                h_data.append([xi, yi, val])
+                max_v = max(max_v, val)
 
-                    val = int(filtro_h["Total"].iloc[0]) if not filtro_h.empty else 0
-                    h_data.append([xi, yi, val])
-                    max_v = max(max_v, val)
-
-            st_echarts(
-                options={
-                    "tooltip": {"position": "top"},
-                    "grid": {
-                        "height": "65%",
-                        "top": "5%",
-                        "bottom": "20%",
-                        "left": "20%"
-                    },
-                    "xAxis": {
-                        "type": "category",
-                        "data": p_list,
-                        "axisLabel": {"interval": 0, "rotate": 45}
-                    },
-                    "yAxis": {
-                        "type": "category",
-                        "data": c_list
-                    },
-                    "visualMap": {
-                        "min": 0,
-                        "max": max_v if max_v > 0 else 5,
-                        "orient": "horizontal",
-                        "left": "center",
-                        "bottom": "0%",
-                        "inRange": {
-                            "color": ["#F8FAFC", "#93C5FD", "#1D4ED8"]
-                        }
-                    },
-                    "series": [
-                        {
-                            "type": "heatmap",
-                            "data": h_data,
-                            "label": {"show": True},
-                            "itemStyle": {
-                                "borderColor": "#FFFFFF",
-                                "borderWidth": 1.5
-                            }
-                        }
-                    ]
+        st_echarts(
+            options={
+                "tooltip": {"position": "top"},
+                "grid": {
+                    "height": "65%",
+                    "top": "5%",
+                    "bottom": "20%",
+                    "left": "10%",
+                    "right": "5%",
+                    "containLabel": True
                 },
-                height="420px",
-                key="gov_heatmap_freq"
-            )
+                "xAxis": {
+                    "type": "category",
+                    "data": p_list,
+                    "axisLabel": {"interval": 0, "rotate": 45}
+                },
+                "yAxis": {
+                    "type": "category",
+                    "data": c_list
+                },
+                "visualMap": {
+                    "min": 0,
+                    "max": max_v if max_v > 0 else 5,
+                    "orient": "horizontal",
+                    "left": "center",
+                    "bottom": "0%",
+                    "inRange": {
+                        "color": ["#F8FAFC", "#93C5FD", "#1D4ED8"]
+                    }
+                },
+                "series": [
+                    {
+                        "type": "heatmap",
+                        "data": h_data,
+                        "label": {"show": True},
+                        "itemStyle": {
+                            "borderColor": "#FFFFFF",
+                            "borderWidth": 1.5
+                        }
+                    }
+                ]
+            },
+            height="420px",
+            key="gov_heatmap_freq"
+        )
 
-        with col_l2b_c2:
-            st.markdown("#### 🕒 Aderência: Login vs. Apontamento")
+        # Aderência em linha própria, largura cheia (pedido de 22/07/2026) --
+        # antes dividia coluna com "Tipo de OS x Frequência", ficando apertado.
+        st.markdown("<br>", unsafe_allow_html=True); st.markdown("---")
+        st.markdown("#### 🕒 Aderência: Login vs. Apontamento")
 
-            df_logs_local = df_logs.copy()
-            df_logs_local["dt_login_calc"] = pd.to_datetime(df_logs_local["data_hora_login"], errors="coerce")
-            df_logs_local["Data_Real_Pure"] = df_logs_local["dt_login_calc"].dt.date
+        df_logs_local = df_logs.copy()
+        df_logs_local["dt_login_calc"] = pd.to_datetime(df_logs_local["data_hora_login"], errors="coerce")
+        df_logs_local["Data_Real_Pure"] = df_logs_local["dt_login_calc"].dt.date
 
-            # Junta Data e Hora como Strings e converte nativamente com dayfirst=True
-            df_gov_f["dt_baixa_calc"] = pd.to_datetime(df_gov_f["data_fim"].astype(str).str.strip() + " " + df_gov_f["hora_fim"].astype(str).str.strip(), dayfirst=True, errors="coerce")
+        # Junta Data e Hora como Strings e converte nativamente com dayfirst=True
+        df_gov_f["dt_baixa_calc"] = pd.to_datetime(df_gov_f["data_fim"].astype(str).str.strip() + " " + df_gov_f["hora_fim"].astype(str).str.strip(), dayfirst=True, errors="coerce")
 
-            df_primeira_baixa = (
-                df_gov_f
-                .groupby(["concluido_por", "Data_Real"])["dt_baixa_calc"]
-                .min()
-                .reset_index(name="dt_baixa_1os")
-            )
+        df_primeira_baixa = (
+            df_gov_f
+            .groupby(["concluido_por", "Data_Real"])["dt_baixa_calc"]
+            .min()
+            .reset_index(name="dt_baixa_1os")
+        )
 
-            # >> O DATAFRAME DA ADERÊNCIA RENASCE AQUI <<
-            df_aderencia = df_logs_local.merge(df_primeira_baixa, left_on=["username", "Data_Real_Pure"], right_on=["concluido_por", "Data_Real"])
+        # >> O DATAFRAME DA ADERÊNCIA RENASCE AQUI <<
+        df_aderencia = df_logs_local.merge(df_primeira_baixa, left_on=["username", "Data_Real_Pure"], right_on=["concluido_por", "Data_Real"])
+
+        if not df_aderencia.empty:
+            dt_login = df_aderencia["dt_login_calc"]
+            dt_baixa = df_aderencia["dt_baixa_1os"]
+
+            df_aderencia["x_date"] = dt_login.dt.strftime("%d/%m")
+            df_aderencia["y_login_frac"] = dt_login.dt.hour + dt_login.dt.minute / 60.0
+            df_aderencia["y_baixa_frac"] = dt_baixa.dt.hour + dt_baixa.dt.minute / 60.0
+
+            df_aderencia = df_aderencia.dropna(subset=["y_login_frac", "y_baixa_frac"]).sort_values("Data_Real_Pure")
 
             if not df_aderencia.empty:
-                dt_login = df_aderencia["dt_login_calc"]
-                dt_baixa = df_aderencia["dt_baixa_1os"]
+                # Categorias do eixo X em ordem CRONOLÓGICA de verdade (Data_Real_Pure), não
+                # ordem de texto -- "sorted()" na string "dd/mm" colocava 26/06 e 29/06 depois
+                # de 22/07 (bug encontrado em 22/07/2026 ao implementar o sombreamento abaixo,
+                # que depende da data real de cada categoria pra saber se é fim de semana).
+                _datas_unicas = (
+                    df_aderencia[["Data_Real_Pure", "x_date"]]
+                    .drop_duplicates()
+                    .sort_values("Data_Real_Pure")
+                )
+                categorias_x = _datas_unicas["x_date"].tolist()
 
-                df_aderencia["x_date"] = dt_login.dt.strftime("%d/%m")
-                df_aderencia["y_login_frac"] = dt_login.dt.hour + dt_login.dt.minute / 60.0
-                df_aderencia["y_baixa_frac"] = dt_baixa.dt.hour + dt_baixa.dt.minute / 60.0
-
-                df_aderencia = df_aderencia.dropna(subset=["y_login_frac", "y_baixa_frac"]).sort_values("Data_Real_Pure")
-
-                if not df_aderencia.empty:
-                    # Tooltip pre-formatado em Python, no campo "name" de cada ponto -- "{@[3]}"
-                    # (dimensao por indice) parou de ser interpretado pelo ECharts apos a nuvem
-                    # forcar upgrade do Streamlit (mesmo tipo de quebra que ja tinha acontecido
-                    # com JsCode antes). "{b}" (nome do dado) e um token basico e estavel do
-                    # formatter, entao usamos ele em vez de depender de sintaxe de dimensao.
-                    login_data = [
-                        {
-                            "value": [row["x_date"], round(row["y_login_frac"], 2)],
-                            "name": f'<b>{row["username"]}</b><br>Login: {row["dt_login_calc"].strftime("%H:%M")}<br>Data: {row["x_date"]}'
-                        }
-                        for _, row in df_aderencia.iterrows()
+                # Sombreamento vertical de Sábado/Domingo (pedido de 22/07/2026).
+                areas_fim_semana = [
+                    [
+                        {"xAxis": _r["x_date"], "itemStyle": {"color": "#F59E0B", "opacity": 0.10}},
+                        {"xAxis": _r["x_date"]}
                     ]
-                    baixa_data = [
-                        {
-                            "value": [row["x_date"], round(row["y_baixa_frac"], 2)],
-                            "name": f'<b>{row["username"]}</b><br>Primeira Baixa: {row["dt_baixa_1os"].strftime("%H:%M")}<br>Data: {row["x_date"]}'
-                        }
-                        for _, row in df_aderencia.iterrows()
-                    ]
+                    for _, _r in _datas_unicas.iterrows()
+                    if _r["Data_Real_Pure"].weekday() >= 5  # 5=Sábado, 6=Domingo
+                ]
+                # Sombreamento horizontal do período noturno 00:00-06:00 (pedido de 22/07/2026).
+                area_madrugada = [
+                    {"yAxis": 0, "itemStyle": {"color": "#64748B", "opacity": 0.12}},
+                    {"yAxis": 6}
+                ]
 
-                    st_echarts(options={
-                        "tooltip": {
-                            "trigger": "item",
-                            "formatter": "{b}"
+                # Tooltip pre-formatado em Python, no campo "name" de cada ponto -- "{@[3]}"
+                # (dimensao por indice) parou de ser interpretado pelo ECharts apos a nuvem
+                # forcar upgrade do Streamlit (mesmo tipo de quebra que ja tinha acontecido
+                # com JsCode antes). "{b}" (nome do dado) e um token basico e estavel do
+                # formatter, entao usamos ele em vez de depender de sintaxe de dimensao.
+                login_data = [
+                    {
+                        "value": [row["x_date"], round(row["y_login_frac"], 2)],
+                        "name": f'<b>{row["username"]}</b><br>Login: {row["dt_login_calc"].strftime("%H:%M")}<br>Data: {row["x_date"]}'
+                    }
+                    for _, row in df_aderencia.iterrows()
+                ]
+                baixa_data = [
+                    {
+                        "value": [row["x_date"], round(row["y_baixa_frac"], 2)],
+                        "name": f'<b>{row["username"]}</b><br>Primeira Baixa: {row["dt_baixa_1os"].strftime("%H:%M")}<br>Data: {row["x_date"]}'
+                    }
+                    for _, row in df_aderencia.iterrows()
+                ]
+
+                st_echarts(options={
+                    "tooltip": {
+                        "trigger": "item",
+                        "formatter": "{b}"
+                    },
+                    "legend": {"data": ["Login", "Primeira Baixa"], "bottom": "0%"},
+                    "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}],
+                    "grid": {"top": "10%", "bottom": "25%", "left": "6%", "right": "3%", "containLabel": True},
+                    "xAxis": {"type": "category", "data": categorias_x},
+                    "yAxis": { "type": "value", "name": "Horário", "min": 0, "max": 24, "interval": 1, "axisLabel": { "formatter": "{value}:00" } },
+                    "series": [
+                        {
+                            "name": "Login", "type": "scatter", "data": login_data, "symbolSize": 10,
+                            "itemStyle": {"color": "#3B82F6"},
+                            "markArea": {"silent": True, "data": [area_madrugada] + areas_fim_semana}
                         },
-                        "legend": {"data": ["Login", "Primeira Baixa"], "bottom": "0%"},
-                        "dataZoom": [{"type": "slider", "show": True, "xAxisIndex": [0], "start": 0, "end": 100, "bottom": "5%"}],
-                        "grid": {"top": "10%", "bottom": "25%", "left": "12%", "right": "5%"},
-                        "xAxis": {"type": "category", "data": sorted(df_aderencia["x_date"].unique().tolist())},
-                        "yAxis": { "type": "value", "name": "Horário", "min": 0, "max": 24, "interval": 4, "axisLabel": { "formatter": "{value}:00" } },
-                        "series": [
-                            {"name": "Login", "type": "scatter", "data": login_data, "symbolSize": 10, "itemStyle": {"color": "#3B82F6"}},
-                            {"name": "Primeira Baixa", "type": "scatter", "data": baixa_data, "symbolSize": 10, "itemStyle": {"color": "#10B981"}}
-                        ]
-                    }, height="420px", theme="streamlit", key="gov_scatter_aderencia")
-                else:
-                    st.info("Dados de horário insuficientes para plotar o gráfico de aderência.")
+                        {"name": "Primeira Baixa", "type": "scatter", "data": baixa_data, "symbolSize": 10, "itemStyle": {"color": "#10B981"}}
+                    ]
+                }, height="480px", theme="streamlit", key="gov_scatter_aderencia")
             else:
-                st.info("Dados insuficientes para cruzar login com apontamento.")
+                st.info("Dados de horário insuficientes para plotar o gráfico de aderência.")
+        else:
+            st.info("Dados insuficientes para cruzar login com apontamento.")
 #endregion 11.5
 
 #region 11.6: Top Técnicos e Variabilidade (2 colunas)
