@@ -3325,7 +3325,7 @@ def obter_base_padrao_usuario():
 #endregion
 
 #region SESSÃO 5: ETL (Carregamento e Tratamento)
-ETL_VERSION = "v8_especialidade_prefixo"
+ETL_VERSION = "v9_grupo_ativo"
 
 #region 5.1: Tratamento Principal (tratar_df_os + _resolver_patio)
 def tratar_df_os(df: pd.DataFrame):
@@ -3985,6 +3985,25 @@ def fragmento_filtros_sidebar_seguro():
             st.session_state["filtro_start_date"], st.session_state["filtro_end_date"] = data_selecionada
         if isinstance(data_exec_selecionada, tuple) and len(data_exec_selecionada) == 2:
             st.session_state["filtro_exec_start_date"], st.session_state["filtro_exec_end_date"] = data_exec_selecionada
+        st.rerun()
+
+    # Fora do form (senão precisaria de outro clique em "Aplicar Filtros" pra valer) --
+    # volta todos os filtros pro padrão "tudo selecionado / período inteiro", exatamente
+    # como no primeiro carregamento. Pedido de 22/07/2026.
+    if st.button("🧹 Limpar Filtros", use_container_width=True):
+        st.session_state["filtro_mes_referencia"] = "Todos"
+        st.session_state["filtro_start_date"] = min_date
+        st.session_state["filtro_end_date"] = max_date
+        st.session_state["filtro_exec_start_date"] = min_date
+        st.session_state["filtro_exec_end_date"] = max_date
+        st.session_state["filtro_patios"] = list(lista_patios)
+        st.session_state["filtro_classificacoes"] = list(lista_classificacoes)
+        st.session_state["filtro_grupos_ativo"] = list(lista_grupos_ativo)
+        st.session_state["filtro_ativos"] = list(lista_ativos)
+        st.session_state["filtro_criticidades"] = list(lista_criticidades)
+        st.session_state["filtro_turnos"] = list(lista_turnos)
+        st.session_state["filtro_intervalo_sel"] = "Todas"
+        st.session_state["filtro_status_sel"] = "Todos"
         st.rerun()
 #endregion 7.3
 
