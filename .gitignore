@@ -16,3 +16,6 @@
 !.claude/
 !.vscode/
 !.github/
+
+# Configuracao local do Claude Code (permissoes por maquina/usuario) -- nao sobe
+.claude/settings.local.json

@@ -156,6 +156,54 @@ Esse foi o incidente mais sério da noite — merece destaque próprio.
 
 ---
 
+## 20-21/07/2026 — Baixa em massa (IPA/Paranapiacaba) some do SGO: 2 causas raiz
+
+**Sintoma:** ~10 mil linhas de baixa manual (import IW47) não refletiam no Dashboard/Roteirização. Hipótese inicial do Julio (matrícula de funcionário desligado) foi descartada — matrícula é texto livre, nunca validada contra `usuarios`.
+
+**Causa raiz 1:** `aplicar_overlay_baixas` bloqueava baixa cujo `realizado_em` fosse anterior ao `data_upload` do ciclo vigente (proteção contra baixa "grudada" de ciclo antigo, ver incidente de 09-11/07). Baixa administrativa em lote tem data de execução real do SAP, quase sempre anterior ao upload do plano no SGO — 2.629 de 3.810 baixas (69%) ficavam escondidas por essa checagem.
+
+**Causa raiz 2:** `_coord_por_centro_trabalho` usava `"IPG" in centro` (substring solta) em vez de prefixo exato — linhas de Paranapiacaba/IPA eram classificadas como "Piaçaguera", quebrando o filtro de escopo.
+
+**Correção:** baixas com origem administrativa (`geolocalizacao_baixa` em `{"Baixa IW47", "Importação IW47", "Baixa Manual"}`) pulam a checagem de ciclo — GPS real do app de campo continua protegido por essa mesma checagem. `_coord_por_centro_trabalho` passou a usar `centro.startswith("E.SP.IPG"/"E.SP.IPA")`, igual ao padrão já usado em outros pontos do código.
+
+**Aprendizado:** uma proteção pensada pra um cenário (GPS de campo) pode silenciosamente quebrar outro cenário legítimo (import administrativo em lote) que usa o mesmo caminho de código — ao adicionar uma trava anti-fraude/anti-contaminação, mapear explicitamente **todas** as origens de dado que passam por ali, não só a que motivou a trava. E **nunca usar substring solta (`"X" in campo`) pra decidir coordenação/escopo** — sempre prefixo/valor exato, para não capturar falsos positivos de outro centro de trabalho com nome parecido.
+
+---
+
+## 22/07/2026 — Grupo de Ativo veio sem nenhuma opção (filtro "vazio")
+
+**O que aconteceu:** filtro novo "Grupo de Ativo" na sidebar não mostrava nenhuma opção pra selecionar, embora a regex de extração (`extrair_grupo_ativo`) estivesse correta (validada contra dado real do Neon).
+
+**Causa raiz:** `ETL_VERSION` (usado como parte da chave do `@st.cache_data` de `carregar_base_sem_overlay`) não foi incrementado depois de adicionar a coluna `Grupo_Ativo` ao dataframe — o cache antigo (sem a coluna) continuava sendo servido.
+
+**Aprendizado:** **toda vez que uma coluna nova é adicionada a uma função `@st.cache_data`, incrementar a constante de versão do cache** (`ETL_VERSION`) no mesmo commit — não só quando a lógica de negócio muda. Adicionar coluna é mudança de shape do dado, e o cache não sabe disso sozinho.
+
+---
+
+## 22/07/2026 — Botão "Limpar Filtros" derrubava o app inteiro
+
+**O que aconteceu:** clicar em "Limpar Filtros" gerava `StreamlitAPIException` e quebrava a tela inteira.
+
+**Causa raiz:** o botão tentava escrever em `st.session_state[key]` para chaves de widgets (`filtro_mes_referencia`, `filtro_patios` etc.) que **já tinham sido instanciados** mais cedo no mesmo rerun — Streamlit proíbe essa escrita depois que o widget dono da chave já foi criado na mesma execução.
+
+**Correção:** padrão de duas fases — o botão só marca uma flag (`st.session_state["_solicitar_reset_filtros"] = True`) e chama `st.rerun()`; um bloco no **topo** da função do fragmento, antes de qualquer widget ser criado, consome a flag e só então escreve os valores padrão.
+
+**Aprendizado:** em Streamlit, **nunca escrever em `session_state` de uma key de widget depois que o widget já foi desenhado no mesmo rerun** — qualquer "resetar filtro"/"limpar formulário" precisa do padrão flag+rerun, escrevendo o valor padrão *antes* da instanciação do widget no próximo rerun.
+
+---
+
+## 22/07/2026 — Aba de Governança travava/não carregava após digitar a senha
+
+**O que aconteceu:** depois de um refactor que extraiu duas queries inline em funções `@st.cache_data` (`_carregar_baixas_logs_governanca`, `_carregar_usuarios_nome_governanca`), a aba de Governança parou de carregar após a autenticação por senha.
+
+**Causa raiz:** as duas novas funções foram inseridas na **coluna 0** (indentação zero), o que fechou silenciosamente o `if st.session_state.get("tela_atual") == "governanca":` que envolvia todo o bloco. O trecho seguinte (`with st.spinner(...)`, que monta o `df_gov` via merge/cálculo) ficou com a **mesma indentação** (4 espaços) do corpo da segunda função — o Python não tem como saber que essa linha deveria "sair" da função e voltar pro bloco do `if`; ela virou código morto dentro da função, nunca executado. `df_gov` nunca era definido, e o `fragmento_governanca()` quebrava ao tentar usá-lo.
+
+**Correção:** reindentar as duas funções pra dentro do bloco (nível 4/8), fazendo o dedent de 8→4 no `with st.spinner` fechar corretamente a função e retomar o corpo do `if`.
+
+**Aprendizado:** esse é um bug **silencioso** — `python -m py_compile` passa limpo, porque o código é sintaticamente válido, só que a *estrutura lógica* mudou (uma variável que devia ser definida sempre passou a nunca ser definida). Ao extrair código inline pra uma função nova (refactor "cirúrgico"), **conferir a indentação de tudo que vem depois da extração**, não só do trecho extraído — um novo `def` no meio de um bloco pode fechar esse bloco sem nenhum erro de sintaxe. Vale considerar rodar o app localmente (ou pelo menos revisar a indentação linha a linha do trecho seguinte) antes de confiar só no `py_compile` para mudanças desse tipo.
+
+---
+
 ## Lições transversais (válidas pra qualquer mudança futura)
 
 - **Verificar causa raiz com dado real (SQL/log) antes de aplicar patch** — não assumir, não adivinhar. Vale tanto pra bug de dado quanto pra bug de infraestrutura.
@@ -166,3 +214,6 @@ Esse foi o incidente mais sério da noite — merece destaque próprio.
 - **Métrica agregada zerada ou anômala é sinal de alerta prioritário**, mesmo sem erro explícito reportado ainda.
 - **Dependências sem pin de versão são risco de infraestrutura silencioso** — travar sempre, principalmente libs com binário nativo.
 - **Chave de conflito (`ON CONFLICT`/`UNIQUE`) de qualquer tabela ligada a uma execução específica deve usar o identificador único de verdade**, nunca uma combinação de campos descritivos que podem se repetir.
+- **Nunca usar substring solta (`"X" in campo`) pra decidir coordenação/escopo/permissão** — sempre prefixo ou valor exato.
+- **Toda coluna nova adicionada a uma função `@st.cache_data` exige incrementar a versão do cache** (`ETL_VERSION`) no mesmo commit.
+- **Extrair código inline pra uma função nova pode fechar silenciosamente o bloco `if` em volta** (indentação incorreta é erro lógico, não de sintaxe — `py_compile` não pega) — sempre conferir a indentação de tudo que vem *depois* do trecho extraído.
