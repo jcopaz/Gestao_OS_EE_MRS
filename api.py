@@ -423,6 +423,86 @@ async def sincronizar_baixa_offline(
 
 
 # ==============================================================================
+# LIMPEZA DE EVIDENCIAS EXPIRADAS (ciclagem de fotos no Supabase Storage)
+# Expiracao = Data/Hora Realizado + Ciclo (dias, da planilha de OS Programadas) +
+# 30 dias de folga. Sem Ciclo identificavel para a OS -> nunca expira (fail-safe).
+# Apaga so o arquivo no Storage; a linha em "evidencias" continua existindo (so
+# fica com foto_url vazio) para nao perder o historico/auditoria da baixa.
+# dry_run=True por padrao -- so apaga de verdade com ?dry_run=false explicito.
+# ==============================================================================
+@app_api.post("/limpar_evidencias_expiradas")
+async def limpar_evidencias_expiradas(
+    api_key: str = Security(validar_api_key),
+    dry_run: bool = True,
+):
+    conn = get_connection()
+    try:
+        df = pd.read_sql_query(
+            """
+            SELECT ev.id, ev.os_referencia, ev.foto_url, b.realizado_em,
+                   op.dados_completos ->> 'Ciclo' AS ciclo_txt
+            FROM evidencias ev
+            JOIN baixas b ON TRIM(b.os) = TRIM(ev.os_referencia)
+            LEFT JOIN os_programadas op ON TRIM(op.os) = TRIM(ev.os_referencia)
+            WHERE ev.foto_url LIKE %s
+            """,
+            conn,
+            params=(f"{SUPABASE_URL}/storage/v1/object/public/evidencias/%",),
+        )
+    finally:
+        release_connection(conn)
+
+    candidatas, apagadas, erros = [], [], []
+    agora_naive = datetime.now(timezone(timedelta(hours=-3))).replace(tzinfo=None)
+
+    for _, row in df.iterrows():
+        ciclo = pd.to_numeric(row["ciclo_txt"], errors="coerce")
+        if pd.isna(ciclo):
+            continue  # sem Ciclo identificavel -- nunca expira, nao arrisca
+
+        realizado_dt = pd.to_datetime(row["realizado_em"], dayfirst=True, errors="coerce")
+        if pd.isna(realizado_dt):
+            continue
+
+        expira_em = realizado_dt.to_pydatetime() + timedelta(days=float(ciclo) + 30)
+        if agora_naive < expira_em:
+            continue  # ainda dentro da janela de retencao
+
+        nome_arquivo = str(row["foto_url"]).rsplit("/evidencias/", 1)[-1]
+        candidatas.append({"os": row["os_referencia"], "arquivo": nome_arquivo, "expirou_em": str(expira_em)})
+
+        if not dry_run:
+            try:
+                resp = requests.delete(
+                    f"{SUPABASE_URL}/storage/v1/object/evidencias/{nome_arquivo}",
+                    headers={"Authorization": f"Bearer {SUPABASE_KEY}", "apikey": SUPABASE_KEY},
+                    timeout=30,
+                )
+                if resp.status_code in (200, 204):
+                    conn2 = get_connection()
+                    try:
+                        cur = conn2.cursor()
+                        cur.execute("UPDATE evidencias SET foto_url = '' WHERE id = %s", (int(row["id"]),))
+                        conn2.commit()
+                        cur.close()
+                    finally:
+                        release_connection(conn2)
+                    apagadas.append(row["os_referencia"])
+                else:
+                    erros.append(f"OS {row['os_referencia']}: Supabase {resp.status_code} - {resp.text}")
+            except Exception as e:
+                erros.append(f"OS {row['os_referencia']}: {e}")
+
+    return {
+        "dry_run": dry_run,
+        "total_candidatas": len(candidatas),
+        "candidatas": candidatas,
+        "apagadas": apagadas,
+        "erros": erros,
+    }
+
+
+# ==============================================================================
 # HEALTHCHECK (pre-ping para acordar o Render antes de publicar/sincronizar)
 # ==============================================================================
 @app_api.get("/health")

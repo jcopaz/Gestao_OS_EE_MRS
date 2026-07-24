@@ -1,0 +1,23 @@
+name: Limpeza de evidências expiradas
+
+on:
+  schedule:
+    # Uma vez por dia, 06:00 UTC (03:00 em Brasília).
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "true = só simula (não apaga nada), false = apaga de verdade"
+        default: "true"
+
+jobs:
+  limpar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Chamar /limpar_evidencias_expiradas
+        run: |
+          dry_run="${{ github.event.inputs.dry_run }}"
+          if [ -z "$dry_run" ]; then dry_run="true"; fi
+          curl -s -X POST \
+            "https://gestao-os-ee-mrs-producao.onrender.com/limpar_evidencias_expiradas?dry_run=${dry_run}" \
+            -H "x-api-key: ${{ secrets.OFFLINE_API_KEY }}"
