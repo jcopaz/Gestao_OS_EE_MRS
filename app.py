@@ -3897,7 +3897,12 @@ if df_visao.empty or "dt_prog_filtro" not in df_visao.columns:
 
 #region 7.3: Filtros da Sidebar
 valid_dates = df_visao["dt_prog_filtro"].dropna()
-if not valid_dates.empty: min_date, max_date = valid_dates.min().date(), valid_dates.max().date()
+# Calendário restrito ao ano vigente (pedido 24/07/2026): prioriza min/max só das OS
+# programadas no ano corrente -- evita navegar pelo histórico inteiro (ex.: 2023-2026).
+# Sem dado no ano vigente (base de teste, por exemplo), cai pro min/max de toda a base.
+valid_dates_ano_vigente = valid_dates[valid_dates.dt.year == datetime.now().year]
+if not valid_dates_ano_vigente.empty: min_date, max_date = valid_dates_ano_vigente.min().date(), valid_dates_ano_vigente.max().date()
+elif not valid_dates.empty: min_date, max_date = valid_dates.min().date(), valid_dates.max().date()
 else: min_date, max_date = datetime.now().date() - pd.Timedelta(days=30), datetime.now().date()
 
 lista_patios = sorted(df_visao["Patio"].dropna().astype(str).unique().tolist())
@@ -3982,11 +3987,11 @@ def fragmento_filtros_sidebar_seguro():
         # Datas
         start_padrao = st.session_state.get("filtro_start_date", min_date)
         end_padrao = st.session_state.get("filtro_end_date", max_date)
-        data_selecionada = st.date_input("Período de Programação", value=(start_padrao, end_padrao), format="DD/MM/YYYY")
-        
+        data_selecionada = st.date_input("Período de Programação", value=(start_padrao, end_padrao), min_value=min_date, max_value=max_date, format="DD/MM/YYYY")
+
         exec_start_padrao = st.session_state.get("filtro_exec_start_date", min_date)
         exec_end_padrao = st.session_state.get("filtro_exec_end_date", max_date)
-        data_exec_selecionada = st.date_input("Período de Execução", value=(exec_start_padrao, exec_end_padrao), format="DD/MM/YYYY")
+        data_exec_selecionada = st.date_input("Período de Execução", value=(exec_start_padrao, exec_end_padrao), min_value=min_date, max_value=max_date, format="DD/MM/YYYY")
 
         
         # Pátios, Classificação, Turno
@@ -4053,6 +4058,38 @@ ativos_selecionados = st.session_state.get("filtro_ativos", list(lista_ativos))
 turnos_selecionados = st.session_state.get("filtro_turnos", list(lista_turnos))
 status_sel = st.session_state.get("filtro_status_sel", "Todos")
 intervalo_sel = st.session_state.get("filtro_intervalo_sel", "Todas")
+
+# Base dos 4 cards do topo (região 9.3/9.4): sempre o Último Plano/Ciclo (maior
+# _data_upload_ciclo por Plano_Mes_Referencia, mesmo critério da query de planos_disponiveis,
+# linha ~1994), respeitando Pátio/Classificação/Criticidade/Turno/Status/Intervalo já
+# selecionados na sidebar -- só o Período de Programação/Execução e o seletor de Plano
+# (Mês de Referência) são ignorados aqui de propósito (pedido 24/07/2026). Calculado sobre
+# df_visao ainda SEM o filtro de Plano abaixo, para não herdar uma escolha manual do usuário.
+if "Plano_Mes_Referencia" in df_visao.columns and "_data_upload_ciclo" in df_visao.columns:
+    _upload_por_plano = (
+        df_visao.dropna(subset=["Plano_Mes_Referencia"])
+        .groupby("Plano_Mes_Referencia")["_data_upload_ciclo"].max()
+        .dropna()
+        .sort_values(ascending=False)
+    )
+    ultimo_plano = _upload_por_plano.index[0] if not _upload_por_plano.empty else None
+else:
+    ultimo_plano = None
+
+if ultimo_plano is not None:
+    df_visao_ultimo_plano = df_visao[df_visao["Plano_Mes_Referencia"].astype(str).str.strip() == str(ultimo_plano).strip()]
+    _datas_prog_ultimo = df_visao_ultimo_plano["dt_prog_filtro"].dropna()
+    _start_ultimo = _datas_prog_ultimo.min().date() if not _datas_prog_ultimo.empty else min_date
+    _end_ultimo = _datas_prog_ultimo.max().date() if not _datas_prog_ultimo.empty else max_date
+    df_kpi_topo = aplicar_filtros_sidebar(
+        df_visao=df_visao_ultimo_plano, patios_selecionados=patios_selecionados,
+        classif_selecionadas=classif_selecionadas, turnos_selecionados=turnos_selecionados,
+        start_date=_start_ultimo, end_date=_end_ultimo, status_sel=status_sel, intervalo_sel=intervalo_sel,
+        crit_selecionadas=crit_selecionadas, exec_start_date=None, exec_end_date=None,
+        grupos_ativo_selecionados=grupos_ativo_selecionados, ativos_selecionados=ativos_selecionados
+    )
+else:
+    df_kpi_topo = None  # sem dado de ciclo/upload -- região 9.3 cai para df_filtrado
 
 plano_mes_sel = st.session_state.get("filtro_mes_referencia", "Todos")
 if plano_mes_sel != "Todos" and "Plano_Mes_Referencia" in df_visao.columns:
@@ -4293,11 +4330,14 @@ st.markdown("---")
 #endregion 9.2
 
 #region 9.3: Cálculo dos KPIs + CSS dos Cards (Dark Mode)
-total_os = len(df_filtrado)
-realizado_prazo = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_prazo | {"ABER NRAV"})])
-realizado_atraso = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_atraso)])
+# Cards travados no Último Plano/Ciclo (ver bloco df_kpi_topo, região 7.3) -- cai para
+# df_filtrado só se não houver dado de ciclo/upload disponível (base antiga/sem upload).
+df_kpi_base = df_kpi_topo if df_kpi_topo is not None else df_filtrado
+total_os = len(df_kpi_base)
+realizado_prazo = len(df_kpi_base[df_kpi_base["Status_norm"].isin(_status_prazo | {"ABER NRAV"})])
+realizado_atraso = len(df_kpi_base[df_kpi_base["Status_norm"].isin(_status_atraso)])
 realizado_total = realizado_prazo + realizado_atraso
-nao_realizado = len(df_filtrado[df_filtrado["Status_norm"].isin(_status_aberto_dashboard)])
+nao_realizado = len(df_kpi_base[df_kpi_base["Status_norm"].isin(_status_aberto_dashboard)])
 taxa_conclusao = (realizado_total / total_os * 100) if total_os > 0 else 0.0
 
 st.markdown("""
@@ -5262,12 +5302,26 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             )
                             if resp_pub.status_code == 200:
                                 rota = resp_pub.json().get("url", "")
-                                st.success("✅ Rota publicada! Abra este link 1x ONLINE no celular, depois use offline:")
-                                st.code(f"{base_api}{rota}", language="text")
+                                st.session_state["rota_pwa_url"] = f"{base_api}{rota}"
                             else:
+                                st.session_state.pop("rota_pwa_url", None)
                                 st.error(f"Falha ao publicar ({resp_pub.status_code}): {resp_pub.text}")
                         except Exception as e:
+                            st.session_state.pop("rota_pwa_url", None)
                             st.error(f"Erro ao publicar rota: {e}")
+
+                    # Fora do "if st.button" para o link sobreviver aos reruns seguintes
+                    # (ex.: o técnico mexe em outro campo) -- st.button só é True no ciclo
+                    # em que foi clicado, então guardamos a URL publicada em session_state.
+                    if st.session_state.get("rota_pwa_url"):
+                        st.success("✅ Rota publicada! Toque para abrir 1x ONLINE no celular, depois use offline:")
+                        st.link_button(
+                            "🔗 Abrir Rota no Celular",
+                            st.session_state["rota_pwa_url"],
+                            use_container_width=True,
+                            type="primary",
+                        )
+                        st.caption(f"Link (reserva, caso o botão não abra): {st.session_state['rota_pwa_url']}")
 #endregion 10.3.2
 
 #region 10.3.3: Apontamento + Cronograma (fragment unificado)
@@ -5341,6 +5395,53 @@ def gerar_pdf_cronograma_bytes(df_pdf: pd.DataFrame, titulo: str = "Cronograma d
     doc.build(story)
     buffer.seek(0)
     return buffer.getvalue()
+
+# Mesmo layout de card usado no pacote offline (gerar_html_offline, classes .os-item/.chip/
+# .desc-box) -- reaproveitado aqui (prefixo "sgo-" para não colidir com CSS interno do
+# Streamlit) para a tela online mostrar o mesmo contexto da OS (Ativo, Atividade, Pátio,
+# Especialidade, Descrição) antes do técnico anexar a evidência.
+_CSS_CARD_OS = """
+<style>
+    .sgo-os-item { border: 1px solid #E2E8F0; border-radius: 12px; padding: 14px; background: #FFFFFF; margin-bottom: 6px; }
+    .sgo-os-header { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 10px; }
+    .sgo-os-title { font-size: 16px; font-weight: 800; color: #0F172A; }
+    .sgo-chip { display: inline-block; padding: 4px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #E2E8F0; color: #334155; }
+    .sgo-chip-critical { background: #FEE2E2; color: #991B1B; }
+    .sgo-os-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; margin-bottom: 10px; }
+    .sgo-os-meta { font-size: 13px; color: #475569; margin: 2px 0; }
+    .sgo-desc-box { padding: 10px; background: #F8FAFC; border-radius: 10px; border: 1px solid #E2E8F0; font-size: 13px; color: #334155; }
+    @media (max-width: 768px) {
+        .sgo-os-grid { grid-template-columns: 1fr; }
+        .sgo-os-header { flex-direction: column; align-items: flex-start; }
+    }
+</style>
+"""
+
+def _card_os_html(row) -> str:
+    import html
+    os_id = html.escape(str(row.get("Ordem servico", "")).strip())
+    criticidade = html.escape(str(row.get("Criticidade", "")).strip())
+    chip_cls = "sgo-chip sgo-chip-critical" if criticidade == "Muito Alta" else "sgo-chip"
+    ativo = html.escape(str(row.get("Ativo", "")).strip())
+    atividade = html.escape(str(row.get("Atividade ativo", "")).strip())
+    patio = html.escape(str(row.get("Patio", "")).strip())
+    especialidade = html.escape(str(row.get("Especialidade", "")).strip())
+    descricao = html.escape(str(row.get("Descrição Longa", "")).strip()) or "—"
+    return f"""
+    <div class="sgo-os-item">
+        <div class="sgo-os-header">
+            <span class="sgo-os-title">OS {os_id}</span>
+            <span class="{chip_cls}">{criticidade}</span>
+        </div>
+        <div class="sgo-os-grid">
+            <div class="sgo-os-meta"><strong>Ativo:</strong> {ativo}</div>
+            <div class="sgo-os-meta"><strong>Atividade:</strong> {atividade}</div>
+            <div class="sgo-os-meta"><strong>Pátio:</strong> {patio}</div>
+            <div class="sgo-os-meta"><strong>Especialidade:</strong> {especialidade}</div>
+        </div>
+        <div class="sgo-desc-box"><strong>Descrição:</strong><br>{descricao}</div>
+    </div>
+    """
 
 def _render_apontamento(df_recomendado_ui: pd.DataFrame):
     st.markdown("---")
@@ -5438,6 +5539,7 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
     st.markdown("---")
     st.markdown("#### 📷 Evidências Fotográficas")
     st.caption("Registre a evidência de cada OS. A imagem será comprimida automaticamente.")
+    st.markdown(_CSS_CARD_OS, unsafe_allow_html=True)
 
     # Sequenciamento por DESABILITAR, nao por esconder (16/07/2026): a tentativa
     # anterior (commit 90648b1) removia da tela o file_uploader das OS ja prontas
@@ -5451,6 +5553,11 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
     _bloqueado = False
     for _idx_foto, _os_id_raw in enumerate(os_selecionadas, start=1):
         _os_id_foto = str(_os_id_raw).strip()
+        _linha_card = df_recomendado_ui.loc[
+            df_recomendado_ui["Ordem servico"].astype(str).str.strip() == _os_id_foto
+        ]
+        if not _linha_card.empty:
+            st.markdown(_card_os_html(_linha_card.iloc[0]), unsafe_allow_html=True)
         _arquivo = st.file_uploader(
             f"📸 Evidência da OS {_os_id_foto} ({_idx_foto}/{len(os_selecionadas)})",
             type=["jpg", "jpeg", "png"],
@@ -5877,12 +5984,12 @@ def gerar_pdf_concluidas_bytes(df_pdf, titulo="OS Concluídas - Fim de Turno"):
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), leftMargin=20, rightMargin=20, topMargin=20, bottomMargin=20)
     styles = getSampleStyleSheet()
     story = [Paragraph(f"<b>{titulo}</b>", styles["Title"]), Spacer(1, 10)]
-    colunas_pdf = ["OS", "Data Inicial Programada", "Patio", "Ativo", "Criticidade", "Data/Hora Realizado", "Concluído Por"]
+    colunas_pdf = ["OS", "Data Prog. (Data Inicial Programada)", "Patio", "Ativo", "Criticidade", "Classificação", "Data/Hora Realizado"]
     df_local = df_pdf.reindex(columns=colunas_pdf).fillna("").copy()
     data = [colunas_pdf]
     for _, row in df_local.iterrows():
         data.append([Paragraph(str(row[c]), styles["BodyText"]) for c in colunas_pdf])
-    tabela = Table(data, repeatRows=1, colWidths=[80, 120, 70, 110, 85, 130, 100])
+    tabela = Table(data, repeatRows=1, colWidths=[65, 140, 60, 100, 75, 90, 110])
     tabela.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#163A70")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -5918,17 +6025,29 @@ if tab2 is not None:
         if somente_minhas and usuario_atual and "Concluído por" in df_conc.columns:
             df_conc = df_conc[df_conc["Concluído por"].astype(str).str.strip().str.casefold() == usuario_atual.casefold()]
 
+        # Filtro por data de execução (turno): usa "dt_realizado", já calculado uma vez
+        # em df_visao (linha ~908) e preservado até aqui por aplicar_filtros_sidebar --
+        # é um filtro em memória sobre dado já carregado, sem nova consulta ao banco.
+        data_turno_sel = st.date_input(
+            "📅 Data de execução (turno)",
+            value=agora_dt().date(),
+            key="data_rel_turno",
+            format="DD/MM/YYYY",
+        )
+        if "dt_realizado" in df_conc.columns:
+            df_conc = df_conc[pd.to_datetime(df_conc["dt_realizado"], errors="coerce").dt.date == data_turno_sel]
+
         if df_conc.empty:
             st.info("Nenhuma OS concluída encontrada para os filtros atuais.")
         else:
             df_rel = pd.DataFrame({
                 "OS": df_conc["Ordem servico"].astype(str),
-                "Data Inicial Programada": pd.to_datetime(df_conc["dt_prog_filtro"], errors="coerce").dt.strftime("%d/%m/%Y").fillna(""),
+                "Data Prog. (Data Inicial Programada)": pd.to_datetime(df_conc["dt_prog_filtro"], errors="coerce").dt.strftime("%d/%m/%Y").fillna(""),
                 "Patio": df_conc["Patio"].astype(str),
                 "Ativo": df_conc["Ativo"].astype(str),
                 "Criticidade": df_conc["Criticidade"].astype(str),
+                "Classificação": df_conc["Classificacao"].astype(str),
                 "Data/Hora Realizado": pd.to_datetime(df_conc["Data/Hora Realizado"], dayfirst=True, errors="coerce").dt.strftime("%d/%m/%Y %H:%M").fillna(""),
-                "Concluído Por": df_conc["Concluído por"].astype(str),
             })
             st.success(f"✅ {len(df_rel)} OS concluída(s) no período/filtros atuais.")
             col_rel_1, col_rel_2 = st.columns([8, 2])
