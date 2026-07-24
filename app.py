@@ -3970,7 +3970,16 @@ def fragmento_filtros_sidebar_seguro():
     # key já foi criado no mesmo rerun (StreamlitAPIException). O botão "Limpar Filtros"
     # (mais abaixo) só marca esse pedido e chama st.rerun(); quem de fato reseta é este
     # bloco, que roda primeiro na execução seguinte.
-    if st.session_state.pop("_solicitar_reset_filtros", False):
+    #
+    # Reset AUTOMÁTICO ao trocar de escopo (pedido 24/07/2026): _sanear_lista_filtro
+    # (abaixo) só remove da seleção o que não existe mais nas opções atuais -- pensada
+    # pra opção sumir aos poucos, não pro universo inteiro trocar de uma vez. Ao mudar
+    # de escopo (Piaçaguera/Paranapiacaba/Gerência), a seleção antiga vira uma
+    # interseção residual e por acaso com a lista nova (ex.: "só 2 pátios"), em vez de
+    # continuar representando "tudo selecionado". Detectar a troca de escopo e disparar
+    # o mesmo reset do botão "Limpar Filtros" resolve isso sem exigir clique manual.
+    _escopo_mudou = st.session_state.get("escopo") != st.session_state.get("_escopo_dos_filtros")
+    if st.session_state.pop("_solicitar_reset_filtros", False) or _escopo_mudou:
         st.session_state["filtro_mes_referencia"] = "Todos"
         st.session_state["filtro_start_date"] = min_date
         st.session_state["filtro_end_date"] = max_date
@@ -3984,6 +3993,15 @@ def fragmento_filtros_sidebar_seguro():
         st.session_state["filtro_turnos"] = list(lista_turnos)
         st.session_state["filtro_intervalo_sel"] = "Todas"
         st.session_state["filtro_status_sel"] = "Todos"
+    st.session_state["_escopo_dos_filtros"] = st.session_state.get("escopo")
+
+    if _escopo_mudou:
+        # lista_ativos (fora desta função, calculada mais acima) segue a cascata de
+        # Grupo de Ativo -- ela já rodou neste script ANTES do reset acima acontecer,
+        # então ainda reflete a seleção antiga por um render. Um st.rerun() aqui força
+        # essa lista a ser recalculada já com filtro_grupos_ativo resetado (mesmo
+        # comportamento que o botão "Limpar Filtros" já tem, só que automático).
+        st.rerun()
 
     st.markdown("### 📊 Filtros")
     
