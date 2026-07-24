@@ -1,7 +1,9 @@
 import io
 import os
+import re
 import time
 import base64
+import unicodedata
 from datetime import datetime, timezone, timedelta
 
 import numpy as np
@@ -148,6 +150,14 @@ def extrair_gps_exif(imagem_pil: Image.Image):
         print(f"[EXIF] Erro ao processar metadados da foto: {e}")
     return None, None
 
+
+def _sanear_nome_arquivo(texto: str) -> str:
+    """Remove acentos (NFKD) e forca ASCII puro -- \\w do Python e Unicode-aware por
+    padrao e deixa letras acentuadas passarem (ex.: "RELE"), que o Supabase Storage
+    rejeita na chave do objeto com 400 InvalidKey. Mesmo criterio usado em app.py."""
+    texto = unicodedata.normalize("NFKD", str(texto))
+    texto = "".join(ch for ch in texto if not unicodedata.combining(ch))
+    return re.sub(r"[^\w\-.]", "_", texto, flags=re.ASCII)
 
 def upload_foto_supabase(arquivo_bytes: bytes, nome_arquivo: str) -> str:
     if not SUPABASE_URL or not SUPABASE_KEY:
@@ -384,7 +394,7 @@ async def sincronizar_baixa_offline(
     geo_string = f"Offline Sync - {fonte_gps} (Lat: {lat_final:.6f}, Lon: {lon_final:.6f})"
 
     # 6) Upload ao Supabase e Gestão de Evidência
-    nome_foto = f"{ativo_id}_OS{os_id}_{int(time.time())}.jpg".replace(" ", "_")
+    nome_foto = _sanear_nome_arquivo(f"{ativo_id}_OS{os_id}_{int(time.time())}.jpg")
     url_supabase = upload_foto_supabase(foto_bytes, nome_foto)
 
     if url_supabase:

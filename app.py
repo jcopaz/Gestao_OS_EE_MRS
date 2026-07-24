@@ -658,6 +658,15 @@ def carregar_baixas_df() -> pd.DataFrame:
 #endregion
 
 #region 3.3: Supabase Storage (Evidências Fotográficas com Compressão)
+def _sanear_nome_arquivo(texto: str) -> str:
+    """Remove acentos (NFKD) e força ASCII puro -- \\w do Python é Unicode-aware por
+    padrão e deixa letras acentuadas passarem (ex.: "RELÉ"), que o Supabase Storage
+    rejeita na chave do objeto com 400 InvalidKey. Mesma técnica de _normalizar_nome_coluna."""
+    import unicodedata
+    texto = unicodedata.normalize("NFKD", str(texto))
+    texto = "".join(ch for ch in texto if not unicodedata.combining(ch))
+    return re.sub(r"[^\w\-.]", "_", texto, flags=re.ASCII)
+
 def upload_foto_supabase(arquivo_bytes: bytes, nome_arquivo: str) -> str:
     """Faz compressão com PIL antes de enviar ao Supabase e corrige a orientação (EXIF)."""
     url_base = st.secrets["SUPABASE_URL"]
@@ -5444,8 +5453,21 @@ def _card_os_html(row) -> str:
     """
 
 def _render_apontamento(df_recomendado_ui: pd.DataFrame):
+    # Retry só das OS que falharam (evidência não gravou -> baixa não foi gravada, ver
+    # laço de submit mais abaixo): precisa reescrever session_state["campo_os_selecionadas"]
+    # ANTES do st.multiselect ser instanciado neste run (senão o Streamlit acusa
+    # StreamlitAPIException) -- mesmo padrão já usado pelo reset de filtros da sidebar
+    # (_solicitar_reset_filtros).
+    if st.session_state.pop("_apontamento_retry_falhas", False):
+        st.session_state["campo_os_selecionadas"] = st.session_state.pop("_apontamento_os_falhas", [])
+    _falhas_anteriores = st.session_state.pop("_apontamento_falhas_relatorio", None)
+
     st.markdown("---")
     st.markdown("#### ✅ Apontamento e Conclusão de OS")
+    if _falhas_anteriores:
+        st.error(f"⛔ {len(_falhas_anteriores)} OS NÃO foram gravadas (evidência falhou) — corrija a foto e reenvie:")
+        for _os_falha, _motivo in _falhas_anteriores:
+            st.warning(f"OS {_os_falha}: {_motivo}")
     if df_recomendado_ui.empty:
         st.info("Nenhuma OS encontrada para os filtros selecionados.")
         return
@@ -5765,43 +5787,24 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
                     st.error("⛔ " + _e)
                 return
 
-            for os_id_raw in os_selecionadas:
-                os_id = str(os_id_raw).strip()
-
-                mask = st.session_state["df_os"]["Ordem servico"].astype(str).str.strip() == os_id
-                df_match = st.session_state["df_os"].loc[mask]
-
-                if df_match.empty:
-                    continue
-
-                dt_prog = df_match["Data inicial programada"].iloc[0]
-                coord = df_match["Coordenacao"].iloc[0] if "Coordenacao" in df_match.columns else "Campo"
-
-                ap = apontamentos[os_id]
-                ini_dt = datetime.combine(ap["data_ini"], ap["inicio"])
-                fim_dt = datetime.combine(ap["data_fim"], ap["fim"])
-
-                upsert_baixa(
-                    os_id=os_id,
-                    status=determinar_status_execucao(pd.to_datetime(dt_prog, errors="coerce"), fim_dt),
-                    realizado_em_str=formatar_dt_br(fim_dt),
-                    coordenacao=coord,
-                    concluido_por=usr_logado,
-                    geolocalizacao_baixa=geo_baixa,
-                    equipe=equipe_str,
-                    data_inicio=ap["data_ini"].strftime("%d/%m/%Y"),
-                    hora_inicio=ap["inicio"].strftime("%H:%M:%S"),
-                    data_fim=ap["data_fim"].strftime("%d/%m/%Y"),
-                    hora_fim=ap["fim"].strftime("%H:%M:%S")
-                )
-
+            # Evidência ANTES da baixa, por OS (pedido 24/07/2026, incidente da madrugada
+            # de 22-23/07/2026: OS 23613736/37/38 foram gravadas em "baixas" com
+            # foto_evidencia = null porque a baixa era gravada num laço separado, ANTES
+            # do upload da foto -- se a foto falhasse depois (ex.: acento no nome do
+            # arquivo, ver _sanear_nome_arquivo), a OS ficava "concluída" sem evidência,
+            # sem ninguém perceber além de um st.warning() que some da tela. Agora: sobe
+            # a foto -> grava evidência -> só então grava a baixa DESSA OS. Se qualquer
+            # etapa falhar, a OS entra em os_com_falha e o laço segue pras próximas --
+            # nenhuma OS boa é perdida por causa de uma ruim.
             fotos_enviadas = 0
+            os_com_falha = []  # [(os_id, motivo), ...]
 
             for os_id_raw in os_selecionadas:
                 os_id = str(os_id_raw).strip()
                 foto_da_os = fotos_por_os.get(os_id)
 
                 if foto_da_os is None:
+                    os_com_falha.append((os_id, "Evidência fotográfica não encontrada."))
                     continue
 
                 try:
@@ -5809,6 +5812,7 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
                         st.session_state["df_os"]["Ordem servico"].astype(str).str.strip() == os_id
                     ]
                     if df_match.empty:
+                        os_com_falha.append((os_id, "OS não encontrada na base carregada."))
                         continue
 
                     ativo_val = str(df_match["Ativo"].iloc[0]).strip()
@@ -5817,7 +5821,7 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
                         if "Atividade ativo" in df_match.columns else "N_A"
                     )
 
-                    nome_foto = re.sub(r"[^\w\-.]", "_", f"{ativo_val}__{atividade_val}__OS{os_id}.jpg")
+                    nome_foto = _sanear_nome_arquivo(f"{ativo_val}__{atividade_val}__OS{os_id}.jpg")
                     url_foto = upload_foto_supabase(foto_da_os.getvalue(), nome_foto)
 
                     upsert_evidencia(
@@ -5831,15 +5835,45 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
                             f"Lon: {st.session_state.get('lon_partida')}"
                         )
                     )
+
+                    # Evidência OK -- só agora grava a baixa desta OS.
+                    dt_prog = df_match["Data inicial programada"].iloc[0]
+                    coord = df_match["Coordenacao"].iloc[0] if "Coordenacao" in df_match.columns else "Campo"
+
+                    ap = apontamentos[os_id]
+                    fim_dt = datetime.combine(ap["data_fim"], ap["fim"])
+
+                    upsert_baixa(
+                        os_id=os_id,
+                        status=determinar_status_execucao(pd.to_datetime(dt_prog, errors="coerce"), fim_dt),
+                        realizado_em_str=formatar_dt_br(fim_dt),
+                        coordenacao=coord,
+                        concluido_por=usr_logado,
+                        geolocalizacao_baixa=geo_baixa,
+                        equipe=equipe_str,
+                        data_inicio=ap["data_ini"].strftime("%d/%m/%Y"),
+                        hora_inicio=ap["inicio"].strftime("%H:%M:%S"),
+                        data_fim=ap["data_fim"].strftime("%d/%m/%Y"),
+                        hora_fim=ap["fim"].strftime("%H:%M:%S")
+                    )
                     fotos_enviadas += 1
 
                 except Exception as e_foto:
-                    st.warning(f"⚠️ Foto da OS {os_id} falhou: {e_foto}")
+                    os_com_falha.append((os_id, str(e_foto)))
 
             if fotos_enviadas > 0:
-                st.info(f"📷 {fotos_enviadas} evidência(s) registrada(s) com sucesso!")
+                st.info(f"📷 {fotos_enviadas} OS concluída(s) e evidência(s) registrada(s) com sucesso!")
 
-            st.success("✅ Execução registrada com sucesso!")
+            if os_com_falha:
+                # Persiste em session_state pro aviso e o retry (só das OS que falharam)
+                # sobreviverem ao st.rerun() -- não gravar a baixa sem evidência é a regra,
+                # mas o técnico não pode perder as OS que já sincronizaram certo.
+                st.session_state["_apontamento_falhas_relatorio"] = os_com_falha
+                st.session_state["_apontamento_retry_falhas"] = True
+                st.session_state["_apontamento_os_falhas"] = [_os for _os, _ in os_com_falha]
+            else:
+                st.success("✅ Execução registrada com sucesso!")
+
             time.sleep(1.5)
             st.rerun()
 
