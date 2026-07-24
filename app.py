@@ -1278,21 +1278,74 @@ def render_tela_admin():
 #region 3.8.4: Exportação SAP
     if "Exportar SAP" in st.session_state.get("governanca", ""):
         st.markdown("---"); st.subheader("⬇️ Exportação SAP")
+        st.caption(
+            "Escolha o período de execução -- a exportação só consulta as OS concluídas "
+            "dentro desse intervalo, em vez de puxar a base inteira do Neon a cada geração."
+        )
+
+        col_sap_p1, col_sap_p2 = st.columns(2)
+        with col_sap_p1:
+            sap_data_ini = st.date_input(
+                "Período de Execução — Início", value=agora_dt().date() - timedelta(days=7),
+                key="sap_export_data_ini", format="DD/MM/YYYY"
+            )
+        with col_sap_p2:
+            sap_data_fim = st.date_input(
+                "Período de Execução — Fim", value=agora_dt().date(),
+                key="sap_export_data_fim", format="DD/MM/YYYY"
+            )
+
         if st.button("📦 Preparar Arquivo SAP (Massa)", use_container_width=False, type="primary"):
-            with st.spinner("Preparando exportação..."):
-                conn = get_connection()
-                try: cur = conn.cursor(); cur.execute("SELECT COUNT(*), MAX(os) FROM baixas"); row = cur.fetchone(); baixas_hash_export = f"{row[0]}_{row[1]}"; cur.close()
-                finally: release_connection(conn)
+            if sap_data_ini > sap_data_fim:
+                st.error("⛔ A data de início não pode ser depois da data de fim.")
+            else:
+                with st.spinner("Preparando exportação..."):
+                    # Consulta enxuta: só as OS com baixa DENTRO do período escolhido, direto
+                    # em "baixas" (texto, leve) -- decide o que puxar de os_programadas
+                    # (JSONB, o que mais pesa) ANTES de carregar qualquer coisa, em vez de
+                    # trazer a base inteira e filtrar depois em memória.
+                    conn = get_connection()
+                    try:
+                        cur = conn.cursor()
+                        cur.execute(
+                            """
+                            SELECT os, status FROM baixas
+                            WHERE status IN %s
+                              AND TO_TIMESTAMP(realizado_em, 'DD/MM/YYYY HH24:MI') >= %s
+                              AND TO_TIMESTAMP(realizado_em, 'DD/MM/YYYY HH24:MI') < %s
+                            """,
+                            (
+                                tuple(_status_prazo | _status_atraso),
+                                datetime.combine(sap_data_ini, datetime.min.time()),
+                                datetime.combine(sap_data_fim + timedelta(days=1), datetime.min.time()),
+                            )
+                        )
+                        linhas_periodo = cur.fetchall()
+                        cur.close()
+                    finally:
+                        release_connection(conn)
 
-                df_bruto = carregar_base_sem_overlay(False, 0, 0, st.session_state.get("escopo", "Todas"), ETL_VERSION)
-                df_completo = aplicar_overlay_baixas(df_bruto, st.session_state.get("escopo", "Todas"), baixas_hash_export)
+                    if not linhas_periodo:
+                        st.info("⚠️ Nenhuma OS concluída no período selecionado.")
+                    else:
+                        lista_os_periodo = tuple(str(r[0]).strip() for r in linhas_periodo)
+                        mapa_status_periodo = {str(r[0]).strip(): str(r[1]).strip().upper() for r in linhas_periodo}
 
-                if not df_completo.empty and df_completo["Status da Operação"].astype(str).str.strip().str.upper().isin(_status_prazo | _status_atraso).any():
-                    df_completo["Status_norm"] = df_completo["Status da Operação"].astype(str).str.strip().str.upper()
-                    st.session_state["sap_massa_bytes"] = gerar_excel_sap_bytes(df_completo)
-                    st.session_state["sap_massa_nome"] = f"Baixa_Massa_SAP_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-                    st.success("✅ Arquivo preparado com sucesso.")
-                else: st.info("⚠️ Nenhuma OS concluída.")
+                        df_completo = carregar_base_sem_overlay(
+                            False, 0, 0, st.session_state.get("escopo", "Todas"), ETL_VERSION,
+                            lista_os_filtro=lista_os_periodo
+                        )
+
+                        if df_completo.empty:
+                            st.info("⚠️ Nenhuma OS concluída no período selecionado.")
+                        else:
+                            df_completo["Status_norm"] = df_completo["Ordem servico"].astype(str).str.strip().map(mapa_status_periodo).fillna("")
+                            df_completo = df_completo[df_completo["Status_norm"] != ""]
+                            st.session_state["sap_massa_bytes"] = gerar_excel_sap_bytes(df_completo)
+                            st.session_state["sap_massa_nome"] = (
+                                f"Baixa_Massa_SAP_{sap_data_ini.strftime('%Y%m%d')}_a_{sap_data_fim.strftime('%Y%m%d')}.xlsx"
+                            )
+                            st.success(f"✅ Arquivo preparado com sucesso ({len(df_completo)} OS).")
 
         if st.session_state.get("sap_massa_bytes"):
             st.download_button("⬇️ Baixar Arquivo SAP", data=st.session_state["sap_massa_bytes"], file_name=st.session_state["sap_massa_nome"], mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -3437,7 +3490,7 @@ def tratar_df_os(df: pd.DataFrame):
     return df_out
 
 @st.cache_data
-def carregar_base_sem_overlay(usar_sim: bool, qtd_sim: int, seed_sim: int, escopo_usuario: str, etl_version: str) -> pd.DataFrame:
+def carregar_base_sem_overlay(usar_sim: bool, qtd_sim: int, seed_sim: int, escopo_usuario: str, etl_version: str, lista_os_filtro: tuple = None) -> pd.DataFrame:
     if usar_sim:
         pct_p = st.session_state.get("sim_pct_pendente", 45)
         pct_ok = st.session_state.get("sim_pct_prazo", 40)
@@ -3445,7 +3498,16 @@ def carregar_base_sem_overlay(usar_sim: bool, qtd_sim: int, seed_sim: int, escop
         return gerar_base_simulada(qtd=qtd_sim, seed=seed_sim, pct_p=pct_p, pct_ok=pct_ok, pct_a=pct_a)
 
     conn = get_connection()
-    try: df_raw_db = pd.read_sql_query("SELECT os, coordenacao, dados_completos, data_upload, mes_referencia FROM os_programadas", conn)
+    try:
+        # lista_os_filtro (opcional): restringe a consulta a um conjunto pequeno de OS --
+        # usado pela Exportação SAP por período (região 3.8.4) pra não puxar dados_completos
+        # (JSONB, o que mais pesa em transferência) da base inteira a cada exportação.
+        if lista_os_filtro:
+            placeholders = ",".join(["%s"] * len(lista_os_filtro))
+            query_prog = f"SELECT os, coordenacao, dados_completos, data_upload, mes_referencia FROM os_programadas WHERE os IN ({placeholders})"
+            df_raw_db = pd.read_sql_query(query_prog, conn, params=tuple(lista_os_filtro))
+        else:
+            df_raw_db = pd.read_sql_query("SELECT os, coordenacao, dados_completos, data_upload, mes_referencia FROM os_programadas", conn)
     except Exception as e: df_raw_db = pd.DataFrame()
     finally: release_connection(conn)
 
