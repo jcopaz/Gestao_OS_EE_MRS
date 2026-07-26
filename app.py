@@ -2608,6 +2608,11 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         .info-yellow {{ background: #FEF3C7; color: #92400E; border: 1px solid #FCD34D; }}
         .info-red {{ background: #FEF2F2; color: #991B1B; border: 1px solid #FECACA; }}
         .queue-counter {{ font-size: 28px; font-weight: 800; color: #0F172A; margin: 0; }}
+        .progress-wrap {{ margin-top: 12px; display: none; }}
+        .progress-wrap.active {{ display: block; }}
+        .progress-track {{ width: 100%; height: 10px; background: #E2E8F0; border-radius: 999px; overflow: hidden; }}
+        .progress-fill {{ height: 100%; background: #1D4ED8; border-radius: 999px; transition: width 0.2s ease; width: 0%; }}
+        .progress-label {{ font-size: 13px; color: #334155; margin-top: 6px; font-weight: 600; }}
         .os-list {{ display: grid; gap: 12px; }}
         .os-item {{ border: 1px solid #E2E8F0; border-radius: 12px; padding: 14px; background: #FFFFFF; }}
         .os-item.locked {{ background: #F8FAFC; color: #94A3B8; border-color: #E2E8F0; opacity: 0.75; }}
@@ -2664,6 +2669,13 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 <div class="toolbar" style="margin-top: 12px;">
                     <button id="btnSync" class="btn btn-success">Enviar Dados Localizados</button>
                     <button id="btnClear" class="btn btn-danger">🗑️ Limpar Filas e Reiniciar</button>
+                </div>
+
+                <div id="syncProgressWrap" class="progress-wrap">
+                    <div class="progress-track">
+                        <div id="syncProgressFill" class="progress-fill"></div>
+                    </div>
+                    <p id="syncProgressLabel" class="progress-label">Enviando 0 de 0...</p>
                 </div>
 
                 <div id="syncMsg" class="info-box info-blue" style="margin-top: 12px;">
@@ -2784,6 +2796,11 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     // OS ja gravadas na fila local (pendentes ou sincronizadas). Usado para NAO reexibir
     // uma OS baixada quando a lista e reconstruida (troca de filtro / reabertura do pacote).
     let osGravadasSet = new Set();
+    // Trava contra sincronizacao concorrente: sem isso, tocar "Sincronizar" mais de uma vez
+    // antes da primeira chamada terminar fazia duas passagens lerem a MESMA fila de pendentes
+    // (a primeira ainda nao tinha marcado como sincronizado) -- cada OS acabava enviada 2-4x,
+    // cada envio comprimindo e subindo a mesma foto de novo pro Supabase (achado 26/07/2026).
+    let syncEmAndamento = false;
 
     async function carregarOsGravadas() {{
         return new Promise((resolve) => {{
@@ -3412,6 +3429,14 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 #region 3.13: Gerador Offline - Lógica JS de Sincronização e Fechamento
     js_sync = f"""
     async function sincronizarFila() {{
+        // Trava contra clique duplo/multiplo: sem isso, tocar "Sincronizar" de novo antes da
+        // primeira chamada terminar iniciava uma segunda passagem que lia a MESMA fila de
+        // pendentes (a primeira ainda nao tinha marcado como sincronizado) -- cada OS acabava
+        // enviada 2-4x, comprimindo e subindo a mesma foto de novo pro Supabase a cada vez.
+        if (syncEmAndamento) {{
+            return;
+        }}
+
         const apiUrl = API_URL_FIXA;
         const apiKey = API_KEY_FIXA;
 
@@ -3440,74 +3465,99 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             return;
         }}
 
+        syncEmAndamento = true;
+        const btnSyncEl = document.getElementById("btnSync");
+        const progressWrap = document.getElementById("syncProgressWrap");
+        const progressFill = document.getElementById("syncProgressFill");
+        const progressLabel = document.getElementById("syncProgressLabel");
+        const total = pendentes.length;
+        btnSyncEl.disabled = true;
+        btnSyncEl.textContent = "Sincronizando...";
+        progressWrap.classList.add("active");
+        progressFill.style.width = "0%";
+        progressLabel.textContent = `Enviando 0 de ${{total}}...`;
+
         let sucesso = 0;
         let falha = 0;
         const detalhesFalha = [];
 
-        for (const item of pendentes) {{
-            try {{
-                const formData = new FormData();
-                formData.append("os_id", item.os_id);
-                formData.append("ativo_id", item.ativo_id);
-                formData.append("usuario", item.usuario);
-                formData.append("lat_browser", String(item.lat_browser || 0.0));
-                formData.append("lon_browser", String(item.lon_browser || 0.0));
-                formData.append("data_hora_local", item.data_hora_local);
-                formData.append("acompanhante", item.acompanhante || "");
-                formData.append("horario_inicio", item.horario_inicio);
-                formData.append("horario_fim", item.horario_fim);
-                formData.append("data_inicio_exec", item.data_inicio_exec || "");
-                formData.append("data_fim_exec", item.data_fim_exec || "");
-                formData.append("foto", item.foto_blob, item.foto_nome || "evidencia.jpg");
+        try {{
+            for (let i = 0; i < pendentes.length; i++) {{
+                const item = pendentes[i];
+                try {{
+                    const formData = new FormData();
+                    formData.append("os_id", item.os_id);
+                    formData.append("ativo_id", item.ativo_id);
+                    formData.append("usuario", item.usuario);
+                    formData.append("lat_browser", String(item.lat_browser || 0.0));
+                    formData.append("lon_browser", String(item.lon_browser || 0.0));
+                    formData.append("data_hora_local", item.data_hora_local);
+                    formData.append("acompanhante", item.acompanhante || "");
+                    formData.append("horario_inicio", item.horario_inicio);
+                    formData.append("horario_fim", item.horario_fim);
+                    formData.append("data_inicio_exec", item.data_inicio_exec || "");
+                    formData.append("data_fim_exec", item.data_fim_exec || "");
+                    formData.append("foto", item.foto_blob, item.foto_nome || "evidencia.jpg");
 
-                const resp = await fetch(apiUrl, {{
-                    method: "POST",
-                    headers: {{
-                        "x-api-key": apiKey
-                    }},
-                    body: formData
-                }});
+                    const resp = await fetch(apiUrl, {{
+                        method: "POST",
+                        headers: {{
+                            "x-api-key": apiKey
+                        }},
+                        body: formData
+                    }});
 
-                if (!resp.ok) {{
-                    let msgErro = "Falha na comunicação com o servidor.";
-                    try {{
-                        const errJson = await resp.json();
-                        if (errJson.detail) {{
-                            msgErro = errJson.detail;
-                        }} else {{
-                            msgErro = JSON.stringify(errJson);
+                    if (!resp.ok) {{
+                        let msgErro = "Falha na comunicação com o servidor.";
+                        try {{
+                            const errJson = await resp.json();
+                            if (errJson.detail) {{
+                                msgErro = errJson.detail;
+                            }} else {{
+                                msgErro = JSON.stringify(errJson);
+                            }}
+                        }} catch (parseErr) {{
+                            msgErro = await resp.text() || `Erro no servidor (Código ${{resp.status}})`;
                         }}
-                    }} catch (parseErr) {{
-                        msgErro = await resp.text() || `Erro no servidor (Código ${{resp.status}})`;
+                        throw new Error(msgErro);
                     }}
-                    throw new Error(msgErro);
+
+                    await new Promise((resolve, reject) => {{
+                        const reqUpdate = txStore("readwrite").put({{
+                            ...item,
+                            status_sync: "sincronizado",
+                            sincronizado_em: new Date().toISOString()
+                        }});
+                        reqUpdate.onsuccess = () => resolve(true);
+                        reqUpdate.onerror = () => reject(reqUpdate.error);
+                    }});
+
+                    sucesso += 1;
+                }} catch (e) {{
+                    console.error("Falha na sincronização da OS", item.os_id, e);
+                    falha += 1;
+                    detalhesFalha.push(`OS ${{item.os_id}}: ${{e.message || "Erro desconhecido"}}`);
                 }}
 
-                await new Promise((resolve, reject) => {{
-                    const reqUpdate = txStore("readwrite").put({{
-                        ...item,
-                        status_sync: "sincronizado",
-                        sincronizado_em: new Date().toISOString()
-                    }});
-                    reqUpdate.onsuccess = () => resolve(true);
-                    reqUpdate.onerror = () => reject(reqUpdate.error);
-                }});
-
-                sucesso += 1;
-            }} catch (e) {{
-                console.error("Falha na sincronização da OS", item.os_id, e);
-                falha += 1;
-                detalhesFalha.push(`OS ${{item.os_id}}: ${{e.message || "Erro desconhecido"}}`);
+                const concluidas = i + 1;
+                const pct = Math.round((concluidas / total) * 100);
+                progressFill.style.width = `${{pct}}%`;
+                progressLabel.textContent = `Enviando ${{concluidas}} de ${{total}}...`;
             }}
-        }}
 
-        await atualizarFila();
+            await atualizarFila();
 
-        if (falha === 0) {{
-            setSyncMsg(`Sincronização concluída com sucesso. ${{sucesso}} OS enviada(s).`, "blue");
-        }} else {{
-            const detalhe = detalhesFalha.length ? ` Motivo: ${{detalhesFalha[0]}}` : "";
-            setSyncMsg(`Sincronização parcial. ${{sucesso}} enviada(s) e ${{falha}} falha(s).${{detalhe}}`, "yellow");
+            if (falha === 0) {{
+                setSyncMsg(`Sincronização concluída com sucesso. ${{sucesso}} OS enviada(s).`, "blue");
+            }} else {{
+                const detalhe = detalhesFalha.length ? ` Motivo: ${{detalhesFalha[0]}}` : "";
+                setSyncMsg(`Sincronização parcial. ${{sucesso}} enviada(s) e ${{falha}} falha(s).${{detalhe}}`, "yellow");
+            }}
+        }} finally {{
+            syncEmAndamento = false;
+            btnSyncEl.disabled = false;
+            btnSyncEl.textContent = "Enviar Dados Localizados";
+            progressWrap.classList.remove("active");
         }}
     }}
 
@@ -4063,7 +4113,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v12.0.0")
+st.sidebar.caption("SGO Eletroeletrônica • v12.1.0")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -5905,8 +5955,15 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
             fotos_enviadas = 0
             os_com_falha = []  # [(os_id, motivo), ...]
 
-            for os_id_raw in os_selecionadas:
+            total_selecionadas = len(os_selecionadas)
+            barra_upload = st.progress(0, text=f"Enviando evidências e concluindo OS... 0/{total_selecionadas}")
+
+            for idx_upload, os_id_raw in enumerate(os_selecionadas, start=1):
                 os_id = str(os_id_raw).strip()
+                barra_upload.progress(
+                    (idx_upload - 1) / total_selecionadas,
+                    text=f"Enviando evidências e concluindo OS... {idx_upload}/{total_selecionadas} (OS {os_id})"
+                )
                 foto_da_os = fotos_por_os.get(os_id)
 
                 if foto_da_os is None:
@@ -5966,6 +6023,9 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
 
                 except Exception as e_foto:
                     os_com_falha.append((os_id, str(e_foto)))
+
+            barra_upload.progress(1.0, text="Concluído.")
+            barra_upload.empty()
 
             if fotos_enviadas > 0:
                 st.info(f"📷 {fotos_enviadas} OS concluída(s) e evidência(s) registrada(s) com sucesso!")
