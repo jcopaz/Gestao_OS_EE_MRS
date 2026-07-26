@@ -81,6 +81,13 @@ esquecer de adicionar a entrada dele em `MAPA_CENTRO_SAP`** — sem isso, a
 exportação SAP dele sairá vazia com aviso, em vez de errada silenciosamente
 (comportamento seguro, mas ainda exige essa ação manual).
 
+**Validado contra dado real de produção (26/07/2026):** o Julio rodou no
+Neon a contagem de `coordenacao` distintas em `baixas` — **13.888 linhas
+"Piaçaguera" + 11.554 "Paranapiacaba", 25.442 no total, zero linhas fora
+dessas duas grafias exatas**. Ou seja: a correção não exclui nenhuma OS
+histórica da exportação — o risco era só pra coordenação futura ainda não
+cadastrada, exatamente como o plano previa.
+
 ## 5. Seletor de "Visão" na sidebar já existe — é o mesmo pedido da Fase 2b, mas incompleto
 ```python
 visao_selecionada = st.sidebar.radio("Selecione a Visão:", ["Gerência", "Paranapiacaba", "Piaçaguera"], ...)
