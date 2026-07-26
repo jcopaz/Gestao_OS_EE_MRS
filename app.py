@@ -5150,8 +5150,12 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 
 #region 10.3.2: Navegação Geográfica Operacional (GPS + Raio)
             st.markdown("### 🗺️ Navegação Geográfica Operacional")
-            st.toggle("🗺️ Mostrar Mapa de Navegação Geográfica", value=True, key="toggle_mostrar_mapa")
-            col_mapa, col_acao = st.columns([6, 4], gap="large")
+
+            expander_mapa = st.expander("🗺️ Mapa de Navegação Geográfica", expanded=True)
+            col_mapa = expander_mapa.container()
+
+            expander_ferramentas = st.expander("⚙️ Ferramentas de Campo e Filtros", expanded=True)
+            col_acao = expander_ferramentas.container()
 
             if "df_filtrado" in locals(): df_pendentes_f = df_filtrado[df_filtrado["Status_norm"].isin(_status_aberto)].copy()
             else: df_pendentes_f = df_visao[df_visao["Status_norm"].isin(_status_aberto)].copy()
@@ -5971,17 +5975,19 @@ def bloco_roteirizacao_interativo():
     if st.session_state.get("campo_filtro_mes_os") not in _opcoes_meses:
         st.session_state["campo_filtro_mes_os"] = "Todos os Meses"
 
-    col_f_especialidade, col_f_ativo, col_f_mes = st.columns(3)
-    with col_f_especialidade:
-        st.selectbox("🛠️ Filtrar por Especialidade:", _opcoes_especialidades, key="campo_filtro_especialidade_os")
-    with col_f_ativo:
-        st.multiselect(
-            "🔍 Filtrar OS do cronograma por Ativo (vazio = todos):",
-            _ativos_disp,
-            key="campo_filtro_ativo_os"
-        )
-    with col_f_mes:
-        st.selectbox("🗓️ Filtrar por Mês (programação):", _opcoes_meses, key="campo_filtro_mes_os")
+    with col_acao:
+        st.markdown("---")
+        col_f_especialidade, col_f_ativo, col_f_mes = st.columns(3)
+        with col_f_especialidade:
+            st.selectbox("🛠️ Filtrar por Especialidade:", _opcoes_especialidades, key="campo_filtro_especialidade_os")
+        with col_f_ativo:
+            st.multiselect(
+                "🔍 Filtrar OS do cronograma por Ativo (vazio = todos):",
+                _ativos_disp,
+                key="campo_filtro_ativo_os"
+            )
+        with col_f_mes:
+            st.selectbox("🗓️ Filtrar por Mês (programação):", _opcoes_meses, key="campo_filtro_mes_os")
 
     df_recomendado_ui = _aplicar_filtros_cronograma(df_recomendado)
     _render_apontamento(df_recomendado_ui)
@@ -5995,7 +6001,7 @@ if tab2 is not None:
 #endregion 10.3.3
 
 #region 10.3.4: Mapa Interativo Otimizado (Cache da Malha)
-if tab2 is not None and st.session_state.get("toggle_mostrar_mapa", True):
+if tab2 is not None:
   with col_mapa:  # pyright: ignore[reportGeneralTypeIssues]
     lat_centro = min(max(lat_origem, -25.50), -19.50)
     lon_centro = min(max(lon_origem, -53.50), -44.00)
