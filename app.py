@@ -2160,26 +2160,26 @@ Ordem padrão do sistema: `Segurança da Operação → Criticidade → Atraso �
             "No fluxo online, a mudança já vale na próxima ação do usuário."
         )
 
+        st.markdown(
+            """
+            <style>
+            .st-key-btn_resetar_config_op button {
+                background-color: #2563EB !important;
+                color: #FFFFFF !important;
+                border-color: #2563EB !important;
+            }
+            .st-key-btn_resetar_config_op button:hover {
+                background-color: #1D4ED8 !important;
+                border-color: #1D4ED8 !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
         col_btn_salvar, col_btn_reset = st.columns([3, 1])
         with col_btn_salvar:
             salvar_clicado = st.form_submit_button("💾 Salvar Configuração", type="primary", use_container_width=True)
         with col_btn_reset:
-            st.markdown(
-                """
-                <style>
-                .st-key-btn_resetar_config_op button {
-                    background-color: #2563EB !important;
-                    color: #FFFFFF !important;
-                    border-color: #2563EB !important;
-                }
-                .st-key-btn_resetar_config_op button:hover {
-                    background-color: #1D4ED8 !important;
-                    border-color: #1D4ED8 !important;
-                }
-                </style>
-                """,
-                unsafe_allow_html=True
-            )
             resetar_clicado = st.form_submit_button(
                 "🔄 Resetar Padrões",
                 use_container_width=True,
@@ -4031,7 +4031,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v11.2.1")
+st.sidebar.caption("SGO Eletroeletrônica • v11.2.2")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
