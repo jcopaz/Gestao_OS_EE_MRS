@@ -58,7 +58,6 @@ def init_connection_pool():
 
 
 def get_connection():
-    global pool_conexoes
     if pool_conexoes is None:
         init_connection_pool()
     conn = pool_conexoes.getconn()
@@ -78,9 +77,14 @@ def get_connection():
 
 
 def release_connection(conn):
-    global pool_conexoes
     if pool_conexoes is not None and conn is not None:
         try:
+            # Sem isso, uma query que falhou no meio (rede, valor invalido) devolvia a
+            # conexao ao pool com a transacao ABORTADA -- a PROXIMA sincronizacao (de
+            # qualquer tecnico, pool e compartilhado entre todas as requisicoes) pegava
+            # essa mesma conexao e levava "current transaction is aborted" sem relacao
+            # com o erro original. rollback() em conexao sem transacao pendente e no-op seguro.
+            conn.rollback()
             pool_conexoes.putconn(conn)
         except Exception:
             pass
@@ -367,7 +371,13 @@ async def sincronizar_baixa_offline(
         raise HTTPException(status_code=400, detail="Localizacao obrigatoria nao recebida. Ative o GPS do aparelho e capture a localizacao antes de sincronizar a baixa.")
 
     # 3) Validação Antifraude por geofencing (limite configurável por coordenação)
-    coordenada_ativo = COORDENADAS_FIXAS.get(ativo_id[:3], COORDENADAS_FIXAS["IPA"])
+    # Fail-closed: se o pátio do ativo não resolver para uma coordenada conhecida, a
+    # sincronização é BLOQUEADA -- antes caía num default fixo (IPA), deixando a
+    # validação de geofence passar contra o pátio errado (mesma classe de bug já
+    # corrigida no fluxo online do app.py, seção 10.3.3).
+    coordenada_ativo = COORDENADAS_FIXAS.get(str(ativo_id).strip().upper()[:3])
+    if coordenada_ativo is None:
+        raise HTTPException(status_code=400, detail=f"Não foi possível identificar o pátio do ativo '{ativo_id}' para validar a geolocalização. Contate o suporte antes de sincronizar.")
     lat_ativo, lon_ativo = coordenada_ativo[0], coordenada_ativo[1]
 
     dist_km = haversine_vectorized(lat_final, lon_final, pd.Series([lat_ativo]), pd.Series([lon_ativo]))[0]

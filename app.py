@@ -6,7 +6,6 @@ import time
 import math
 import re
 import os
-import shutil
 import hashlib
 import json
 import psycopg2
@@ -19,9 +18,8 @@ from PIL import Image, ImageOps
 from streamlit_folium import st_folium
 from geopy.geocoders import Nominatim
 from streamlit_js_eval import get_geolocation
-from streamlit_echarts import st_echarts, JsCode
+from streamlit_echarts import st_echarts
 from datetime import datetime, timezone, timedelta
-from pathlib import Path
 from streamlit_calendar import calendar
 from psycopg2.extras import execute_values
 from psycopg2 import pool
@@ -89,8 +87,8 @@ def init_connection_pool():
     for tentativa in range(max_retries):
         try:
             # Adicionando um timeout de conexão para não travar o pooler do Neon
-            return psycopg2.pool.SimpleConnectionPool(
-                1, 20, 
+            return psycopg2.pool.SimpleConnectionPool(  # pyright: ignore[reportAttributeAccessIssue]
+                1, 20,
                 dsn=st.secrets["NEON_POSTGRES_URL"],
                 connect_timeout=10
             )
@@ -99,6 +97,7 @@ def init_connection_pool():
                 raise e # Se falhar 10 vezes, aí sim repassa o erro
             print(f"⚠️ Banco de dados Neon acordando... Tentativa {tentativa + 1} de {max_retries}. Aguardando 4 segundos.")
             time.sleep(4)
+    raise RuntimeError("Falha ao inicializar o pool de conexões após todas as tentativas.")
 
 pool_conexoes = init_connection_pool()
 
@@ -121,6 +120,13 @@ def get_connection():
 def release_connection(conn):
     if pool_conexoes is not None:
         try:
+            # Sem isso, uma query que falhou no meio (coluna inexistente, erro de rede,
+            # valor invalido) devolvia a conexao ao pool com a transacao ABORTADA -- o
+            # PROXIMO usuario a pegar essa mesma conexao (pool e compartilhado entre todas
+            # as sessoes) levava "current transaction is aborted" na primeira query dele,
+            # sem relacao alguma com o erro original. rollback() em conexao sem transacao
+            # pendente (ja commitada ou nunca usada) e no-op seguro.
+            conn.rollback()
             pool_conexoes.putconn(conn)
         except Exception:
             pass # Ignora erros ao devolver conexões mortas ao pool
@@ -285,7 +291,7 @@ for _key, _val in _defaults_session.items():
 #endregion
 
 #region 1.6: Persistência de Sessão (token HMAC na URL — sobrevive à câmera no mobile)
-import hmac, hashlib, time, base64
+import hmac, base64
 
 def _auth_secret():
     return st.secrets.get("AUTH_TOKEN_SECRET", "TROQUE-ESTE-SEGREDO-NO-SECRETS")
@@ -317,10 +323,13 @@ if not st.session_state.get("logged_in"):
         _user_tok = validar_token_sessao(_tok)
         if _user_tok:
             conn = get_connection()
-            cur = conn.cursor()
-            cur.execute("SELECT perfil, escopo, governanca FROM usuarios WHERE username = %s", (_user_tok,))
-            _row = cur.fetchone()
-            cur.close(); release_connection(conn)
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT perfil, escopo, governanca FROM usuarios WHERE username = %s", (_user_tok,))
+                _row = cur.fetchone()
+                cur.close()
+            finally:
+                release_connection(conn)
             if _row:
                 st.session_state.update({
                     "logged_in": True, "username": _user_tok,
@@ -355,11 +364,13 @@ if not st.session_state["logged_in"]:
                     elif not palavra_nova: st.error("Defina uma palavra-chave!")
                     else:
                         conn = get_connection()
-                        cur = conn.cursor()
-                        cur.execute("UPDATE usuarios SET senha_hash = %s, palavra_recuperacao = %s, reset_obrigatorio = 0 WHERE username = %s", (hash_senha(nova_senha), palavra_nova.strip(), st.session_state["reset_user"]))
-                        conn.commit()
-                        cur.close()
-                        release_connection(conn)
+                        try:
+                            cur = conn.cursor()
+                            cur.execute("UPDATE usuarios SET senha_hash = %s, palavra_recuperacao = %s, reset_obrigatorio = 0 WHERE username = %s", (hash_senha(nova_senha), palavra_nova.strip(), st.session_state["reset_user"]))
+                            conn.commit()
+                            cur.close()
+                        finally:
+                            release_connection(conn)
                         st.success("Concluído! Entre com sua nova senha."); st.session_state["needs_reset"] = False; st.rerun()
             if st.button("⬅️ Voltar"): st.session_state["needs_reset"] = False; st.rerun()
 #endregion
@@ -377,14 +388,16 @@ if not st.session_state["logged_in"]:
                 if lat_log is not None and lon_log is not None:
                     geo_str = f"Lat: {lat_log}, Lon: {lon_log}"
                     conn = get_connection()
-                    cur = conn.cursor()
-                    cur.execute("""
-                        INSERT INTO logs_acesso (username, data_hora_login, geolocalizacao_login)
-                        VALUES (%s, CURRENT_TIMESTAMP, %s)
-                    """, (st.session_state["temp_user"], geo_str))
-                    conn.commit()
-                    cur.close()
-                    release_connection(conn)
+                    try:
+                        cur = conn.cursor()
+                        cur.execute("""
+                            INSERT INTO logs_acesso (username, data_hora_login, geolocalizacao_login)
+                            VALUES (%s, CURRENT_TIMESTAMP, %s)
+                        """, (st.session_state["temp_user"], geo_str))
+                        conn.commit()
+                        cur.close()
+                    finally:
+                        release_connection(conn)
                     
                     st.session_state.update({
                         "logged_in": True, "username": st.session_state["temp_user"],
@@ -410,11 +423,13 @@ if not st.session_state["logged_in"]:
             
             if submit:
                 conn = get_connection()
-                cur = conn.cursor()
-                cur.execute("SELECT senha_hash, perfil, escopo, reset_obrigatorio, governanca FROM usuarios WHERE username = %s", (user_input.strip(),))
-                row = cur.fetchone()
-                cur.close()
-                release_connection(conn)
+                try:
+                    cur = conn.cursor()
+                    cur.execute("SELECT senha_hash, perfil, escopo, reset_obrigatorio, governanca FROM usuarios WHERE username = %s", (user_input.strip(),))
+                    row = cur.fetchone()
+                    cur.close()
+                finally:
+                    release_connection(conn)
                 
                 if row and row[0] == hash_senha(pass_input):
                     if row[3] == 1:
@@ -611,9 +626,9 @@ def tentar_gps_uma_vez():
 def reverse_geocode_coordenada(lat: float, lon: float) -> str:
     try:
         geolocator = Nominatim(user_agent="sgo_mrs_app")
-        location = geolocator.reverse((float(lat), float(lon)), exactly_one=True, timeout=10, language="pt")
+        location = geolocator.reverse((float(lat), float(lon)), exactly_one=True, timeout=10, language="pt")  # pyright: ignore[reportArgumentType]
         if location and getattr(location, "address", None):
-            return str(location.address)
+            return str(location.address)  # pyright: ignore[reportAttributeAccessIssue]
         if location and isinstance(location, dict) and location.get("display_name"):
             return str(location.get("display_name"))
     except Exception:
@@ -648,7 +663,10 @@ def carregar_baixas_df() -> pd.DataFrame:
         # CORREÇÃO: Adicionamos a foto_evidencia na leitura do Neon!
         df = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, foto_evidencia FROM baixas", conn)
     except Exception:
-        # Fallback caso a coluna ainda não exista em algum ambiente
+        # Fallback caso a coluna ainda não exista em algum ambiente. Sem o rollback, a
+        # transacao seguia ABORTADA depois do erro acima -- essa segunda query tambem
+        # falharia ("current transaction is aborted"), estourando pra fora da funcao.
+        conn.rollback()
         df = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa FROM baixas", conn)
     finally: 
         release_connection(conn)
@@ -914,7 +932,7 @@ def preparar_df_visao(df_base: pd.DataFrame, filtro_visao: str) -> pd.DataFrame:
         df_visao = df_visao[df_visao["Coordenacao"] == filtro_norm].copy()
 
     df_visao["Status_norm"] = df_visao["Status da Operação"].astype(str).str.strip().str.upper()
-    df_visao["dt_realizado"] = df_visao["Data/Hora Realizado"].apply(parse_datahora_realizado)
+    df_visao["dt_realizado"] = df_visao["Data/Hora Realizado"].apply(parse_datahora_realizado)  # pyright: ignore[reportCallIssue, reportArgumentType]
     df_visao["Turno"] = df_visao["dt_realizado"].apply(classificar_turno)
     df_visao["dia_realizado"] = pd.to_datetime(df_visao["dt_realizado"], errors="coerce").dt.normalize()
     df_visao["dt_prog_filtro"] = pd.to_datetime(df_visao["Data inicial programada"], errors="coerce")
@@ -929,8 +947,8 @@ def preparar_df_visao(df_base: pd.DataFrame, filtro_visao: str) -> pd.DataFrame:
 def aplicar_filtros_sidebar(
     df_visao: pd.DataFrame, patios_selecionados: list, classif_selecionadas: list,
     turnos_selecionados: list, start_date, end_date, status_sel: str = "Todos", intervalo_sel: str = "Todas",
-    crit_selecionadas: list = None, exec_start_date=None, exec_end_date=None,
-    grupos_ativo_selecionados: list = None, ativos_selecionados: list = None
+    crit_selecionadas: list | None = None, exec_start_date=None, exec_end_date=None,
+    grupos_ativo_selecionados: list | None = None, ativos_selecionados: list | None = None
 ) -> pd.DataFrame:
     df = df_visao.copy()
     if "dt_prog_filtro" in df.columns:
@@ -1059,7 +1077,7 @@ def resumir_conclusoes_por_turno_data(df_base_cal: pd.DataFrame, data_ref) -> di
     
     df = df_base_cal.copy()
     if "dt_prog_filtro" not in df.columns: df["dt_prog_filtro"] = pd.to_datetime(df["Data inicial programada"], errors="coerce")
-    if "dt_realizado" not in df.columns: df["dt_realizado"] = df["Data/Hora Realizado"].apply(parse_datahora_realizado)
+    if "dt_realizado" not in df.columns: df["dt_realizado"] = df["Data/Hora Realizado"].apply(parse_datahora_realizado)  # pyright: ignore[reportCallIssue, reportArgumentType]
     if "Turno" not in df.columns: df["Turno"] = df["dt_realizado"].apply(classificar_turno)
     if "Status_norm" not in df.columns: df["Status_norm"] = df["Status da Operação"].astype(str).str.strip().str.upper()
 
@@ -1220,7 +1238,7 @@ def render_tela_admin():
                 st.caption(f"📊 Visão restrita à coordenação **{escopo_user}**")
             
             st.dataframe(
-                df_hist.style.set_properties(**{'text-align': 'center'}).set_table_styles(
+                df_hist.style.set_properties(**{'text-align': 'center'}).set_table_styles(  # pyright: ignore[reportArgumentType]
                     [{'selector': 'th', 'props': [('text-align', 'center')]}]
                 ),
                 use_container_width=True,
@@ -1460,7 +1478,7 @@ def render_tela_admin():
 
         # 2. Se o Excel já entregou como objeto Data (datetime nativo), extraímos no padrão BR
         if hasattr(valor, "strftime"):
-            return valor.strftime("%d/%m/%Y")
+            return valor.strftime("%d/%m/%Y")  # pyright: ignore[reportAttributeAccessIssue]
 
         texto = _limpar_texto(valor).replace(".", "/").replace("-", "/")
 
@@ -2200,7 +2218,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     if "dt_prog_filtro" in df_pendentes.columns:
         df_pendentes["MesAno"] = pd.to_datetime(df_pendentes["dt_prog_filtro"], errors="coerce").dt.strftime("%m/%Y").fillna("")
     else:
-        df_pendentes["MesAno"] = pd.to_datetime(df_pendentes.get("Data inicial programada"), errors="coerce").dt.strftime("%m/%Y").fillna("")
+        df_pendentes["MesAno"] = pd.to_datetime(df_pendentes.get("Data inicial programada"), errors="coerce").dt.strftime("%m/%Y").fillna("")  # pyright: ignore[reportCallIssue, reportArgumentType]
 
     colunas_export = ["Ordem servico", "Ativo", "Atividade ativo", "Patio", "Criticidade", "MesAno"]
     if "Tipo_Intervalo" in df_pendentes.columns:
@@ -3441,7 +3459,7 @@ def tratar_df_os(df: pd.DataFrame):
         return "N/D"
 
     df["PATIO_CAN"] = df["ATIVO_CAN"].apply(_resolver_patio)
-    df["DATA_PROG_CAN"] = df[col_data_prog].apply(parse_data_programada)
+    df["DATA_PROG_CAN"] = df[col_data_prog].apply(parse_data_programada)  # pyright: ignore[reportCallIssue, reportArgumentType]
     df["DESC_LONGA_CAN"] = df[col_desc].astype(str).str.strip() if col_desc else ""
     df["ESPECIALIDADE_CAN"] = df[col_especialidade].astype(str).str.strip() if col_especialidade else "N/D"
     
@@ -3490,7 +3508,7 @@ def tratar_df_os(df: pd.DataFrame):
     return df_out
 
 @st.cache_data
-def carregar_base_sem_overlay(escopo_usuario: str, etl_version: str, lista_os_filtro: tuple = None) -> pd.DataFrame:
+def carregar_base_sem_overlay(escopo_usuario: str, etl_version: str, lista_os_filtro: tuple | None = None) -> pd.DataFrame:
     conn = get_connection()
     try:
         # lista_os_filtro (opcional): restringe a consulta a um conjunto pequeno de OS --
@@ -3502,7 +3520,7 @@ def carregar_base_sem_overlay(escopo_usuario: str, etl_version: str, lista_os_fi
             df_raw_db = pd.read_sql_query(query_prog, conn, params=tuple(lista_os_filtro))
         else:
             df_raw_db = pd.read_sql_query("SELECT os, coordenacao, dados_completos, data_upload, mes_referencia FROM os_programadas", conn)
-    except Exception as e: df_raw_db = pd.DataFrame()
+    except Exception: df_raw_db = pd.DataFrame()
     finally: release_connection(conn)
 
     if df_raw_db.empty: return pd.DataFrame()
@@ -3596,7 +3614,7 @@ def carregar_base_sem_overlay(escopo_usuario: str, etl_version: str, lista_os_fi
     return df_base_final
 
 @st.cache_data(show_spinner=False)
-def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, baixas_mtime: float) -> pd.DataFrame:
+def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, baixas_mtime: str) -> pd.DataFrame:
     df_base = df_base_bruto.copy()
     if df_base.empty: return df_base
 
@@ -3643,7 +3661,7 @@ def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, bai
         _dt_upload_ciclo = pd.to_datetime(df_base["_data_upload_ciclo"], errors="coerce")
     else:
         _dt_upload_ciclo = pd.Series(pd.NaT, index=df_base.index)
-    _dt_realizado_baixa = df_base["Data/Hora Realizado_baixado"].apply(parse_datahora_realizado)
+    _dt_realizado_baixa = df_base["Data/Hora Realizado_baixado"].apply(parse_datahora_realizado)  # pyright: ignore[reportCallIssue, reportArgumentType]
     # Baixa é válida quando: tem data de realização E (não há timestamp de importação do ciclo atual
     # para comparar OU a baixa ocorreu depois que o ciclo vigente foi importado do SAP). Usamos
     # "data_upload" (quando o ciclo entrou no sistema) em vez da "Data inicial programada" (data-alvo)
@@ -4139,8 +4157,10 @@ if "Gestão de Usuários" in st.session_state.get("governanca", ""):
         #region 8.2.2: Gerenciar Existentes
         st.markdown("**👥 Gerenciar Usuários**", unsafe_allow_html=True)
         conn = get_connection()
-        df_usuarios = pd.read_sql_query("SELECT username, nome, perfil, escopo, coordenacao_padrao, governanca FROM usuarios", conn)
-        release_connection(conn)
+        try:
+            df_usuarios = pd.read_sql_query("SELECT username, nome, perfil, escopo, coordenacao_padrao, governanca FROM usuarios", conn)
+        finally:
+            release_connection(conn)
 
         if not df_usuarios.empty:
             df_usuarios["label_exibicao"] = df_usuarios.apply(lambda r: f"{str(r['nome']).strip()} ({str(r['username']).strip()})" if pd.notna(r["nome"]) and str(r["nome"]).strip() else str(r["username"]).strip(), axis=1)
@@ -4164,23 +4184,35 @@ if "Gestão de Usuários" in st.session_state.get("governanca", ""):
                         gov_editadas = st.multiselect("Governança:", opcoes_gov, default=[g for g in gov_atual_lista if g in opcoes_gov])
 
                         if st.form_submit_button("Salvar Alterações"):
-                            conn = get_connection(); cur = conn.cursor()
-                            cur.execute("UPDATE usuarios SET nome=%s, perfil=%s, escopo=%s, coordenacao_padrao=%s, governanca=%s WHERE username=%s", (n_nome_edit.strip(), n_perf_edit, n_esco_edit, n_sede_edit, ",".join(gov_editadas), usr_sel))
-                            conn.commit(); cur.close(); release_connection(conn)
+                            conn = get_connection()
+                            try:
+                                cur = conn.cursor()
+                                cur.execute("UPDATE usuarios SET nome=%s, perfil=%s, escopo=%s, coordenacao_padrao=%s, governanca=%s WHERE username=%s", (n_nome_edit.strip(), n_perf_edit, n_esco_edit, n_sede_edit, ",".join(gov_editadas), usr_sel))
+                                conn.commit(); cur.close()
+                            finally:
+                                release_connection(conn)
                             st.session_state["msg_sucesso_user"] = f"Cadastro de {n_nome_edit} ({usr_sel}) atualizado!"
                             st.rerun(scope="fragment")
                 elif acao == "🔑 Resetar Senha":
                     if st.button("Confirmar Reset", key="btn_reset_frag"):
-                        conn = get_connection(); cur = conn.cursor()
-                        cur.execute("UPDATE usuarios SET senha_hash = %s, reset_obrigatorio = 1 WHERE username = %s", (hash_senha("mrs123"), usr_sel))
-                        conn.commit(); cur.close(); release_connection(conn)
+                        conn = get_connection()
+                        try:
+                            cur = conn.cursor()
+                            cur.execute("UPDATE usuarios SET senha_hash = %s, reset_obrigatorio = 1 WHERE username = %s", (hash_senha("mrs123"), usr_sel))
+                            conn.commit(); cur.close()
+                        finally:
+                            release_connection(conn)
                         st.session_state["msg_sucesso_user"] = f"Senha de {dados_usr['nome']} ({usr_sel}) resetada!"
                         st.rerun(scope="fragment")
                 elif acao == "🗑️ Excluir":
                     if st.button("Confirmar Exclusão", type="primary", key="btn_excluir_frag"):
-                        conn = get_connection(); cur = conn.cursor()
-                        cur.execute("DELETE FROM usuarios WHERE username = %s", (usr_sel,))
-                        conn.commit(); cur.close(); release_connection(conn)
+                        conn = get_connection()
+                        try:
+                            cur = conn.cursor()
+                            cur.execute("DELETE FROM usuarios WHERE username = %s", (usr_sel,))
+                            conn.commit(); cur.close()
+                        finally:
+                            release_connection(conn)
                         st.session_state["msg_sucesso_user"] = f"Usuário {dados_usr['nome']} ({usr_sel}) excluído."
                         st.rerun(scope="fragment")
         else: st.info("Nenhum usuário cadastrado.")
@@ -4212,6 +4244,7 @@ if "Gestão de Usuários" in st.session_state.get("governanca", ""):
                             registros, erros = [], []
 
                             for idx, row in df_users.iterrows():
+                                idx = int(idx)  # pyright: ignore[reportArgumentType]
                                 matricula = str(row["username"]).strip()
                                 nome = str(row["Nome"]).strip()
                                 perfil = str(row["perfil"]).strip()
@@ -4273,9 +4306,12 @@ with col_acoes:
     if st.button("🔑 Trocar", use_container_width=True):
         usr_atual = st.session_state["username"]
         conn = get_connection()
-        cur = conn.cursor()
-        cur.execute("UPDATE usuarios SET reset_obrigatorio = 1 WHERE username = %s", (usr_atual,))
-        conn.commit(); cur.close(); release_connection(conn)
+        try:
+            cur = conn.cursor()
+            cur.execute("UPDATE usuarios SET reset_obrigatorio = 1 WHERE username = %s", (usr_atual,))
+            conn.commit(); cur.close()
+        finally:
+            release_connection(conn)
         
         st.session_state.clear()
         st.session_state.update({"logged_in": False, "needs_reset": True, "reset_user": usr_atual})
@@ -5332,7 +5368,7 @@ def gerar_pdf_cronograma_bytes(df_pdf: pd.DataFrame, titulo: str = "Cronograma d
 
     data = [colunas_pdf]
     for _, row in df_local.iterrows():
-        data.append([Paragraph(str(row[c]), styles["BodyText"]) for c in colunas_pdf])
+        data.append([Paragraph(str(row[c]), styles["BodyText"]) for c in colunas_pdf])  # pyright: ignore[reportArgumentType]
 
     tabela = Table(
         data,
@@ -5513,6 +5549,30 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
     if not os_selecionadas:
         return
 
+    conn = get_connection()
+    try:
+        df_users_equipe = pd.read_sql_query("SELECT username, escopo FROM usuarios", conn)
+    finally:
+        release_connection(conn)
+
+    # Equipe/matrícula só pode indicar colegas da MESMA lotação (escopo) do usuário logado --
+    # Paranapiacaba só vê Paranapiacaba, Piaçaguera só vê Piaçaguera. "Todas" (perfis
+    # Gerência/Administrador) continua vendo todo mundo, sem restrição.
+    escopo_logado = st.session_state.get("escopo", "Todas")
+    if escopo_logado != "Todas" and "escopo" in df_users_equipe.columns:
+        df_users_equipe = df_users_equipe[df_users_equipe["escopo"].astype(str).str.strip() == str(escopo_logado).strip()]
+
+    lista_equipe_disp = df_users_equipe["username"].dropna().astype(str).tolist()
+    usr_logado = st.session_state.get("username", "")
+    if usr_logado in lista_equipe_disp:
+        lista_equipe_disp.remove(usr_logado)
+
+    equipe_selecionada = st.multiselect(
+        "2. Selecione a sua equipe:",
+        lista_equipe_disp,
+        key="campo_equipe_selecionada"
+    )
+
     st.markdown("---")
     st.markdown("#### 📷 Evidências Fotográficas")
     st.caption("Registre a evidência de cada OS. A imagem será comprimida automaticamente.")
@@ -5546,24 +5606,6 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
             # Essa e a proxima pendente -- trava as OS seguintes ate ela ser preenchida.
             _bloqueado = True
 
-    conn = get_connection()
-    try:
-        df_users_equipe = pd.read_sql_query("SELECT username, escopo FROM usuarios", conn)
-    finally:
-        release_connection(conn)
-
-    # Equipe/matrícula só pode indicar colegas da MESMA lotação (escopo) do usuário logado --
-    # Paranapiacaba só vê Paranapiacaba, Piaçaguera só vê Piaçaguera. "Todas" (perfis
-    # Gerência/Administrador) continua vendo todo mundo, sem restrição.
-    escopo_logado = st.session_state.get("escopo", "Todas")
-    if escopo_logado != "Todas" and "escopo" in df_users_equipe.columns:
-        df_users_equipe = df_users_equipe[df_users_equipe["escopo"].astype(str).str.strip() == str(escopo_logado).strip()]
-
-    lista_equipe_disp = df_users_equipe["username"].dropna().astype(str).tolist()
-    usr_logado = st.session_state.get("username", "")
-    if usr_logado in lista_equipe_disp:
-        lista_equipe_disp.remove(usr_logado)
-
     # Toggle FORA do form (para re-renderizar ao alternar): 1 horario que replica p/ todas as OS.
     usar_horario_unico = st.toggle(
         "⏱️ Usar um único horário para todas as OS selecionadas (baixa em massa)",
@@ -5572,14 +5614,6 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
     )
 
     with st.form("form_apontamento_os"):
-        equipe_selecionada = st.multiselect(
-            "2. Selecione a sua equipe:",
-            lista_equipe_disp,
-            key="campo_equipe_selecionada"
-        )
-
-        st.markdown("---")
-
         apontamentos = {}
         todos_preenchidos = True
         hoje_ref = agora_dt().date()
@@ -5644,9 +5678,26 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
                 if h_ini is None or h_fim is None:
                     todos_preenchidos = False
 
+        st.markdown(
+            """
+            <style>
+            .st-key-btn_concluir_gravar_os button {
+                background-color: #16A34A !important;
+                color: #FFFFFF !important;
+                border-color: #16A34A !important;
+            }
+            .st-key-btn_concluir_gravar_os button:hover {
+                background-color: #15803D !important;
+                border-color: #15803D !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
         submit_execucao = st.form_submit_button(
             "🚀 Concluir e Gravar OS(s)",
-            use_container_width=True
+            use_container_width=True,
+            key="btn_concluir_gravar_os"
         )
 
         if submit_execucao:
@@ -5928,7 +5979,7 @@ if tab2 is not None:
 
 #region 10.3.4: Mapa Interativo Otimizado (Cache da Malha)
 if tab2 is not None:
-  with col_mapa:
+  with col_mapa:  # pyright: ignore[reportGeneralTypeIssues]
     lat_centro = min(max(lat_origem, -25.50), -19.50)
     lon_centro = min(max(lon_origem, -53.50), -44.00)
     zoom_mapa = int(min(18, max(6, round(math.log2(360.0 / max((2.0 * max(float(raio_busca_km), 0.5)) / (111.320 * max(math.cos(math.radians(float(lat_centro))), 0.20)), 1e-6))))))
@@ -5977,7 +6028,7 @@ def gerar_pdf_concluidas_bytes(df_pdf, titulo="OS Concluídas - Fim de Turno"):
     df_local = df_pdf.reindex(columns=colunas_pdf).fillna("").copy()
     data = [colunas_pdf]
     for _, row in df_local.iterrows():
-        data.append([Paragraph(str(row[c]), styles["BodyText"]) for c in colunas_pdf])
+        data.append([Paragraph(str(row[c]), styles["BodyText"]) for c in colunas_pdf])  # pyright: ignore[reportArgumentType]
     tabela = Table(data, repeatRows=1, colWidths=[65, 140, 60, 100, 75, 90, 110])
     tabela.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#163A70")),
@@ -6073,10 +6124,13 @@ if st.session_state.get("tela_atual") == "governanca":
                 senha_confirm = st.text_input("Digite sua Senha", type="password")
                 if st.form_submit_button("Desbloquear Painel", use_container_width=True):
                     conn = get_connection()
-                    cur = conn.cursor()
-                    cur.execute("SELECT senha_hash FROM usuarios WHERE username = %s", (st.session_state.get("username"),))
-                    row = cur.fetchone()
-                    cur.close(); release_connection(conn)
+                    try:
+                        cur = conn.cursor()
+                        cur.execute("SELECT senha_hash FROM usuarios WHERE username = %s", (st.session_state.get("username"),))
+                        row = cur.fetchone()
+                        cur.close()
+                    finally:
+                        release_connection(conn)
                     if row and row[0] == hash_senha(senha_confirm): st.session_state["gov_auth_ok"] = True; st.rerun()
                     else: st.error("❌ Senha incorreta. Acesso negado.")
         st.stop()
@@ -6234,8 +6288,8 @@ if st.session_state.get("tela_atual") == "governanca":
         data_fim_gov = pd.to_datetime(d_fim).normalize()
 
         idx_gov = pd.date_range(
-            start=data_ini_gov,
-            end=data_fim_gov,
+            start=data_ini_gov,  # pyright: ignore[reportArgumentType]
+            end=data_fim_gov,  # pyright: ignore[reportArgumentType]
             freq="D"
         )
 
