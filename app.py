@@ -5150,6 +5150,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 
 #region 10.3.2: Navegação Geográfica Operacional (GPS + Raio)
             st.markdown("### 🗺️ Navegação Geográfica Operacional")
+            st.toggle("🗺️ Mostrar Mapa de Navegação Geográfica", value=True, key="toggle_mostrar_mapa")
             col_mapa, col_acao = st.columns([6, 4], gap="large")
 
             if "df_filtrado" in locals(): df_pendentes_f = df_filtrado[df_filtrado["Status_norm"].isin(_status_aberto)].copy()
@@ -5994,7 +5995,7 @@ if tab2 is not None:
 #endregion 10.3.3
 
 #region 10.3.4: Mapa Interativo Otimizado (Cache da Malha)
-if tab2 is not None:
+if tab2 is not None and st.session_state.get("toggle_mostrar_mapa", True):
   with col_mapa:  # pyright: ignore[reportGeneralTypeIssues]
     lat_centro = min(max(lat_origem, -25.50), -19.50)
     lon_centro = min(max(lon_origem, -53.50), -44.00)
