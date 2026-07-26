@@ -751,9 +751,21 @@ def carregar_mapeamento_patios() -> dict:
 #endregion
 
 #region 3.4: Export/Salvar Excel (SAP)
-def gerar_excel_sap_bytes(df_filtrado_atual: pd.DataFrame) -> bytes:
+# Mapeamento explícito coordenação -> códigos de Centro de Trabalho/Centro no SAP.
+# Corrigido em 26/07/2026: a versão antiga (get_centro_trab/get_centro) usava substring
+# solta ('IPG' in coord) e caía num default fixo pros códigos de Paranapiacaba pra
+# QUALQUER coordenação que não contivesse "IPG"/"Piaçaguera" -- uma coordenação nova
+# exportaria pro SAP com o centro de trabalho errado, silenciosamente. Agora é
+# correspondência exata contra este dicionário; coordenação sem entrada aqui é
+# EXCLUÍDA da exportação (nunca exportada com código adivinhado) -- ver aviso no retorno.
+MAPA_CENTRO_SAP = {
+    "Paranapiacaba": {"centro_trabalho": "E.SP.IPA", "centro": "CIPA"},
+    "Piaçaguera": {"centro_trabalho": "E.SP.IPG", "centro": "CIPG"},
+}
+
+def gerar_excel_sap_bytes(df_filtrado_atual: pd.DataFrame) -> tuple[bytes, list[str]]:
     df_concluidas = df_filtrado_atual[df_filtrado_atual["Status_norm"].isin(_status_prazo | _status_atraso)].copy()
-    if df_concluidas.empty: return b""
+    if df_concluidas.empty: return b"", []
 
     lista_os = df_concluidas["Ordem servico"].astype(str).tolist()
     conn = get_connection()
@@ -829,22 +841,33 @@ def gerar_excel_sap_bytes(df_filtrado_atual: pd.DataFrame) -> bytes:
     df_sap_explodido = df_sap.explode("_lista_equipe").rename(columns={"_lista_equipe": "matricula_final"}).reset_index(drop=True)
     df_sap_explodido = df_sap_explodido.drop(columns=["_lista_equipe"], errors="ignore")
 
-    def get_centro_trab(coord):
-        c = str(coord).upper()
-        return 'E.SP.IPG' if 'IPG' in c or 'PIACAGUERA' in c or 'PIAÇAGUERA' in c else 'E.SP.IPA'
+    # Correspondência EXATA contra MAPA_CENTRO_SAP (nunca substring). Linhas cuja
+    # coordenação não tem entrada cadastrada são excluídas da exportação -- melhor
+    # faltar no arquivo (visível, com aviso) do que ir pro SAP com o centro errado.
+    avisos_sap = []
+    coord_normalizada_full = df_sap_explodido["coordenacao"].astype(str).str.strip()
+    mask_mapeada = coord_normalizada_full.isin(MAPA_CENTRO_SAP.keys())
+    if not mask_mapeada.all():
+        nao_mapeadas = df_sap_explodido.loc[~mask_mapeada, ["Ordem servico", "coordenacao"]].drop_duplicates()
+        for _, _r in nao_mapeadas.iterrows():
+            avisos_sap.append(
+                f"OS {_r['Ordem servico']}: coordenação '{_r['coordenacao']}' sem Centro/Centro de "
+                f"Trabalho SAP cadastrado (MAPA_CENTRO_SAP) -- excluída da exportação."
+            )
+        df_sap_explodido = df_sap_explodido[mask_mapeada].copy()
 
-    def get_centro(coord):
-        c = str(coord).upper()
-        return 'CIPG' if 'IPG' in c or 'PIACAGUERA' in c or 'PIAÇAGUERA' in c else 'CIPA'
+    if df_sap_explodido.empty:
+        return b"", avisos_sap
 
+    coord_normalizada = df_sap_explodido["coordenacao"].astype(str).str.strip()
     n = len(df_sap_explodido)
     sap_out = pd.DataFrame({
         'A': [""] * n, 'Ordem': df_sap_explodido['Ordem servico'].values, 'Operação': ["10"] * n,
         'D': [""] * n, 'E': [""] * n, 'F': [""] * n,
         'Trab. real': df_sap_explodido['_trab_real_min'].astype(int).astype(str).values,
         'UN Medida 1': ["MIN"] * n, 'I': [""] * n, 'J': [""] * n, 'K': [""] * n,
-        'Centro de Trabalho': df_sap_explodido['coordenacao'].apply(get_centro_trab).values,
-        'Centro': df_sap_explodido['coordenacao'].apply(get_centro).values,
+        'Centro de Trabalho': coord_normalizada.map(lambda c: MAPA_CENTRO_SAP[c]["centro_trabalho"]).values,
+        'Centro': coord_normalizada.map(lambda c: MAPA_CENTRO_SAP[c]["centro"]).values,
         'N': [""] * n, 'O': [""] * n, 'P': [""] * n,
         'Matrícula': df_sap_explodido['matricula_final'].values,
         'R': [""] * n, 'S': [""] * n, 'UN Medida 2': ["MIN"] * n,
@@ -864,7 +887,7 @@ def gerar_excel_sap_bytes(df_filtrado_atual: pd.DataFrame) -> bytes:
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer: sap_out.to_excel(writer, index=False, sheet_name="Importacao_SAP")
-    return output.getvalue()
+    return output.getvalue(), avisos_sap
 #endregion 3.4
 
 #region 3.5: Auxiliares — Datas/Turnos para Gráficos Gerenciais
@@ -1359,11 +1382,20 @@ def render_tela_admin():
                         else:
                             df_completo["Status_norm"] = df_completo["Ordem servico"].astype(str).str.strip().map(mapa_status_periodo).fillna("")
                             df_completo = df_completo[df_completo["Status_norm"] != ""]
-                            st.session_state["sap_massa_bytes"] = gerar_excel_sap_bytes(df_completo)
+                            sap_bytes, avisos_sap = gerar_excel_sap_bytes(df_completo)
+                            st.session_state["sap_massa_bytes"] = sap_bytes
                             st.session_state["sap_massa_nome"] = (
                                 f"Baixa_Massa_SAP_{sap_data_ini.strftime('%Y%m%d')}_a_{sap_data_fim.strftime('%Y%m%d')}.xlsx"
                             )
-                            st.success(f"✅ Arquivo preparado com sucesso ({len(df_completo)} OS).")
+                            if avisos_sap:
+                                st.warning(f"⚠️ {len(avisos_sap)} OS excluída(s) da exportação — coordenação sem Centro SAP cadastrado.")
+                                with st.expander("Ver OS excluídas", expanded=True):
+                                    for aviso in avisos_sap:
+                                        st.write(f"- {aviso}")
+                            if sap_bytes:
+                                st.success(f"✅ Arquivo preparado com sucesso ({len(df_completo) - len(avisos_sap)} OS).")
+                            else:
+                                st.error("❌ Nenhuma OS pôde ser exportada — todas sem Centro SAP cadastrado (ver aviso acima).")
 
         if st.session_state.get("sap_massa_bytes"):
             st.download_button("⬇️ Baixar Arquivo SAP", data=st.session_state["sap_massa_bytes"], file_name=st.session_state["sap_massa_nome"], mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -4031,7 +4063,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v11.2.2")
+st.sidebar.caption("SGO Eletroeletrônica • v12.0.0")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
