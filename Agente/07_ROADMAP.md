@@ -34,7 +34,7 @@
 
 | Item | Descrição |
 |---|---|
-| **Multi-Gerência** (Gerência Geral → Gerência → Coordenação) | Expandir de 2 coordenações para ~22. Plano detalhado em `10_PLANO_MULTI_GERENCIA.md` — gatilho concreto: Gerência Vale do Paraíba (Gerência Geral SP) |
+| **Multi-Gerência** (Gerência Geral → Gerência → Coordenação) | Expandir de 2 coordenações para ~22. 🚧 Só documentado, não iniciar sem aviso — índice em `10_PLANO_MULTI_GERENCIA.md` (`11_`/`12_` têm o detalhe). Gatilho concreto: Gerência Vale do Paraíba (Gerência Geral SP), depois de outras melhorias já previstas no sistema |
 | **Inteligência preditiva** | Antecipar falhas/manutenções a partir do histórico |
 | **Recomendação automática de rotas** | Sugestão de sequência ótima de execução |
 | **Dashboards executivos** | Observabilidade e indicadores de uso |
