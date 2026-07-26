@@ -866,8 +866,8 @@ def gerar_excel_sap_bytes(df_filtrado_atual: pd.DataFrame) -> tuple[bytes, list[
         'D': [""] * n, 'E': [""] * n, 'F': [""] * n,
         'Trab. real': df_sap_explodido['_trab_real_min'].astype(int).astype(str).values,
         'UN Medida 1': ["MIN"] * n, 'I': [""] * n, 'J': [""] * n, 'K': [""] * n,
-        'Centro de Trabalho': coord_normalizada.map(lambda c: MAPA_CENTRO_SAP[c]["centro_trabalho"]).values,
-        'Centro': coord_normalizada.map(lambda c: MAPA_CENTRO_SAP[c]["centro"]).values,
+        'Centro de Trabalho': coord_normalizada.map(lambda c: MAPA_CENTRO_SAP[c]["centro_trabalho"]).values,  # pyright: ignore[reportArgumentType]
+        'Centro': coord_normalizada.map(lambda c: MAPA_CENTRO_SAP[c]["centro"]).values,  # pyright: ignore[reportArgumentType]
         'N': [""] * n, 'O': [""] * n, 'P': [""] * n,
         'Matrícula': df_sap_explodido['matricula_final'].values,
         'R': [""] * n, 'S': [""] * n, 'UN Medida 2': ["MIN"] * n,
@@ -4113,7 +4113,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v12.1.0")
+st.sidebar.caption("SGO Eletroeletrônica • v12.2.0")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
