@@ -2240,7 +2240,7 @@ def render_tela_gestao_usuarios():
         with st.form("form_novo_user", clear_on_submit=True):
             n_user = st.text_input("Matrícula / Username", key="novo_user_login")
             n_nome = st.text_input("Nome do Colaborador", key="novo_user_nome")
-            n_perf = st.selectbox("Perfil", ["Técnico", "Assistente", "Coordenador", "Gerência", "Administrador"], key="novo_user_perfil")
+            n_perf = st.selectbox("Perfil", ["Técnico", "Assistente", "Coordenador", "Especialista", "Gerência", "Administrador"], key="novo_user_perfil")
             n_esco = st.selectbox("Escopo (Base)", ["Paranapiacaba", "Piaçaguera", "Todas"], key="novo_user_escopo")
             sedes_validas = sedes_por_escopo(n_esco)
             n_sede = st.selectbox("Sede Física", sedes_validas, key="novo_user_sede", format_func=lambda x: x.replace("Sede ", ""))
@@ -2250,6 +2250,9 @@ def render_tela_gestao_usuarios():
             if n_perf == "Técnico": def_gov = ["Mapa de Campo"]
             elif n_perf == "Assistente": def_gov = ["Painel Gerencial", "Upload de Dados", "Exportar SAP"]
             elif n_perf == "Coordenador": def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Exportar SAP", "Governança"]
+            # Especialista: visão híbrida -- execução de campo (Técnico) + visão do
+            # Coordenador, EXCETO Governança/Auditoria (restrita a Gestores, pedido 26/07/2026).
+            elif n_perf == "Especialista": def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Exportar SAP"]
             elif n_perf == "Administrador": def_gov = ["Configurações Operacionais"]
             else: def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Gestão de Usuários", "Exportar SAP", "Governança"]
 
@@ -2296,7 +2299,7 @@ def render_tela_gestao_usuarios():
                 if acao == "✏️ Editar Acesso":
                     with st.form(f"form_edit_{usr_sel}"):
                         n_nome_edit = st.text_input("Nome do Colaborador", value=str(dados_usr["nome"]).strip() if pd.notna(dados_usr["nome"]) else "")
-                        n_perf_edit = st.selectbox("Novo Perfil", ["Técnico", "Assistente", "Coordenador", "Gerência", "Administrador"], index=["Técnico", "Assistente", "Coordenador", "Gerência", "Administrador"].index(dados_usr["perfil"]))
+                        n_perf_edit = st.selectbox("Novo Perfil", ["Técnico", "Assistente", "Coordenador", "Especialista", "Gerência", "Administrador"], index=["Técnico", "Assistente", "Coordenador", "Especialista", "Gerência", "Administrador"].index(dados_usr["perfil"]))
                         n_esco_edit = st.selectbox("Nova Visão", ["Paranapiacaba", "Piaçaguera", "Todas"], index=["Paranapiacaba", "Piaçaguera", "Todas"].index(dados_usr["escopo"]))
                         n_sede_edit = st.selectbox("Sede", sedes_por_escopo(n_esco_edit), format_func=lambda x: x.replace("Sede ", ""))
                         gov_editadas = st.multiselect("Governança:", opcoes_gov, default=[g for g in gov_atual_lista if g in opcoes_gov])
@@ -2357,7 +2360,7 @@ def render_tela_gestao_usuarios():
                         if faltantes: st.error(f"❌ Colunas obrigatórias ausentes: {', '.join(faltantes)}")
                         else:
                             df_users = df_users.fillna("")
-                            perfis_validos = {"Técnico", "Assistente", "Coordenador", "Gerência", "Administrador"}
+                            perfis_validos = {"Técnico", "Assistente", "Coordenador", "Especialista", "Gerência", "Administrador"}
                             escopos_validos = {"Paranapiacaba", "Piaçaguera", "Todas"}
                             registros, erros = [], []
 
@@ -3984,7 +3987,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v11.0.0")
+st.sidebar.caption("SGO Eletroeletrônica • v11.1.0")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
