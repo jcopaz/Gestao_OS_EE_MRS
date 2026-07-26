@@ -21,6 +21,7 @@
 | 07 | `07_ROADMAP.md` | Em produção · Curto prazo · Futuro |
 | 08 | `08_GLOSSARIO_SGO.md` | Termos, endpoints, campos e regras operacionais |
 | 09 | `09_APRENDIZADOS_E_ERROS.md` | Histórico de bugs/incidentes com causa raiz e lição — ler antes de mexer em área já listada |
+| 10 | `10_PLANO_MULTI_GERENCIA.md` | Plano para expandir de 2 coordenações (Paranapiacaba/Piaçaguera) para ~22, em hierarquia Gerência Geral → Gerência → Coordenação. Ainda não iniciado — ler antes de tocar em `escopo`/coordenação |
 
 > 🎨 A **apresentação executiva** (deck v11) tem um subagente dedicado:
 > `.claude/agents/pitch-builder.md`. O app tem o `.claude/agents/sgo-dev.md`.
