@@ -2160,7 +2160,31 @@ Ordem padrão do sistema: `Segurança da Operação → Criticidade → Atraso �
             "No fluxo online, a mudança já vale na próxima ação do usuário."
         )
 
-        if st.form_submit_button("💾 Salvar Configuração", type="primary", use_container_width=True):
+        col_btn_salvar, col_btn_reset = st.columns([3, 1])
+        with col_btn_salvar:
+            salvar_clicado = st.form_submit_button("💾 Salvar Configuração", type="primary", use_container_width=True)
+        with col_btn_reset:
+            resetar_clicado = st.form_submit_button("🔄 Resetar Padrões", use_container_width=True)
+
+        if resetar_clicado:
+            # Reseta = apaga o override desta coordenação. Sem linha em configuracoes_operacionais,
+            # carregar_config_operacional() já cai sozinho em DEFAULTS_CONFIG_OPERACIONAL -- mesmo
+            # efeito de uma vigência expirada, só que imediato em vez de esperar o prazo passar.
+            conn = get_connection()
+            try:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM configuracoes_operacionais WHERE coordenacao = %s", (coord_sel,))
+                conn.commit(); cur.close()
+            finally:
+                release_connection(conn)
+
+            st.cache_data.clear()
+            st.session_state["msg_sucesso_config_op"] = (
+                f"Configuração de {coord_sel} resetada — voltou a usar os valores e regras padrão do sistema."
+            )
+            st.rerun()
+
+        if salvar_clicado:
             ordem_final = [_chave_por_rotulo[l] for l in ordem_sel]
             for chave in CRITERIOS_ORDEM_PADRAO:
                 if chave not in ordem_final: ordem_final.append(chave)
@@ -3987,7 +4011,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v11.1.0")
+st.sidebar.caption("SGO Eletroeletrônica • v11.2.0")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
