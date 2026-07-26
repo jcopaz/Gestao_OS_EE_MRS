@@ -1,0 +1,24 @@
+name: Limpeza de evidências órfãs (Storage)
+
+# Disparo manual apenas -- faxina pontual do backlog de arquivos duplicados
+# (bug do clique duplo na sincronização offline, corrigido em 26/07/2026),
+# não um problema recorrente. Sem "schedule": só roda quando alguém aciona
+# pela aba Actions do GitHub.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "true = só simula (não apaga nada), false = apaga de verdade (só o grupo 'seguro_apagar')"
+        default: "true"
+
+jobs:
+  limpar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Chamar /limpar_evidencias_orfas
+        run: |
+          dry_run="${{ github.event.inputs.dry_run }}"
+          if [ -z "$dry_run" ]; then dry_run="true"; fi
+          curl -s -X POST \
+            "https://gestao-os-ee-mrs-producao.onrender.com/limpar_evidencias_orfas?dry_run=${dry_run}" \
+            -H "x-api-key: ${{ secrets.OFFLINE_API_KEY }}"

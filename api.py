@@ -518,6 +518,129 @@ async def limpar_evidencias_expiradas(
 
 
 # ==============================================================================
+# LIMPEZA DE EVIDENCIAS ORFAS (arquivo existe no Storage, mas nenhuma linha em
+# "evidencias" aponta mais pra ele -- sobra de uploads duplicados/substituidos,
+# achado em 26/07/2026: o botao "Sincronizar" do PWA offline nao tinha trava
+# contra clique duplo, e cada toque extra reenviava a mesma foto com um nome
+# novo. Corrigido no app.py; este endpoint e faxina pontual do que ja acumulou,
+# nao precisa virar cron diario.
+#
+# Criterio diferente do endpoint acima (que usa Ciclo+30 dias): orfao nao tem
+# mais "os_referencia" em evidencias, entao nao ha como calcular Ciclo pra ele
+# -- o criterio aqui e "essa OS ja tem QUALQUER evidencia hoje?":
+#   - Nome do arquivo tem "_OS<numero>_" E essa OS TEM linha em evidencias
+#     (apontando pra outro arquivo, mais novo) -> seguro apagar, e redundante.
+#   - Nome tem "_OS<numero>_" mas essa OS NAO TEM nenhuma linha em evidencias
+#     -> pode ser a UNICA evidencia dessa OS (upload deu certo, gravacao no
+#     banco falhou depois) -- NAO apaga, so lista pra revisao manual.
+#   - Nome nao tem numero de OS identificavel (convencao antiga de nome) ->
+#     NAO apaga, so lista separado (sem como verificar nada).
+# Arquivo com menos de 24h de idade nunca entra em nenhum grupo -- pode ser
+# upload em andamento (evidencia ainda nao gravada no banco).
+# dry_run=True por padrao -- so apaga (grupo "seguro") de verdade com
+# ?dry_run=false explicito.
+# ==============================================================================
+@app_api.post("/limpar_evidencias_orfas")
+async def limpar_evidencias_orfas(
+    api_key: str = Security(validar_api_key),
+    dry_run: bool = True,
+):
+    conn = get_connection()
+    try:
+        df_ref = pd.read_sql_query(
+            "SELECT foto_url, os_referencia FROM evidencias WHERE foto_url LIKE %s",
+            conn,
+            params=(f"{SUPABASE_URL}/storage/v1/object/public/evidencias/%",),
+        )
+    finally:
+        release_connection(conn)
+
+    arquivos_referenciados = set(
+        df_ref["foto_url"].astype(str).apply(lambda u: u.rsplit("/evidencias/", 1)[-1])
+    )
+    # OS que ja tem QUALQUER evidencia hoje (mesmo que aponte pra outro arquivo) --
+    # decide se um orfao foi substituido com seguranca ou e risco real.
+    os_com_evidencia_atual = set(df_ref["os_referencia"].astype(str).str.strip())
+
+    todos_arquivos = []
+    offset = 0
+    pagina_tam = 1000
+    while True:
+        resp_list = requests.post(
+            f"{SUPABASE_URL}/storage/v1/object/list/evidencias",
+            headers={"Authorization": f"Bearer {SUPABASE_KEY}", "apikey": SUPABASE_KEY},
+            json={"limit": pagina_tam, "offset": offset, "sortBy": {"column": "name", "order": "asc"}},
+            timeout=30,
+        )
+        resp_list.raise_for_status()
+        pagina = resp_list.json()
+        if not pagina:
+            break
+        todos_arquivos.extend(pagina)
+        if len(pagina) < pagina_tam:
+            break
+        offset += pagina_tam
+
+    agora_utc = datetime.now(timezone.utc)
+    padrao_os = re.compile(r"_OS(\d+)_")
+
+    seguro_apagar, revisar_manualmente, sem_os_identificavel = [], [], []
+
+    for arq in todos_arquivos:
+        nome = arq.get("name") or ""
+        if not nome or nome == ".emptyFolderPlaceholder":
+            continue
+        if nome in arquivos_referenciados:
+            continue  # tem dono hoje, nao e orfao
+
+        criado_em = pd.to_datetime(arq.get("created_at"), errors="coerce", utc=True)
+        if pd.isna(criado_em):
+            continue  # sem data confiavel -- nao arrisca
+        if agora_utc - criado_em.to_pydatetime() < timedelta(hours=24):
+            continue  # upload recente demais -- pode estar em andamento, nao arrisca
+
+        match_os = padrao_os.search(nome)
+        if not match_os:
+            sem_os_identificavel.append(nome)
+            continue
+
+        if match_os.group(1) in os_com_evidencia_atual:
+            seguro_apagar.append(nome)
+        else:
+            revisar_manualmente.append(nome)
+
+    apagadas, erros = [], []
+    if not dry_run:
+        for nome in seguro_apagar:
+            try:
+                resp_del = requests.delete(
+                    f"{SUPABASE_URL}/storage/v1/object/evidencias/{nome}",
+                    headers={"Authorization": f"Bearer {SUPABASE_KEY}", "apikey": SUPABASE_KEY},
+                    timeout=30,
+                )
+                if resp_del.status_code in (200, 204):
+                    apagadas.append(nome)
+                else:
+                    erros.append(f"{nome}: Supabase {resp_del.status_code} - {resp_del.text}")
+            except Exception as e:
+                erros.append(f"{nome}: {e}")
+
+    return {
+        "dry_run": dry_run,
+        "total_no_bucket": len(todos_arquivos),
+        "total_referenciados_hoje": len(arquivos_referenciados),
+        "seguro_apagar": len(seguro_apagar),
+        "revisar_manualmente": len(revisar_manualmente),
+        "sem_os_identificavel": len(sem_os_identificavel),
+        "amostra_seguro_apagar": seguro_apagar[:50],
+        "amostra_revisar_manualmente": revisar_manualmente[:50],
+        "amostra_sem_os_identificavel": sem_os_identificavel[:50],
+        "apagadas": apagadas,
+        "erros": erros,
+    }
+
+
+# ==============================================================================
 # HEALTHCHECK (pre-ping para acordar o Render antes de publicar/sincronizar)
 # ==============================================================================
 @app_api.get("/health")
