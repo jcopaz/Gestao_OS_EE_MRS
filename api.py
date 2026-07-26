@@ -439,6 +439,11 @@ async def sincronizar_baixa_offline(
 # Apaga so o arquivo no Storage; a linha em "evidencias" continua existindo (so
 # fica com foto_url vazio) para nao perder o historico/auditoria da baixa.
 # dry_run=True por padrao -- so apaga de verdade com ?dry_run=false explicito.
+# Bug corrigido em 26/07/2026: dados_completos->>'Ciclo' nunca batia com a coluna
+# real da planilha SAP ("CICLO", maiusculo) -- busca de chave em JSON e sensivel
+# a caixa, entao TODAS as 2015 evidencias existentes caiam em "sem Ciclo
+# identificavel" e a limpeza nunca teve nenhuma candidata de verdade. Agora usa
+# COALESCE tentando CICLO/Ciclo/ciclo, sem depender da grafia exata do upload.
 # ==============================================================================
 @app_api.post("/limpar_evidencias_expiradas")
 async def limpar_evidencias_expiradas(
@@ -450,7 +455,7 @@ async def limpar_evidencias_expiradas(
         df = pd.read_sql_query(
             """
             SELECT ev.id, ev.os_referencia, ev.foto_url, b.realizado_em,
-                   op.dados_completos ->> 'Ciclo' AS ciclo_txt
+                   COALESCE(op.dados_completos ->> 'CICLO', op.dados_completos ->> 'Ciclo', op.dados_completos ->> 'ciclo') AS ciclo_txt
             FROM evidencias ev
             JOIN baixas b ON TRIM(b.os) = TRIM(ev.os_referencia)
             LEFT JOIN os_programadas op ON TRIM(op.os) = TRIM(ev.os_referencia)
