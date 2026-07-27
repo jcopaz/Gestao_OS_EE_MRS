@@ -4116,7 +4116,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v14.7.0")
+st.sidebar.caption("SGO Eletroeletrônica • v14.8.0")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -5140,16 +5140,33 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     else:
                         st.info("Sem OS de Segurança no recorte atual.")
 
-                    st.markdown("##### OS de Confiabilidade (CI/SI) por Ativo (Top 10)")
-                    _mask_conf_ativo = df_coord["Classificacao"] == "Confiabilidade"
-                    _cats_conf_ativo = _top_n_micro(df_coord[_mask_conf_ativo], "Ativo", n=10)
-                    if _cats_conf_ativo:
-                        p_ci, p_si, p_nd = _contagens_micro(df_coord, "Ativo", _cats_conf_ativo, mask=_mask_conf_ativo)
-                        r_ci, r_si, r_nd = _contagens_micro(df_coord, "Ativo", _cats_conf_ativo, mask=(_mask_conf_ativo & df_coord["Status_concluida"]))
-                        _series_ca, _legend_ca = _series_micro(p_ci, p_si, p_nd, r_ci, r_si, r_nd)
-                        _grafico_micro(_cats_conf_ativo, _series_ca, _legend_ca, key="coord_conf_ativo", altura="440px")
-                    else:
-                        st.info("Sem OS de Confiabilidade no recorte atual.")
+                    st.markdown("##### Top 10 Ativos com OS de Confiabilidade Pendente (CI/SI) por Coordenação")
+                    _mask_conf_pendente = (df_coord["Classificacao"] == "Confiabilidade") & (~df_coord["Status_concluida"])
+                    col_conf_pend_pia, col_conf_pend_para = st.columns(2)
+                    for _coord_nome, _col_conf_pend in (("Piaçaguera", col_conf_pend_pia), ("Paranapiacaba", col_conf_pend_para)):
+                        with _col_conf_pend:
+                            st.caption(_coord_nome)
+                            _mask_coord_conf_pend = _mask_conf_pendente & (df_coord["Coordenacao"] == _coord_nome)
+                            _cats_conf_ativo = _top_n_micro(df_coord[_mask_coord_conf_pend], "Ativo", n=10)
+                            if _cats_conf_ativo:
+                                pend_ci, pend_si, pend_nd = _contagens_micro(df_coord, "Ativo", _cats_conf_ativo, mask=_mask_coord_conf_pend)
+                                pend_total = [a + b + c for a, b, c in zip(pend_ci, pend_si, pend_nd)]
+                                _series_ca = [
+                                    {"name": "Com Intervalo", "type": "bar", "stack": "pend", "data": _segmentos_micro(pend_ci, "#FFFFFF"), "itemStyle": {"color": "#1D4ED8"}},
+                                    {"name": "Sem Intervalo", "type": "bar", "stack": "pend", "data": _segmentos_micro(pend_si, "#FFFFFF"), "itemStyle": {"color": "#60A5FA"}},
+                                ]
+                                _legend_ca = ["Com Intervalo", "Sem Intervalo"]
+                                if any(pend_nd):
+                                    _series_ca.append({"name": "N/D", "type": "bar", "stack": "pend", "data": _segmentos_micro(pend_nd, "#1E3A8A"), "itemStyle": {"color": "#DBEAFE"}})
+                                    _legend_ca.append("N/D")
+                                _series_ca.append({
+                                    "name": "Total", "type": "bar", "stack": "pend",
+                                    "data": [{"value": 0, "label": {"show": True, "position": "right", "color": "#475569", "formatter": f"{v}"}} for v in pend_total],
+                                    "itemStyle": {"color": "transparent"}, "tooltip": {"show": False},
+                                })
+                                _grafico_micro(_cats_conf_ativo, _series_ca, _legend_ca, key=f"coord_conf_ativo_pendente_{_coord_nome}", altura="420px")
+                            else:
+                                st.info(f"Sem OS de Confiabilidade pendente em {_coord_nome} no recorte atual.")
 
                     st.divider()
                     st.markdown("##### Top 10 Ativos com OS de Segurança Pendente (CI/SI) por Coordenação")
