@@ -606,7 +606,7 @@ async def limpar_evidencias_orfas(
         resp_list = requests.post(
             f"{SUPABASE_URL}/storage/v1/object/list/evidencias",
             headers={"Authorization": f"Bearer {SUPABASE_KEY}", "apikey": SUPABASE_KEY},
-            json={"limit": pagina_tam, "offset": offset, "sortBy": {"column": "name", "order": "asc"}},
+            json={"prefix": "", "limit": pagina_tam, "offset": offset, "sortBy": {"column": "name", "order": "asc"}},
             timeout=30,
         )
         resp_list.raise_for_status()
