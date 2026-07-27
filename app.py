@@ -6186,12 +6186,12 @@ def gerar_pdf_concluidas_bytes(df_pdf, titulo="OS Concluídas - Fim de Turno"):
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), leftMargin=20, rightMargin=20, topMargin=20, bottomMargin=20)
     styles = getSampleStyleSheet()
     story = [Paragraph(f"<b>{titulo}</b>", styles["Title"]), Spacer(1, 10)]
-    colunas_pdf = ["OS", "Data Prog. (Data Inicial Programada)", "Patio", "Ativo", "Criticidade", "Classificação", "Data/Hora Realizado"]
+    colunas_pdf = ["OS", "Data Prog. (Data Inicial Programada)", "Patio", "Ativo", "Criticidade", "Classificação", "Descrição Longa", "Data/Hora Realizado"]
     df_local = df_pdf.reindex(columns=colunas_pdf).fillna("").copy()
     data = [colunas_pdf]
     for _, row in df_local.iterrows():
         data.append([Paragraph(str(row[c]), styles["BodyText"]) for c in colunas_pdf])  # pyright: ignore[reportArgumentType]
-    tabela = Table(data, repeatRows=1, colWidths=[65, 140, 60, 100, 75, 90, 110])
+    tabela = Table(data, repeatRows=1, colWidths=[65, 130, 55, 90, 70, 85, 170, 100])
     tabela.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#163A70")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -6249,6 +6249,7 @@ if tab2 is not None:
                 "Ativo": df_conc["Ativo"].astype(str),
                 "Criticidade": df_conc["Criticidade"].astype(str),
                 "Classificação": df_conc["Classificacao"].astype(str),
+                "Descrição Longa": df_conc["Descrição Longa"].astype(str) if "Descrição Longa" in df_conc.columns else "",
                 "Data/Hora Realizado": pd.to_datetime(df_conc["Data/Hora Realizado"], dayfirst=True, errors="coerce").dt.strftime("%d/%m/%Y %H:%M").fillna(""),
             })
             st.success(f"✅ {len(df_rel)} OS concluída(s) no período/filtros atuais.")
