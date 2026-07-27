@@ -4113,7 +4113,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v13.1.0")
+st.sidebar.caption("SGO Eletroeletrônica • v13.1.1")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -4990,9 +4990,11 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             "grid": {"left": "3%", "right": "18%", "top": "6%", "bottom": "14%", "containLabel": True},
                             "xAxis": {"type": "value", "boundaryGap": [0, 0.02]},
                             # inverse=True + categorias já ordenadas do maior pro menor -> maior
-                            # volume fica no topo do gráfico (leitura tipo ranking).
+                            # volume fica no topo do gráfico (leitura tipo ranking). dataZoom no
+                            # eixo Y removido: combinação inverse+dataZoom nunca tinha sido usada
+                            # neste arquivo e é candidata a bug de renderização (Visão Micro saiu
+                            # em branco em 27/07/2026 -- ainda em diagnóstico).
                             "yAxis": {"type": "category", "data": categorias, "inverse": True, "axisLabel": {"interval": 0}},
-                            "dataZoom": [{"type": "inside", "yAxisIndex": 0, "start": 0, "end": 100}],
                             "series": series,
                         }, height="480px", theme="streamlit", key=key)
 
