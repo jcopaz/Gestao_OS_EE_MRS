@@ -204,6 +204,41 @@ Esse foi o incidente mais sério da noite — merece destaque próprio.
 
 ---
 
+## 27/07/2026 — Geofence offline rejeitava tecnico fisicamente no patio certo
+
+**O que aconteceu:** Julio reportou (apontamento de campo em 22/07/2026, OS
+23605108) que a sincronização offline rejeitou a baixa com "Bloqueio
+Geográfico: 17,9km do ativo (limite 2,0km)" — no mesmo instante, o fluxo
+**online** autorizou normal, com ele fisicamente no local.
+
+**Causa raiz:** a resolução de pátio do ativo em `api.py` só olhava os 3
+primeiros caracteres do nome (`COORDENADAS_FIXAS.get(ativo_id[:3])`).
+Funciona pra ativos tipo `IPA_326_N1`, mas o ativo do incidente era
+`MF-SJU-ISN_ISN-TELECOM-ARCCCO5` — o código real do pátio (`ISN`) não está
+no início do nome. A versão fail-closed (corrigida horas antes, na mesma
+sessão) bloqueava certo nesse caso — mas ainda deixava o técnico travado,
+porque nunca *encontrava* o pátio certo pra validar contra ele.
+
+**Correção:** `resolver_patio_ativo()` (nova, `api.py`) tenta prefixo E
+busca do código em qualquer parte do nome do ativo antes de falhar —
+mesma lógica que `_resolver_patio()` já usa com sucesso no `app.py` desde
+sempre (por isso o fluxo online nunca teve esse problema). Confirmado com
+matemática: GPS capturado no campo → 1,48km do pátio real (ISN, dentro do
+limite) vs. 17,93km de Paranapiacaba (fallback antigo já removido) — bate
+com o erro reportado (17,9km).
+
+**Aprendizado:** `app.py` e `api.py` tinham **duas implementações
+diferentes** da mesma resolução de pátio — uma robusta (`_resolver_patio`,
+com fallback de busca por substring) e outra simplificada
+(`ativo_id[:3]`), porque são hospedagens/deploys separados sem código
+compartilhado. Ao corrigir um bug de segurança num dos dois lados (o
+fail-closed do geofence, mais cedo no mesmo dia), **conferir se o outro
+lado tem a mesma robustez** antes de considerar o problema resolvido —
+"parar de aceitar dado errado" e "conseguir resolver o dado certo" são
+duas correções diferentes, e só a primeira não basta pro usuário final.
+
+---
+
 ## Lições transversais (válidas pra qualquer mudança futura)
 
 - **Verificar causa raiz com dado real (SQL/log) antes de aplicar patch** — não assumir, não adivinhar. Vale tanto pra bug de dado quanto pra bug de infraestrutura.
@@ -217,3 +252,4 @@ Esse foi o incidente mais sério da noite — merece destaque próprio.
 - **Nunca usar substring solta (`"X" in campo`) pra decidir coordenação/escopo/permissão** — sempre prefixo ou valor exato.
 - **Toda coluna nova adicionada a uma função `@st.cache_data` exige incrementar a versão do cache** (`ETL_VERSION`) no mesmo commit.
 - **Extrair código inline pra uma função nova pode fechar silenciosamente o bloco `if` em volta** (indentação incorreta é erro lógico, não de sintaxe — `py_compile` não pega) — sempre conferir a indentação de tudo que vem *depois* do trecho extraído.
+- **`app.py` e `api.py` são deploys separados sem código compartilhado** — uma lógica corrigida/reforçada num dos dois (ex.: resolução de pátio, fail-closed) não garante que o outro lado tenha a mesma robustez. "Parar de aceitar dado errado" e "conseguir resolver o dado certo" são correções diferentes — sempre checar os dois lados de qualquer regra que existe duplicada.

@@ -78,10 +78,24 @@ Dentro de cada rank: `Criticidade → Atraso ao vencimento → Proximidade`. Ord
 | GPS obrigatório | Sem GPS → **não grava** |
 | Coordenada `0,0` | API rejeita com **HTTP 400** |
 | Leitura de EXIF / fallback pela foto | ❌ **REMOVIDO — nunca reintroduzir** |
-| Geofence | **2,0 km** (Haversine) — padrão, configurável por coordenação |
-| Bypass de teste | `debug_token = "mrs2026"` |
+| Geofence | **2,0 km** (Haversine) — padrão, configurável por coordenação, **sem teto máximo** |
+| Resolução de pátio do ativo | Prefixo (3 letras) **e** busca do código em qualquer parte do nome (`resolver_patio_ativo`, `api.py` / `_resolver_patio`, `app.py`) — fail-closed (HTTP 400) se nenhum dos dois encontrar. Corrigido 27/07/2026 (ver `09_APRENDIZADOS_E_ERROS.md`) |
+| Bypass de teste | ❌ **Não existe mais** — `debug_token` foi removido do código; se algum material antigo citar `mrs2026`, está desatualizado |
 
 > ⚠️ **Não reencodar/comprimir a foto no cliente** de forma que altere metadados — o padrão atual é GPS do navegador; qualquer fallback antigo por EXIF está descontinuado.
+
+### Regras de baixa de OS (confirmado em código, 27/07/2026)
+
+1. **GPS obrigatório**, só do navegador — coordenada `(0,0)` rejeitada.
+2. **Evidência fotográfica obrigatória, na ordem certa**: sobe a foto → grava a evidência → só então grava a baixa dessa OS. Falha em qualquer etapa impede a gravação da baixa (incidente 22-23/07/2026).
+3. **Geofence** (ver tabela acima).
+4. **Prioridade "Segurança da Operação"**: OS Muito Alta trava as de criticidade menor do mesmo grupo (Ativo × Tipo de Intervalo — CI e SI são filas independentes). Travadas ficam visíveis (🔒), nunca escondidas. Configurável por coordenação.
+5. **Validação de horário**: Fim não pode ser antes do Início; não pode lançar no futuro; permite dia anterior (turno noturno cruzando meia-noite).
+6. **Baixa em massa** (horário único, padrão ligado) ou individual.
+7. **Idempotência**: todo `UPSERT` por número de OS (`ON CONFLICT (os)`) — nunca duplica.
+8. **Status calculado** (`Realizado` / `Realizado Fora da Data de Programação`), nunca digitado.
+9. **Baixa administrativa (IW47) não sobrescreve baixa real de campo** — só atualiza se a OS ainda não tiver foto/evidência/geolocalização própria do app.
+10. **Governança "Mapa de Campo"** controla quem vê a tela de baixa.
 
 ---
 
