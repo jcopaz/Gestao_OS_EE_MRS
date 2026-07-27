@@ -4116,7 +4116,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v14.5.1")
+st.sidebar.caption("SGO Eletroeletrônica • v14.6.0")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -5383,15 +5383,24 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                                 st.info("Sem dados cronológicos.")
                 #endregion 10.2.3
 
-#region 10.2.3b: Report One Page (PDF p/ WhatsApp/E-mail)
+#region 10.2.3b: Report Paginado (PDF p/ WhatsApp/E-mail)
                 # PDF com os GRAFICOS de fato (imagem), nao so tabelas de numeros -- mas nao e
                 # print/screenshot da tela: componente Streamlit-ECharts nao tem um jeito de
                 # exportar a imagem do grafico renderizado de volta pro Python sem JsCode (que
                 # nao serializa mais nesta nuvem), e HTML/JS pesado via components.html ja
                 # causou Segmentation fault aqui antes (ver comentario em 10.3.1/_CSS_CARD_OS).
                 # Solucao: redesenha os MESMOS graficos (mesmas cores/mesmos numeros) com
-                # matplotlib, 100% server-side em Python, sem depender de navegador nenhum --
-                # ai sim embuti a imagem PNG gerada dentro do PDF via reportlab.
+                # matplotlib, 100% server-side, sem depender de navegador nenhum, e embute o
+                # PNG no PDF via reportlab. A3 paisagem, 2 paginas (testado localmente com
+                # dados falsos + pypdf/PyMuPDF antes de subir -- pag.1 resumo 2x2, pag.2
+                # detalhamento por Pátio/Ativo com gráficos maiores/mais largos).
+                #
+                # IMPORTANTE: todos os numeros vem do MESMO df_coord (recorte de Visão por
+                # Coordenação, respeita o filtro de Período da lateral) -- de propósito NÃO usa
+                # total_os/realizado_total etc. (que vem de df_kpi_base, travado no último
+                # ciclo/plano, região 9.3): os dois recortes podem ter escopos diferentes e os
+                # totais do PDF não batiam entre si (bug encontrado em 27/07/2026 comparando o
+                # PDF gerado com a tela).
                 def _fig_para_png_bytes(fig):
                     from io import BytesIO as _BytesIOFig
                     buf = _BytesIOFig()
@@ -5400,8 +5409,20 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     buf.seek(0)
                     return buf.getvalue()
 
-                def _grafico_donut_status_mpl(_prazo_d, _atraso_d, _pendente_d):
-                    fig, ax = plt.subplots(figsize=(3.1, 2.7))
+                def _fig_unica_mpl(desenhar_fn, args, figsize=(5.0, 4.2)):
+                    fig, ax = plt.subplots(figsize=figsize)
+                    desenhar_fn(ax, *args)
+                    fig.tight_layout()
+                    return _fig_para_png_bytes(fig)
+
+                def _fig_dupla_mpl(desenhar_fn, args_esq, args_dir, figsize=(10.0, 4.2)):
+                    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
+                    desenhar_fn(ax1, *args_esq)
+                    desenhar_fn(ax2, *args_dir)
+                    fig.tight_layout()
+                    return _fig_para_png_bytes(fig)
+
+                def _desenhar_donut_status(ax, _prazo_d, _atraso_d, _pendente_d):
                     valores = [_prazo_d, _atraso_d, _pendente_d]
                     labels = ["No Prazo", "Atrasado", "Pendentes"]
                     cores = ["#10B981", "#F59E0B", "#FF4B4B"]
@@ -5411,56 +5432,117 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     if _v:
                         ax.pie(
                             _v, labels=_l, colors=_c, autopct=lambda p: f"{p:.0f}%\n({int(round(p / 100 * sum(_v))):d})",
-                            startangle=90, wedgeprops={"width": 0.42, "edgecolor": "white"}, textprops={"fontsize": 8},
+                            startangle=90, wedgeprops={"width": 0.42, "edgecolor": "white"}, textprops={"fontsize": 9},
                         )
-                    ax.set_title("Distribuição por Status", fontsize=10, fontweight="bold", color="#0F172A")
-                    return _fig_para_png_bytes(fig)
+                    ax.set_title("Distribuição por Status", fontsize=11, fontweight="bold", color="#0F172A")
 
-                def _grafico_barra_pxr_mpl(categorias, plan_ci, plan_si, real_ci, real_si, titulo):
+                def _desenhar_pxr_vertical(ax, categorias, plan_ci, plan_si, real_ci, real_si, titulo):
                     _x = np.arange(len(categorias))
                     _larg = 0.32
-                    fig, ax = plt.subplots(figsize=(7.0, 2.7))
                     ax.bar(_x - _larg / 2, plan_ci, _larg, label="Planejado CI", color="#475569")
                     ax.bar(_x - _larg / 2, plan_si, _larg, bottom=plan_ci, label="Planejado SI", color="#94A3B8")
                     ax.bar(_x + _larg / 2, real_ci, _larg, label="Realizado CI", color="#1D4ED8")
                     ax.bar(_x + _larg / 2, real_si, _larg, bottom=real_ci, label="Realizado SI", color="#60A5FA")
                     _topo = max([a + b for a, b in zip(plan_ci, plan_si)] + [a + b for a, b in zip(real_ci, real_si)] + [1])
                     for i in range(len(categorias)):
-                        _tot_plan, _tot_real = plan_ci[i] + plan_si[i], real_ci[i] + real_si[i]
-                        _pend = _tot_plan - _tot_real
-                        ax.text(_x[i] - _larg / 2, _tot_plan + _topo * 0.02, str(_tot_plan), ha="center", fontsize=8, color="#334155")
-                        ax.text(_x[i] + _larg / 2, _tot_real + _topo * 0.02, str(_tot_real), ha="center", fontsize=8, color="#1D4ED8", fontweight="bold")
-                        ax.text(_x[i] + _larg / 2, _tot_real + _topo * 0.10, f"Pend: {_pend}", ha="center", fontsize=7.5, color="#DC2626", fontweight="bold")
+                        _tp, _tr = plan_ci[i] + plan_si[i], real_ci[i] + real_si[i]
+                        ax.text(_x[i] - _larg / 2, _tp + _topo * 0.02, str(_tp), ha="center", fontsize=8, color="#334155")
+                        ax.text(_x[i] + _larg / 2, _tr + _topo * 0.02, f"{_tr} (P:{_tp - _tr})", ha="center", fontsize=7.5, color="#1D4ED8", fontweight="bold")
                     ax.set_xticks(_x)
                     ax.set_xticklabels(categorias, fontsize=9)
-                    ax.set_ylim(0, _topo * 1.22)
+                    ax.set_ylim(0, _topo * 1.3)
                     ax.set_title(titulo, fontsize=10, fontweight="bold", color="#0F172A")
-                    ax.legend(fontsize=7.5, ncol=4, loc="upper center", bbox_to_anchor=(0.5, -0.13), frameon=False)
+                    ax.legend(fontsize=7, ncol=2, loc="upper center", bbox_to_anchor=(0.5, -0.16), frameon=False)
                     ax.spines[["top", "right"]].set_visible(False)
-                    fig.tight_layout()
-                    return _fig_para_png_bytes(fig)
 
-                def _gerar_pdf_report_gerencial(_total, _prazo, _atraso, _real_tot, _nao_real, _taxa, _df_c, _cats_c):
+                def _desenhar_pxr_horizontal(ax, categorias, plan_ci, plan_si, real_ci, real_si, titulo):
+                    _y = np.arange(len(categorias))
+                    _larg = 0.32
+                    ax.barh(_y + _larg / 2, plan_ci, _larg, label="Planejado CI", color="#475569")
+                    ax.barh(_y + _larg / 2, plan_si, _larg, left=plan_ci, label="Planejado SI", color="#94A3B8")
+                    ax.barh(_y - _larg / 2, real_ci, _larg, label="Realizado CI", color="#1D4ED8")
+                    ax.barh(_y - _larg / 2, real_si, _larg, left=real_ci, label="Realizado SI", color="#60A5FA")
+                    _fim = max([a + b for a, b in zip(plan_ci, plan_si)] + [a + b for a, b in zip(real_ci, real_si)] + [1])
+                    for i in range(len(categorias)):
+                        _tp, _tr = plan_ci[i] + plan_si[i], real_ci[i] + real_si[i]
+                        ax.text(_tp + _fim * 0.02, _y[i] + _larg / 2, str(_tp), va="center", fontsize=7, color="#334155")
+                        ax.text(_tr + _fim * 0.02, _y[i] - _larg / 2, f"{_tr} (P:{_tp - _tr})", va="center", fontsize=7, color="#1D4ED8", fontweight="bold")
+                    ax.set_yticks(_y)
+                    ax.set_yticklabels(categorias, fontsize=8)
+                    ax.invert_yaxis()
+                    ax.set_xlim(0, _fim * 1.42)
+                    ax.set_title(titulo, fontsize=10, fontweight="bold", color="#0F172A")
+                    ax.legend(fontsize=7, ncol=2, loc="lower right", frameon=False)
+                    ax.spines[["top", "right"]].set_visible(False)
+
+                def _desenhar_pendente_horizontal(ax, categorias, ci_vals, si_vals, titulo):
+                    if not categorias:
+                        ax.axis("off")
+                        ax.set_title(titulo, fontsize=10, fontweight="bold", color="#0F172A")
+                        ax.text(0.5, 0.5, "Sem OS de Segurança\npendente", ha="center", va="center", fontsize=9, color="#64748B")
+                        return
+                    _y = np.arange(len(categorias))
+                    ax.barh(_y, ci_vals, label="Com Intervalo", color="#EF4444")
+                    ax.barh(_y, si_vals, left=ci_vals, label="Sem Intervalo", color="#FCA5A5")
+                    _fim = max([a + b for a, b in zip(ci_vals, si_vals)] + [1])
+                    for i in range(len(categorias)):
+                        _tot = ci_vals[i] + si_vals[i]
+                        ax.text(_tot + _fim * 0.02, _y[i], str(_tot), va="center", fontsize=8, color="#7F1D1D", fontweight="bold")
+                    ax.set_yticks(_y)
+                    ax.set_yticklabels(categorias, fontsize=8)
+                    ax.invert_yaxis()
+                    ax.set_xlim(0, _fim * 1.25)
+                    ax.set_title(titulo, fontsize=10, fontweight="bold", color="#0F172A")
+                    ax.legend(fontsize=7, loc="lower right", frameon=False)
+                    ax.spines[["top", "right"]].set_visible(False)
+
+                def _desenhar_24h(ax, turnos, dados_por_coord, titulo):
+                    _cores_serie = {"Seg CI": "#DC2626", "Seg SI": "#FCA5A5", "Conf CI": "#1D4ED8", "Conf SI": "#60A5FA"}
+                    _x = np.arange(len(turnos))
+                    _coords = list(dados_por_coord.keys())
+                    _n = max(len(_coords), 1)
+                    _larg = 0.72 / _n
+                    for idx, _coord in enumerate(_coords):
+                        _offset = (idx - (_n - 1) / 2) * _larg
+                        _bottom = [0.0] * len(turnos)
+                        for _serie_nome, _cor in _cores_serie.items():
+                            _vals = dados_por_coord[_coord].get(_serie_nome, [0] * len(turnos))
+                            ax.bar(_x + _offset, _vals, _larg * 0.9, bottom=_bottom, color=_cor, label=(_serie_nome if idx == 0 else None))
+                            _bottom = [b + v for b, v in zip(_bottom, _vals)]
+                    ax.set_xticks(_x)
+                    ax.set_xticklabels([t.split(" (")[0] for t in turnos], fontsize=8)
+                    ax.set_title(titulo, fontsize=9.5, fontweight="bold", color="#0F172A")
+                    ax.legend(fontsize=6.5, ncol=2, loc="upper right", frameon=False)
+                    ax.spines[["top", "right"]].set_visible(False)
+
+                def _gerar_pdf_report_gerencial(_df_c, _cats_c):
                     from io import BytesIO
                     from reportlab.lib import colors
-                    from reportlab.lib.pagesizes import A4
+                    from reportlab.lib.pagesizes import A3, landscape
+                    from reportlab.lib.units import inch
                     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-                    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+                    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, PageBreak
 
                     buffer = BytesIO()
-                    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=28, rightMargin=28, topMargin=28, bottomMargin=28)
+                    doc = SimpleDocTemplate(buffer, pagesize=landscape(A3), leftMargin=24, rightMargin=24, topMargin=20, bottomMargin=20)
                     styles = getSampleStyleSheet()
                     titulo_style = ParagraphStyle("TituloReport", parent=styles["Title"], fontSize=20, textColor=colors.HexColor("#0F172A"), spaceAfter=2)
-                    subtitulo_style = ParagraphStyle("SubtituloReport", parent=styles["Normal"], fontSize=11, textColor=colors.HexColor("#475569"))
-                    heading_style = ParagraphStyle("HeadingReport", parent=styles["Heading3"], spaceBefore=4, spaceAfter=4)
+                    subtitulo_style = ParagraphStyle("SubtituloReport", parent=styles["Normal"], fontSize=10, textColor=colors.HexColor("#475569"))
+                    pagina_style = ParagraphStyle("PaginaReport", parent=styles["Heading2"], fontSize=13, textColor=colors.HexColor("#163A70"), spaceBefore=0, spaceAfter=6)
 
                     _agora = agora_dt()
                     story = [
                         Paragraph("Report SGO Eletroeletrônica", titulo_style),
-                        Paragraph(f"Data: {_agora.strftime('%d/%m/%Y')}", subtitulo_style),
-                        Paragraph(f"Report Atualizado até: {_agora.strftime('%H:%M')}", subtitulo_style),
-                        Spacer(1, 10),
+                        Paragraph(f"Data: {_agora.strftime('%d/%m/%Y')}  ·  Report Atualizado até: {_agora.strftime('%H:%M')}", subtitulo_style),
+                        Spacer(1, 8),
                     ]
+
+                    _total = int(len(_df_c))
+                    _real_tot = int(_df_c["Status_concluida"].sum())
+                    _prazo = int((_df_c["Status_norm"].isin(_status_prazo | {"ABER NRAV"})).sum())
+                    _atraso = int((_df_c["Status_norm"].isin(_status_atraso)).sum())
+                    _nao_real = _total - _real_tot
+                    _taxa = (_real_tot / _total * 100) if _total > 0 else 0.0
 
                     _estilo_cab = [
                         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#163A70")),
@@ -5476,27 +5558,114 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     tabela_kpi = Table(
                         [
                             ["Planejado", "Realizado", "Pendente", "Taxa de Conclusão"],
-                            [str(_total), f"{_real_tot} ({_prazo} no prazo / {_atraso} atrasado)", str(_total - _real_tot), f"{_taxa:.1f}%"],
+                            [str(_total), f"{_real_tot} ({_prazo} no prazo / {_atraso} atrasado)", str(_nao_real), f"{_taxa:.1f}%"],
                         ],
-                        colWidths=[70, 230, 70, 100],
+                        colWidths=[100, 320, 100, 140],
                     )
                     tabela_kpi.setStyle(TableStyle(_estilo_cab))
-                    story += [tabela_kpi, Spacer(1, 10)]
-
-                    img_donut = _grafico_donut_status_mpl(_prazo, _atraso, _nao_real)
-                    story += [Image(BytesIO(img_donut), width=200, height=174), Spacer(1, 6)]
+                    story += [tabela_kpi, Spacer(1, 12)]
 
                     _cats_coord_pdf = list(_cats_c or ["Paranapiacaba", "Piaçaguera"])
+
+                    # ---------------- PÁGINA 1: Resumo Executivo (grid 2x2) ----------------
+                    story.append(Paragraph("Página 1 de 2 — Resumo Executivo", pagina_style))
+                    _cel1_w, _cel1_h = 7.2, 4.5
+
+                    img_donut = _fig_unica_mpl(_desenhar_donut_status, (_prazo, _atraso, _nao_real), figsize=(_cel1_w, _cel1_h))
+
                     plan_ci_c, plan_si_c, _ = _contagens_micro(_df_c, "Coordenacao", _cats_coord_pdf)
                     real_ci_c, real_si_c, _ = _contagens_micro(_df_c, "Coordenacao", _cats_coord_pdf, mask=_df_c["Status_concluida"])
-                    img_coord = _grafico_barra_pxr_mpl(_cats_coord_pdf, plan_ci_c, plan_si_c, real_ci_c, real_si_c, "Planejado x Realizado (CI/SI) por Coordenação")
-                    story += [Image(BytesIO(img_coord), width=460, height=178), Spacer(1, 8)]
+                    img_coord = _fig_unica_mpl(
+                        _desenhar_pxr_vertical, (_cats_coord_pdf, plan_ci_c, plan_si_c, real_ci_c, real_si_c, "Planejado x Realizado (CI/SI) por Coordenação"),
+                        figsize=(_cel1_w, _cel1_h),
+                    )
 
-                    _cats_classif_pdf = ["Segurança", "Confiabilidade"]
-                    plan_ci_cl, plan_si_cl, _ = _contagens_micro(_df_c, "Classificacao", _cats_classif_pdf)
-                    real_ci_cl, real_si_cl, _ = _contagens_micro(_df_c, "Classificacao", _cats_classif_pdf, mask=_df_c["Status_concluida"])
-                    img_classif = _grafico_barra_pxr_mpl(_cats_classif_pdf, plan_ci_cl, plan_si_cl, real_ci_cl, real_si_cl, "Planejado x Realizado (CI/SI) por Classificação")
-                    story += [Image(BytesIO(img_classif), width=460, height=178)]
+                    _args_classif_coord = []
+                    for _classif_nome in ("Segurança", "Confiabilidade"):
+                        _mask_cl = _df_c["Classificacao"] == _classif_nome
+                        p_ci, p_si, _ = _contagens_micro(_df_c, "Coordenacao", _cats_coord_pdf, mask=_mask_cl)
+                        r_ci, r_si, _ = _contagens_micro(_df_c, "Coordenacao", _cats_coord_pdf, mask=(_mask_cl & _df_c["Status_concluida"]))
+                        _args_classif_coord.append((_cats_coord_pdf, p_ci, p_si, r_ci, r_si, f"{_classif_nome} por Coordenação"))
+                    img_classif_coord = _fig_dupla_mpl(_desenhar_pxr_vertical, _args_classif_coord[0], _args_classif_coord[1], figsize=(_cel1_w, _cel1_h))
+
+                    # dt_realizado normalmente ja vem calculado (ver 3.5 e o grafico de 24h em
+                    # tela, região 10.2.2c); recalcula so como defensiva, igual ao resto do arquivo.
+                    if "dt_realizado" not in _df_c.columns:
+                        _df_c = _df_c.copy()
+                        _df_c["dt_realizado"] = _df_c["Data/Hora Realizado"].apply(parse_datahora_realizado)
+                    _agora_pdf = agora_dt().replace(tzinfo=None)
+                    _cutoff_pdf = _agora_pdf - timedelta(hours=24)
+                    _mask_24h_pdf = (
+                        _df_c["Status_concluida"] & _df_c["dt_realizado"].notna()
+                        & (_df_c["dt_realizado"] >= _cutoff_pdf) & (_df_c["dt_realizado"] <= _agora_pdf)
+                    )
+                    _df24_pdf = _df_c[_mask_24h_pdf]
+                    _turnos_pdf = ["Turno Dia (07h-19h)", "Administrativo (08h-17h30)", "Turno Noite (19h-07h)"]
+                    _dados_24h = {}
+                    for _coord_nome in _cats_coord_pdf:
+                        _d_coord = _df24_pdf[_df24_pdf["Coordenacao"] == _coord_nome]
+                        _linhas = {}
+                        for _classif_ab, _classif in (("Seg", "Segurança"), ("Conf", "Confiabilidade")):
+                            for _tipo_ab, _tipo in (("CI", "Com Intervalo"), ("SI", "Sem Intervalo")):
+                                _d_seg = _d_coord[(_d_coord["Classificacao"] == _classif) & (_d_coord["Tipo_Intervalo_norm"] == _tipo)]
+                                _cnt = _d_seg["Turno"].value_counts()
+                                _linhas[f"{_classif_ab} {_tipo_ab}"] = [int(_cnt.get(t, 0)) for t in _turnos_pdf]
+                        _dados_24h[_coord_nome] = _linhas
+                    _titulo_24h = "Realizado Últimas 24h por Turno" + (
+                        f" (esq {_cats_coord_pdf[0][:5]}. / dir {_cats_coord_pdf[1][:5]}.)" if len(_cats_coord_pdf) >= 2 else ""
+                    )
+                    img_24h = _fig_unica_mpl(_desenhar_24h, (_turnos_pdf, _dados_24h, _titulo_24h), figsize=(_cel1_w, _cel1_h))
+
+                    _w1, _h1 = _cel1_w * inch, _cel1_h * inch
+                    tabela_p1 = Table(
+                        [
+                            [Image(BytesIO(img_donut), width=_w1, height=_h1), Image(BytesIO(img_coord), width=_w1, height=_h1)],
+                            [Image(BytesIO(img_classif_coord), width=_w1, height=_h1), Image(BytesIO(img_24h), width=_w1, height=_h1)],
+                        ],
+                        colWidths=[_w1, _w1],
+                        rowHeights=[_h1, _h1],
+                    )
+                    tabela_p1.setStyle(TableStyle([
+                        ("VALIGN", (0, 0), (-1, -1), "TOP"), ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                        ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ]))
+                    story += [tabela_p1, PageBreak()]
+
+                    # ---------------- PÁGINA 2: Detalhamento por Pátio/Ativo ----------------
+                    story.append(Paragraph("Página 2 de 2 — Detalhamento por Pátio / Ativo", pagina_style))
+                    _cel2_w, _cel2_h = 15.2, 4.9
+
+                    _mask_seg = _df_c["Classificacao"] == "Segurança"
+                    _cats_seg_patio = _top_n_micro(_df_c[_mask_seg], "Patio", n=10)
+                    p_ci_sp, p_si_sp, _ = _contagens_micro(_df_c, "Patio", _cats_seg_patio, mask=_mask_seg)
+                    r_ci_sp, r_si_sp, _ = _contagens_micro(_df_c, "Patio", _cats_seg_patio, mask=(_mask_seg & _df_c["Status_concluida"]))
+
+                    _mask_conf = _df_c["Classificacao"] == "Confiabilidade"
+                    _cats_conf_ativo = _top_n_micro(_df_c[_mask_conf], "Ativo", n=10)
+                    p_ci_ca, p_si_ca, _ = _contagens_micro(_df_c, "Ativo", _cats_conf_ativo, mask=_mask_conf)
+                    r_ci_ca, r_si_ca, _ = _contagens_micro(_df_c, "Ativo", _cats_conf_ativo, mask=(_mask_conf & _df_c["Status_concluida"]))
+
+                    img_patio_ativo = _fig_dupla_mpl(
+                        _desenhar_pxr_horizontal,
+                        (_cats_seg_patio, p_ci_sp, p_si_sp, r_ci_sp, r_si_sp, "Segurança (CI/SI) por Pátio"),
+                        (_cats_conf_ativo, p_ci_ca, p_si_ca, r_ci_ca, r_si_ca, "Confiabilidade (CI/SI) por Ativo (Top 10)"),
+                        figsize=(_cel2_w, _cel2_h),
+                    )
+
+                    _mask_seg_pend = (_df_c["Classificacao"] == "Segurança") & (~_df_c["Status_concluida"])
+                    _args_pendente = []
+                    for _coord_nome in ("Piaçaguera", "Paranapiacaba"):
+                        _mask_cp = _mask_seg_pend & (_df_c["Coordenacao"] == _coord_nome)
+                        _cats_p = _top_n_micro(_df_c[_mask_cp], "Ativo", n=10)
+                        _ci_p, _si_p, _ = _contagens_micro(_df_c, "Ativo", _cats_p, mask=_mask_cp)
+                        _args_pendente.append((_cats_p, _ci_p, _si_p, f"Segurança Pendente Top 10 — {_coord_nome}"))
+                    img_pendente = _fig_dupla_mpl(_desenhar_pendente_horizontal, _args_pendente[0], _args_pendente[1], figsize=(_cel2_w, _cel2_h))
+
+                    _w2, _h2 = _cel2_w * inch, _cel2_h * inch
+                    story += [
+                        Image(BytesIO(img_patio_ativo), width=_w2, height=_h2), Spacer(1, 10),
+                        Image(BytesIO(img_pendente), width=_w2, height=_h2),
+                    ]
 
                     doc.build(story)
                     buffer.seek(0)
@@ -5505,14 +5674,11 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                 col_btn_pdf_report, _ = st.columns([2.2, 7.8])
                 with col_btn_pdf_report:
                     st.download_button(
-                        "📄 Report PDF (1 pág.)",
-                        data=_gerar_pdf_report_gerencial(
-                            total_os, realizado_prazo, realizado_atraso, realizado_total, nao_realizado, taxa_conclusao,
-                            df_coord, _cats_coord,
-                        ),
+                        "📄 Report PDF (A3, 2 pág.)",
+                        data=_gerar_pdf_report_gerencial(df_coord, _cats_coord),
                         file_name=f"report_sgo_eletroeletronica_{agora_dt().strftime('%Y%m%d_%H%M')}.pdf",
                         mime="application/pdf",
-                        help="Report resumido de 1 página (sem menu lateral), com gráficos, pronto pra WhatsApp/e-mail.",
+                        help="Report em A3 paisagem, 2 páginas (sem menu lateral), com todos os gráficos de Visão por Coordenação, pronto pra WhatsApp/e-mail.",
                     )
 #endregion 10.2.3b
 
