@@ -4116,7 +4116,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v14.6.0")
+st.sidebar.caption("SGO Eletroeletrônica • v14.6.1")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -4646,21 +4646,19 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
         series.append({"name": "Total Realizado", "type": "bar", "stack": "real", "data": total_real, "itemStyle": {"color": "transparent"}, "tooltip": {"show": False}})
         return series, legend
 
-    def _grafico_micro(categorias, series, legend, key, altura="480px", zoom=False):
-        _opcoes = {
+    def _grafico_micro(categorias, series, legend, key, altura="480px"):
+        # zoom=True (dataZoom "inside" no eixo Y, roda do mouse) foi tentado em 27/07/2026 pra
+        # afastar rotulo de grafico com muita categoria, mas os 2 graficos que foram pra 2a
+        # coluna de um st.columns sairam em branco em producao logo depois -- removido; a
+        # largura cheia (ver 10.2.2c) resolveu boa parte do amontoado sem essa complexidade.
+        st_echarts(options={
             "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
             "legend": {"bottom": "0%", "data": legend},
             "grid": {"left": "3%", "right": "18%", "top": "6%", "bottom": "14%", "containLabel": True},
             "xAxis": {"type": "value", "boundaryGap": [0, 0.02]},
             "yAxis": {"type": "category", "data": categorias, "inverse": True, "axisLabel": {"interval": 0}},
             "series": series,
-        }
-        if zoom:
-            # Scroll (roda do mouse/pinch) pra dar zoom no eixo Y quando tem muita categoria e
-            # os rotulos de total/Pendente colam uns nos outros -- so nos graficos que pedem
-            # explicitamente (zoom=True), pra nao mexer nos outros que usam este mesmo helper.
-            _opcoes["dataZoom"] = [{"type": "inside", "yAxisIndex": [0], "start": 0, "end": 100, "zoomOnMouseWheel": True, "moveOnMouseMove": True}]
-        st_echarts(options=_opcoes, height=altura, theme="streamlit", key=key)
+        }, height=altura, theme="streamlit", key=key)
 
     def _bloco_visao_micro(df_micro, titulo_a, titulo_b, col_cat, key_prefix):
         categorias = _top_n_micro(df_micro, col_cat, n=10)
@@ -5044,71 +5042,74 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     df_coord["Tipo_Intervalo_norm"] = _tipo_int_norm
                     df_coord["Status_concluida"] = df_coord["Status_norm"].isin(_status_concluida_dashboard)
 
+                    # Largura cheia (nao st.columns) de proposito: os 2 graficos que foram pra
+                    # coluna da direita nasceram em branco em producao em 27/07/2026 (mesma
+                    # familia de bug ja documentada nesse arquivo -- ECharts mede a largura do
+                    # container no momento em que nasce, e a 2a coluna de um st.columns as vezes
+                    # ainda nao tem largura definida nesse instante). Empilhado verticalmente
+                    # evita esse container "instavel".
                     st.markdown("##### Planejado x Realizado (CI/SI) por Coordenação")
                     _cats_coord = _top_n_micro(df_coord, "Coordenacao", n=10)
-                    col_pxr_coord, col_24h_coord = st.columns(2)
-                    with col_pxr_coord:
-                        if _cats_coord:
-                            plan_ci, plan_si, plan_nd = _contagens_micro(df_coord, "Coordenacao", _cats_coord)
-                            real_ci, real_si, real_nd = _contagens_micro(df_coord, "Coordenacao", _cats_coord, mask=df_coord["Status_concluida"])
-                            _series_pxr, _legend_pxr = _series_micro(plan_ci, plan_si, plan_nd, real_ci, real_si, real_nd)
-                            _grafico_micro(_cats_coord, _series_pxr, _legend_pxr, key="coord_total", altura="420px")
-                        else:
-                            st.info("Sem dados suficientes para Planejado x Realizado por Coordenação.")
+                    if _cats_coord:
+                        plan_ci, plan_si, plan_nd = _contagens_micro(df_coord, "Coordenacao", _cats_coord)
+                        real_ci, real_si, real_nd = _contagens_micro(df_coord, "Coordenacao", _cats_coord, mask=df_coord["Status_concluida"])
+                        _series_pxr, _legend_pxr = _series_micro(plan_ci, plan_si, plan_nd, real_ci, real_si, real_nd)
+                        _grafico_micro(_cats_coord, _series_pxr, _legend_pxr, key="coord_total", altura="380px")
+                    else:
+                        st.info("Sem dados suficientes para Planejado x Realizado por Coordenação.")
 
-                    with col_24h_coord:
-                        st.markdown("###### Realizado nas Últimas 24h por Turno (Segurança/Confiabilidade, CI/SI)")
-                        # dt_realizado normalmente ja vem calculado (ver 3.5); recalcula so como
-                        # defensiva, igual ao resto do arquivo, pra nao quebrar se algum dia nao vier.
-                        if "dt_realizado" not in df_coord.columns:
-                            df_coord["dt_realizado"] = df_coord["Data/Hora Realizado"].apply(parse_datahora_realizado)
-                        _agora_naive = agora_dt().replace(tzinfo=None)
-                        _cutoff_24h = _agora_naive - timedelta(hours=24)
-                        _mask_24h = (
-                            df_coord["Status_concluida"]
-                            & df_coord["dt_realizado"].notna()
-                            & (df_coord["dt_realizado"] >= _cutoff_24h)
-                            & (df_coord["dt_realizado"] <= _agora_naive)
+                    st.markdown("##### Realizado nas Últimas 24h por Turno (Segurança/Confiabilidade, CI/SI)")
+                    # dt_realizado normalmente ja vem calculado (ver 3.5); recalcula so como
+                    # defensiva, igual ao resto do arquivo, pra nao quebrar se algum dia nao vier.
+                    if "dt_realizado" not in df_coord.columns:
+                        df_coord["dt_realizado"] = df_coord["Data/Hora Realizado"].apply(parse_datahora_realizado)
+                    _agora_naive = agora_dt().replace(tzinfo=None)
+                    _cutoff_24h = _agora_naive - timedelta(hours=24)
+                    _mask_24h = (
+                        df_coord["Status_concluida"]
+                        & df_coord["dt_realizado"].notna()
+                        & (df_coord["dt_realizado"] >= _cutoff_24h)
+                        & (df_coord["dt_realizado"] <= _agora_naive)
+                    )
+                    df_24h = df_coord[_mask_24h]
+                    _turnos_24h = ["Turno Dia (07h-19h)", "Administrativo (08h-17h30)", "Turno Noite (19h-07h)"]
+                    _cores_24h = {
+                        ("Segurança", "Com Intervalo"): "#DC2626", ("Segurança", "Sem Intervalo"): "#FCA5A5",
+                        ("Confiabilidade", "Com Intervalo"): "#1D4ED8", ("Confiabilidade", "Sem Intervalo"): "#60A5FA",
+                    }
+                    if not df_24h.empty:
+                        _series_24h, _legend_24h = [], []
+                        # Cada coordenação vira um "stack" proprio -> ECharts agrupa as 2
+                        # coordenações lado a lado em cada turno, empilhando CI/SI dentro de
+                        # cada uma (mesma cor entre coordenações; a posição no eixo distingue).
+                        for _coord_nome, _abrev in (("Paranapiacaba", "Paran."), ("Piaçaguera", "Piaç.")):
+                            d_coord_24h = df_24h[df_24h["Coordenacao"] == _coord_nome]
+                            for _classif, _classif_abrev in (("Segurança", "Seg."), ("Confiabilidade", "Conf.")):
+                                for _tipo, _tipo_label in (("Com Intervalo", "CI"), ("Sem Intervalo", "SI")):
+                                    d_seg_24h = d_coord_24h[(d_coord_24h["Classificacao"] == _classif) & (d_coord_24h["Tipo_Intervalo_norm"] == _tipo)]
+                                    _contagem_turno = d_seg_24h["Turno"].value_counts()
+                                    _valores_24h = [int(_contagem_turno.get(t, 0)) for t in _turnos_24h]
+                                    _nome_serie = f"{_abrev} {_classif_abrev} {_tipo_label}"
+                                    _series_24h.append({
+                                        "name": _nome_serie, "type": "bar", "stack": _coord_nome,
+                                        "data": _valores_24h, "itemStyle": {"color": _cores_24h[(_classif, _tipo)]},
+                                    })
+                                    _legend_24h.append(_nome_serie)
+
+                        st_echarts(options={
+                            "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
+                            "legend": {"bottom": "0%", "type": "scroll", "data": _legend_24h, "textStyle": {"fontSize": 9}},
+                            "grid": {"left": "3%", "right": "4%", "top": "6%", "bottom": "18%", "containLabel": True},
+                            "xAxis": {"type": "category", "data": _turnos_24h, "axisLabel": {"interval": 0, "fontSize": 10}},
+                            "yAxis": {"type": "value"},
+                            "series": _series_24h,
+                        }, height="380px", theme="streamlit", key="coord_realizado_24h")
+                        st.caption(
+                            f"Janela: {_cutoff_24h.strftime('%d/%m %H:%M')} até {_agora_naive.strftime('%d/%m %H:%M')} "
+                            "-- em cada turno, barra da esquerda é Paranapiacaba, da direita é Piaçaguera."
                         )
-                        df_24h = df_coord[_mask_24h]
-                        _turnos_24h = ["Turno Dia (07h-19h)", "Administrativo (08h-17h30)", "Turno Noite (19h-07h)"]
-                        _cores_24h = {
-                            ("Segurança", "Com Intervalo"): "#DC2626", ("Segurança", "Sem Intervalo"): "#FCA5A5",
-                            ("Confiabilidade", "Com Intervalo"): "#1D4ED8", ("Confiabilidade", "Sem Intervalo"): "#60A5FA",
-                        }
-                        if not df_24h.empty:
-                            _series_24h, _legend_24h = [], []
-                            # Cada coordenação vira um "stack" proprio -> ECharts agrupa as 2
-                            # coordenações lado a lado em cada turno, empilhando CI/SI dentro de
-                            # cada uma (mesma cor entre coordenações; a posição no eixo distingue).
-                            for _coord_nome, _abrev in (("Paranapiacaba", "Paran."), ("Piaçaguera", "Piaç.")):
-                                d_coord_24h = df_24h[df_24h["Coordenacao"] == _coord_nome]
-                                for _classif, _classif_abrev in (("Segurança", "Seg."), ("Confiabilidade", "Conf.")):
-                                    for _tipo, _tipo_label in (("Com Intervalo", "CI"), ("Sem Intervalo", "SI")):
-                                        d_seg_24h = d_coord_24h[(d_coord_24h["Classificacao"] == _classif) & (d_coord_24h["Tipo_Intervalo_norm"] == _tipo)]
-                                        _contagem_turno = d_seg_24h["Turno"].value_counts()
-                                        _valores_24h = [int(_contagem_turno.get(t, 0)) for t in _turnos_24h]
-                                        _nome_serie = f"{_abrev} {_classif_abrev} {_tipo_label}"
-                                        _series_24h.append({
-                                            "name": _nome_serie, "type": "bar", "stack": _coord_nome,
-                                            "data": _valores_24h, "itemStyle": {"color": _cores_24h[(_classif, _tipo)]},
-                                        })
-                                        _legend_24h.append(_nome_serie)
-
-                            st_echarts(options={
-                                "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
-                                "legend": {"bottom": "0%", "type": "scroll", "data": _legend_24h, "textStyle": {"fontSize": 9}},
-                                "grid": {"left": "3%", "right": "4%", "top": "6%", "bottom": "26%", "containLabel": True},
-                                "xAxis": {"type": "category", "data": _turnos_24h, "axisLabel": {"interval": 0, "fontSize": 10}},
-                                "yAxis": {"type": "value"},
-                                "series": _series_24h,
-                            }, height="420px", theme="streamlit", key="coord_realizado_24h")
-                            st.caption(
-                                f"Janela: {_cutoff_24h.strftime('%d/%m %H:%M')} até {_agora_naive.strftime('%d/%m %H:%M')} "
-                                "-- em cada turno, barra da esquerda é Paranapiacaba, da direita é Piaçaguera."
-                            )
-                        else:
-                            st.info("Nenhuma OS realizada nas últimas 24 horas.")
+                    else:
+                        st.info("Nenhuma OS realizada nas últimas 24 horas.")
 
                     st.markdown("##### Segurança x Confiabilidade — Planejado x Realizado (CI/SI) por Coordenação")
                     if _cats_coord:
@@ -5123,30 +5124,32 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                                 _grafico_micro(_cats_coord, _series_cc, _legend_cc, key=f"coord_classif_{_classif}")
 
                     st.divider()
-                    col_seg_patio, col_conf_ativo = st.columns(2)
-                    with col_seg_patio:
-                        st.markdown("##### OS de Segurança (CI/SI) por Pátio")
-                        _mask_seg_pat = df_coord["Classificacao"] == "Segurança"
-                        _cats_seg_patio = _top_n_micro(df_coord[_mask_seg_pat], "Patio", n=10)
-                        if _cats_seg_patio:
-                            p_ci, p_si, p_nd = _contagens_micro(df_coord, "Patio", _cats_seg_patio, mask=_mask_seg_pat)
-                            r_ci, r_si, r_nd = _contagens_micro(df_coord, "Patio", _cats_seg_patio, mask=(_mask_seg_pat & df_coord["Status_concluida"]))
-                            _series_sp, _legend_sp = _series_micro(p_ci, p_si, p_nd, r_ci, r_si, r_nd)
-                            _grafico_micro(_cats_seg_patio, _series_sp, _legend_sp, key="coord_seg_patio", altura="420px", zoom=True)
-                        else:
-                            st.info("Sem OS de Segurança no recorte atual.")
+                    # Largura cheia aqui tambem, mesmo motivo do bloco acima: eram os outros 2
+                    # graficos que sairam em branco em producao (2a coluna de um st.columns).
+                    # zoom=True removido -- nao ha evidencia de que ajudou o amontoado de rotulo
+                    # (a largura cheia sozinha ja da bem mais espaco) e e candidato a ter
+                    # contribuido pro bug de renderizacao em branco.
+                    st.markdown("##### OS de Segurança (CI/SI) por Pátio")
+                    _mask_seg_pat = df_coord["Classificacao"] == "Segurança"
+                    _cats_seg_patio = _top_n_micro(df_coord[_mask_seg_pat], "Patio", n=10)
+                    if _cats_seg_patio:
+                        p_ci, p_si, p_nd = _contagens_micro(df_coord, "Patio", _cats_seg_patio, mask=_mask_seg_pat)
+                        r_ci, r_si, r_nd = _contagens_micro(df_coord, "Patio", _cats_seg_patio, mask=(_mask_seg_pat & df_coord["Status_concluida"]))
+                        _series_sp, _legend_sp = _series_micro(p_ci, p_si, p_nd, r_ci, r_si, r_nd)
+                        _grafico_micro(_cats_seg_patio, _series_sp, _legend_sp, key="coord_seg_patio", altura="440px")
+                    else:
+                        st.info("Sem OS de Segurança no recorte atual.")
 
-                    with col_conf_ativo:
-                        st.markdown("##### OS de Confiabilidade (CI/SI) por Ativo (Top 10)")
-                        _mask_conf_ativo = df_coord["Classificacao"] == "Confiabilidade"
-                        _cats_conf_ativo = _top_n_micro(df_coord[_mask_conf_ativo], "Ativo", n=10)
-                        if _cats_conf_ativo:
-                            p_ci, p_si, p_nd = _contagens_micro(df_coord, "Ativo", _cats_conf_ativo, mask=_mask_conf_ativo)
-                            r_ci, r_si, r_nd = _contagens_micro(df_coord, "Ativo", _cats_conf_ativo, mask=(_mask_conf_ativo & df_coord["Status_concluida"]))
-                            _series_ca, _legend_ca = _series_micro(p_ci, p_si, p_nd, r_ci, r_si, r_nd)
-                            _grafico_micro(_cats_conf_ativo, _series_ca, _legend_ca, key="coord_conf_ativo", altura="420px", zoom=True)
-                        else:
-                            st.info("Sem OS de Confiabilidade no recorte atual.")
+                    st.markdown("##### OS de Confiabilidade (CI/SI) por Ativo (Top 10)")
+                    _mask_conf_ativo = df_coord["Classificacao"] == "Confiabilidade"
+                    _cats_conf_ativo = _top_n_micro(df_coord[_mask_conf_ativo], "Ativo", n=10)
+                    if _cats_conf_ativo:
+                        p_ci, p_si, p_nd = _contagens_micro(df_coord, "Ativo", _cats_conf_ativo, mask=_mask_conf_ativo)
+                        r_ci, r_si, r_nd = _contagens_micro(df_coord, "Ativo", _cats_conf_ativo, mask=(_mask_conf_ativo & df_coord["Status_concluida"]))
+                        _series_ca, _legend_ca = _series_micro(p_ci, p_si, p_nd, r_ci, r_si, r_nd)
+                        _grafico_micro(_cats_conf_ativo, _series_ca, _legend_ca, key="coord_conf_ativo", altura="440px")
+                    else:
+                        st.info("Sem OS de Confiabilidade no recorte atual.")
 
                     st.divider()
                     st.markdown("##### Top 10 Ativos com OS de Segurança Pendente (CI/SI) por Coordenação")
