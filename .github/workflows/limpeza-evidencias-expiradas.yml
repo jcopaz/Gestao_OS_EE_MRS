@@ -16,8 +16,18 @@ jobs:
     steps:
       - name: Chamar /limpar_evidencias_expiradas
         run: |
-          dry_run="${{ github.event.inputs.dry_run }}"
-          if [ -z "$dry_run" ]; then dry_run="true"; fi
+          # "schedule" nao repassa github.event.inputs (fica vazio) -- sem esse
+          # if, o fallback abaixo pegava esse caso junto com "workflow_dispatch
+          # sem valor informado" e o cron diario nunca apagava nada de verdade
+          # (bug identificado em 27/07/2026, corrigido aqui). O cron automatico
+          # e o unico fluxo que deve rodar apagando por padrao; disparo manual
+          # continua seguro (dry_run=true) se ninguem informar o contrario.
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            dry_run="false"
+          else
+            dry_run="${{ github.event.inputs.dry_run }}"
+            if [ -z "$dry_run" ]; then dry_run="true"; fi
+          fi
           curl -s -X POST \
             "https://gestao-os-ee-mrs-producao.onrender.com/limpar_evidencias_expiradas?dry_run=${dry_run}" \
             -H "x-api-key: ${{ secrets.OFFLINE_API_KEY }}"
