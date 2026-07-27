@@ -4116,7 +4116,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v14.9.0")
+st.sidebar.caption("SGO Eletroeletrônica • v14.10.0")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -5096,7 +5096,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                                         _nome_serie = f"{_classif_abrev} {_tipo_label}"
                                         _series_24h.append({
                                             "name": _nome_serie, "type": "bar", "stack": "24h",
-                                            "data": _valores_24h, "itemStyle": {"color": _cores_24h[(_classif, _tipo)]},
+                                            "data": _segmentos_micro(_valores_24h, "#FFFFFF"), "itemStyle": {"color": _cores_24h[(_classif, _tipo)]},
                                         })
                                         _legend_24h.append(_nome_serie)
 
@@ -5105,7 +5105,10 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                                     "legend": {"bottom": "0%", "data": _legend_24h, "textStyle": {"fontSize": 9}},
                                     "grid": {"left": "8%", "right": "4%", "top": "6%", "bottom": "18%", "containLabel": True},
                                     "xAxis": {"type": "category", "data": [t.split(" (")[0] for t in _turnos_24h], "axisLabel": {"interval": 0, "fontSize": 10}},
-                                    "yAxis": {"type": "value"},
+                                    # minInterval:1 -- contagem de OS e sempre inteira, sem isso o
+                                    # ECharts as vezes escolhe passo fracionado (2.5, 7.5...) quando
+                                    # o range e pequeno, o que fica estranho pra numero de OS.
+                                    "yAxis": {"type": "value", "minInterval": 1},
                                     "series": _series_24h,
                                 }, height="380px", theme="streamlit", key=f"coord_realizado_24h_{_coord_nome}")
                     else:
@@ -5465,12 +5468,23 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     ax.bar(_x + _larg / 2, real_si, _larg, bottom=real_ci, label="Realizado SI", color="#60A5FA")
                     _topo = max([a + b for a, b in zip(plan_ci, plan_si)] + [a + b for a, b in zip(real_ci, real_si)] + [1])
                     for i in range(len(categorias)):
+                        # Numero dentro de cada segmento (nao so o total) -- igual a tela, que ja
+                        # mostra Planejado CI/SI/Realizado CI/SI dentro da propria barra.
+                        if plan_ci[i] > 0:
+                            ax.text(_x[i] - _larg / 2, plan_ci[i] / 2, str(plan_ci[i]), ha="center", va="center", fontsize=6.5, color="white", fontweight="bold")
+                        if plan_si[i] > 0:
+                            ax.text(_x[i] - _larg / 2, plan_ci[i] + plan_si[i] / 2, str(plan_si[i]), ha="center", va="center", fontsize=6.5, color="white", fontweight="bold")
+                        if real_ci[i] > 0:
+                            ax.text(_x[i] + _larg / 2, real_ci[i] / 2, str(real_ci[i]), ha="center", va="center", fontsize=6.5, color="white", fontweight="bold")
+                        if real_si[i] > 0:
+                            ax.text(_x[i] + _larg / 2, real_ci[i] + real_si[i] / 2, str(real_si[i]), ha="center", va="center", fontsize=6.5, color="white", fontweight="bold")
                         _tp, _tr = plan_ci[i] + plan_si[i], real_ci[i] + real_si[i]
                         ax.text(_x[i] - _larg / 2, _tp + _topo * 0.02, str(_tp), ha="center", fontsize=8, color="#334155")
                         ax.text(_x[i] + _larg / 2, _tr + _topo * 0.02, f"{_tr} (P:{_tp - _tr})", ha="center", fontsize=7.5, color="#1D4ED8", fontweight="bold")
                     ax.set_xticks(_x)
                     ax.set_xticklabels(categorias, fontsize=9)
                     ax.set_ylim(0, _topo * 1.3)
+                    ax.yaxis.set_major_locator(plt.MaxNLocator(integer=True))  # contagem de OS e sempre inteira
                     ax.set_title(titulo, fontsize=10, fontweight="bold", color="#0F172A")
                     ax.legend(fontsize=7, ncol=2, loc="upper center", bbox_to_anchor=(0.5, -0.16), frameon=False)
                     ax.spines[["top", "right"]].set_visible(False)
@@ -5484,6 +5498,14 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     ax.barh(_y - _larg / 2, real_si, _larg, left=real_ci, label="Realizado SI", color="#60A5FA")
                     _fim = max([a + b for a, b in zip(plan_ci, plan_si)] + [a + b for a, b in zip(real_ci, real_si)] + [1])
                     for i in range(len(categorias)):
+                        if plan_ci[i] > 0:
+                            ax.text(plan_ci[i] / 2, _y[i] + _larg / 2, str(plan_ci[i]), ha="center", va="center", fontsize=6.5, color="white", fontweight="bold")
+                        if plan_si[i] > 0:
+                            ax.text(plan_ci[i] + plan_si[i] / 2, _y[i] + _larg / 2, str(plan_si[i]), ha="center", va="center", fontsize=6.5, color="white", fontweight="bold")
+                        if real_ci[i] > 0:
+                            ax.text(real_ci[i] / 2, _y[i] - _larg / 2, str(real_ci[i]), ha="center", va="center", fontsize=6.5, color="white", fontweight="bold")
+                        if real_si[i] > 0:
+                            ax.text(real_ci[i] + real_si[i] / 2, _y[i] - _larg / 2, str(real_si[i]), ha="center", va="center", fontsize=6.5, color="white", fontweight="bold")
                         _tp, _tr = plan_ci[i] + plan_si[i], real_ci[i] + real_si[i]
                         ax.text(_tp + _fim * 0.02, _y[i] + _larg / 2, str(_tp), va="center", fontsize=7, color="#334155")
                         ax.text(_tr + _fim * 0.02, _y[i] - _larg / 2, f"{_tr} (P:{_tp - _tr})", va="center", fontsize=7, color="#1D4ED8", fontweight="bold")
@@ -5491,6 +5513,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     ax.set_yticklabels(categorias, fontsize=8)
                     ax.invert_yaxis()
                     ax.set_xlim(0, _fim * 1.42)
+                    ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
                     ax.set_title(titulo, fontsize=10, fontweight="bold", color="#0F172A")
                     ax.legend(fontsize=7, ncol=2, loc="lower right", frameon=False)
                     ax.spines[["top", "right"]].set_visible(False)
@@ -5506,12 +5529,17 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     ax.barh(_y, si_vals, left=ci_vals, label="Sem Intervalo", color=cor_si)
                     _fim = max([a + b for a, b in zip(ci_vals, si_vals)] + [1])
                     for i in range(len(categorias)):
+                        if ci_vals[i] > 0:
+                            ax.text(ci_vals[i] / 2, _y[i], str(ci_vals[i]), ha="center", va="center", fontsize=6.5, color="white", fontweight="bold")
+                        if si_vals[i] > 0:
+                            ax.text(ci_vals[i] + si_vals[i] / 2, _y[i], str(si_vals[i]), ha="center", va="center", fontsize=6.5, color="white", fontweight="bold")
                         _tot = ci_vals[i] + si_vals[i]
                         ax.text(_tot + _fim * 0.02, _y[i], str(_tot), va="center", fontsize=7.5, color=cor_txt, fontweight="bold")
                     ax.set_yticks(_y)
                     ax.set_yticklabels(categorias, fontsize=7.5)
                     ax.invert_yaxis()
                     ax.set_xlim(0, _fim * 1.25)
+                    ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
                     ax.set_title(titulo, fontsize=9.5, fontweight="bold", color="#0F172A")
                     ax.legend(fontsize=6.5, loc="lower right", frameon=False)
                     ax.spines[["top", "right"]].set_visible(False)
@@ -5525,9 +5553,13 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     for _nome, _cor in _cores.items():
                         _vals = dados_coord.get(_nome, [0] * len(turnos))
                         ax.bar(_x, _vals, 0.55, bottom=_bottom, color=_cor, label=_nome)
+                        for i, _v in enumerate(_vals):
+                            if _v > 0:
+                                ax.text(_x[i], _bottom[i] + _v / 2, str(int(_v)), ha="center", va="center", fontsize=6.5, color="white", fontweight="bold")
                         _bottom = [b + v for b, v in zip(_bottom, _vals)]
                     ax.set_xticks(_x)
                     ax.set_xticklabels([t.split(" (")[0] for t in turnos], fontsize=8)
+                    ax.yaxis.set_major_locator(plt.MaxNLocator(integer=True))
                     ax.set_title(titulo, fontsize=9.5, fontweight="bold", color="#0F172A")
                     ax.legend(fontsize=6.5, ncol=2, loc="upper right", frameon=False)
                     ax.spines[["top", "right"]].set_visible(False)
