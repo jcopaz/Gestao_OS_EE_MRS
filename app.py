@@ -4116,7 +4116,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v14.10.0")
+st.sidebar.caption("SGO Eletroeletrônica • v14.11.0")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -5406,45 +5406,25 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                                 st.info("Sem dados cronológicos.")
                 #endregion 10.2.3
 
-#region 10.2.3b: Report Paginado (PDF p/ WhatsApp/E-mail)
-                # PDF com os GRAFICOS de fato (imagem), nao so tabelas de numeros -- mas nao e
+#region 10.2.3b: Report em Imagem (PNG p/ WhatsApp/E-mail)
+                # PNG com os GRAFICOS de fato, nao so tabela de numeros -- mas nao e
                 # print/screenshot da tela: componente Streamlit-ECharts nao tem um jeito de
                 # exportar a imagem do grafico renderizado de volta pro Python sem JsCode (que
                 # nao serializa mais nesta nuvem), e HTML/JS pesado via components.html ja
                 # causou Segmentation fault aqui antes (ver comentario em 10.3.1/_CSS_CARD_OS).
                 # Solucao: redesenha os MESMOS graficos (mesmas cores/mesmos numeros) com
-                # matplotlib, 100% server-side, sem depender de navegador nenhum, e embute o
-                # PNG no PDF via reportlab. A3 paisagem, 2 paginas (testado localmente com
-                # dados falsos + pypdf/PyMuPDF antes de subir -- pag.1 resumo 2x2, pag.2
-                # detalhamento por Pátio/Ativo com gráficos maiores/mais largos).
+                # matplotlib, 100% server-side, sem depender de navegador nenhum. Formato PNG
+                # (nao PDF) a pedido do Julio -- vai por WhatsApp, e imagem abre com preview
+                # direto na conversa, PDF so como anexo. Como imagem nao tem "pagina", virou 1
+                # imagem so, alta, em grid continuo (GridSpec) -- testado localmente antes de
+                # subir (ver PIL Image.open + tamanho conferido).
                 #
                 # IMPORTANTE: todos os numeros vem do MESMO df_coord (recorte de Visão por
                 # Coordenação, respeita o filtro de Período da lateral) -- de propósito NÃO usa
                 # total_os/realizado_total etc. (que vem de df_kpi_base, travado no último
                 # ciclo/plano, região 9.3): os dois recortes podem ter escopos diferentes e os
-                # totais do PDF não batiam entre si (bug encontrado em 27/07/2026 comparando o
-                # PDF gerado com a tela).
-                def _fig_para_png_bytes(fig):
-                    from io import BytesIO as _BytesIOFig
-                    buf = _BytesIOFig()
-                    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
-                    plt.close(fig)
-                    buf.seek(0)
-                    return buf.getvalue()
-
-                def _fig_unica_mpl(desenhar_fn, args, figsize=(5.0, 4.2)):
-                    fig, ax = plt.subplots(figsize=figsize)
-                    desenhar_fn(ax, *args)
-                    fig.tight_layout()
-                    return _fig_para_png_bytes(fig)
-
-                def _fig_dupla_mpl(desenhar_fn, args_esq, args_dir, figsize=(10.0, 4.2)):
-                    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
-                    desenhar_fn(ax1, *args_esq)
-                    desenhar_fn(ax2, *args_dir)
-                    fig.tight_layout()
-                    return _fig_para_png_bytes(fig)
-
+                # totais do report não batiam entre si (bug encontrado em 27/07/2026 comparando
+                # o report gerado com a tela).
                 def _desenhar_donut_status(ax, _prazo_d, _atraso_d, _pendente_d):
                     valores = [_prazo_d, _atraso_d, _pendente_d]
                     labels = ["No Prazo", "Atrasado", "Pendentes"]
@@ -5564,27 +5544,11 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     ax.legend(fontsize=6.5, ncol=2, loc="upper right", frameon=False)
                     ax.spines[["top", "right"]].set_visible(False)
 
-                def _gerar_pdf_report_gerencial(_df_c, _cats_c):
+                def _gerar_png_report_gerencial(_df_c, _cats_c):
                     from io import BytesIO
-                    from reportlab.lib import colors
-                    from reportlab.lib.pagesizes import A3, landscape
-                    from reportlab.lib.units import inch
-                    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-                    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, PageBreak
+                    import matplotlib.gridspec as gridspec
 
-                    buffer = BytesIO()
-                    doc = SimpleDocTemplate(buffer, pagesize=landscape(A3), leftMargin=24, rightMargin=24, topMargin=20, bottomMargin=20)
-                    styles = getSampleStyleSheet()
-                    titulo_style = ParagraphStyle("TituloReport", parent=styles["Title"], fontSize=20, textColor=colors.HexColor("#0F172A"), spaceAfter=2)
-                    subtitulo_style = ParagraphStyle("SubtituloReport", parent=styles["Normal"], fontSize=10, textColor=colors.HexColor("#475569"))
-                    pagina_style = ParagraphStyle("PaginaReport", parent=styles["Heading2"], fontSize=13, textColor=colors.HexColor("#163A70"), spaceBefore=0, spaceAfter=6)
-
-                    _agora = agora_dt()
-                    story = [
-                        Paragraph("Report SGO Eletroeletrônica", titulo_style),
-                        Paragraph(f"Data: {_agora.strftime('%d/%m/%Y')}  ·  Report Atualizado até: {_agora.strftime('%H:%M')}", subtitulo_style),
-                        Spacer(1, 8),
-                    ]
+                    _cats_coord_png = list(_cats_c or ["Paranapiacaba", "Piaçaguera"])
 
                     _total = int(len(_df_c))
                     _real_tot = int(_df_c["Status_concluida"].sum())
@@ -5593,158 +5557,125 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     _nao_real = _total - _real_tot
                     _taxa = (_real_tot / _total * 100) if _total > 0 else 0.0
 
-                    _estilo_cab = [
-                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#163A70")),
-                        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                        ("FONTSIZE", (0, 0), (-1, -1), 9),
-                        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D1D5DB")),
-                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                        ("TOPPADDING", (0, 0), (-1, -1), 5),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-                    ]
-                    tabela_kpi = Table(
-                        [
-                            ["Planejado", "Realizado", "Pendente", "Taxa de Conclusão"],
-                            [str(_total), f"{_real_tot} ({_prazo} no prazo / {_atraso} atrasado)", str(_nao_real), f"{_taxa:.1f}%"],
-                        ],
-                        colWidths=[100, 320, 100, 140],
-                    )
-                    tabela_kpi.setStyle(TableStyle(_estilo_cab))
-                    story += [tabela_kpi, Spacer(1, 12)]
-
-                    _cats_coord_pdf = list(_cats_c or ["Paranapiacaba", "Piaçaguera"])
-
-                    # ---------------- PÁGINA 1: Resumo Executivo (grid 2x2) ----------------
-                    story.append(Paragraph("Página 1 de 2 — Resumo Executivo", pagina_style))
-                    _cel1_w, _cel1_h = 7.2, 4.5
-
-                    img_donut = _fig_unica_mpl(_desenhar_donut_status, (_prazo, _atraso, _nao_real), figsize=(_cel1_w, _cel1_h))
-
-                    plan_ci_c, plan_si_c, _ = _contagens_micro(_df_c, "Coordenacao", _cats_coord_pdf)
-                    real_ci_c, real_si_c, _ = _contagens_micro(_df_c, "Coordenacao", _cats_coord_pdf, mask=_df_c["Status_concluida"])
-                    img_coord = _fig_unica_mpl(
-                        _desenhar_pxr_vertical, (_cats_coord_pdf, plan_ci_c, plan_si_c, real_ci_c, real_si_c, "Planejado x Realizado (CI/SI) por Coordenação"),
-                        figsize=(_cel1_w, _cel1_h),
-                    )
-
-                    _args_classif_coord = []
-                    for _classif_nome in ("Segurança", "Confiabilidade"):
-                        _mask_cl = _df_c["Classificacao"] == _classif_nome
-                        p_ci, p_si, _ = _contagens_micro(_df_c, "Coordenacao", _cats_coord_pdf, mask=_mask_cl)
-                        r_ci, r_si, _ = _contagens_micro(_df_c, "Coordenacao", _cats_coord_pdf, mask=(_mask_cl & _df_c["Status_concluida"]))
-                        _args_classif_coord.append((_cats_coord_pdf, p_ci, p_si, r_ci, r_si, f"{_classif_nome} por Coordenação"))
-                    img_classif_coord = _fig_dupla_mpl(_desenhar_pxr_vertical, _args_classif_coord[0], _args_classif_coord[1], figsize=(_cel1_w, _cel1_h))
-
                     # dt_realizado normalmente ja vem calculado (ver 3.5 e o grafico de 24h em
                     # tela, região 10.2.2c); recalcula so como defensiva, igual ao resto do arquivo.
                     if "dt_realizado" not in _df_c.columns:
                         _df_c = _df_c.copy()
                         _df_c["dt_realizado"] = _df_c["Data/Hora Realizado"].apply(parse_datahora_realizado)
-                    _agora_pdf = agora_dt().replace(tzinfo=None)
-                    _cutoff_pdf = _agora_pdf - timedelta(hours=24)
-                    _mask_24h_pdf = (
+                    _agora_png = agora_dt().replace(tzinfo=None)
+                    _cutoff_png = _agora_png - timedelta(hours=24)
+                    _mask_24h_png = (
                         _df_c["Status_concluida"] & _df_c["dt_realizado"].notna()
-                        & (_df_c["dt_realizado"] >= _cutoff_pdf) & (_df_c["dt_realizado"] <= _agora_pdf)
+                        & (_df_c["dt_realizado"] >= _cutoff_png) & (_df_c["dt_realizado"] <= _agora_png)
                     )
-                    _df24_pdf = _df_c[_mask_24h_pdf]
-                    _turnos_pdf = ["Turno Dia (07h-19h)", "Administrativo (08h-17h30)", "Turno Noite (19h-07h)"]
+                    _df24_png = _df_c[_mask_24h_png]
+                    _turnos_png = ["Turno Dia (07h-19h)", "Administrativo (08h-17h30)", "Turno Noite (19h-07h)"]
 
                     def _dados_turno_coord(coord_nome):
-                        _d_coord = _df24_pdf[_df24_pdf["Coordenacao"] == coord_nome]
+                        _d_coord = _df24_png[_df24_png["Coordenacao"] == coord_nome]
                         _linhas = {}
                         for _classif_ab, _classif in (("Seg", "Segurança"), ("Conf", "Confiabilidade")):
                             for _tipo_ab, _tipo in (("CI", "Com Intervalo"), ("SI", "Sem Intervalo")):
                                 _d_seg = _d_coord[(_d_coord["Classificacao"] == _classif) & (_d_coord["Tipo_Intervalo_norm"] == _tipo)]
                                 _cnt = _d_seg["Turno"].value_counts()
-                                _linhas[f"{_classif_ab} {_tipo_ab}"] = [int(_cnt.get(t, 0)) for t in _turnos_pdf]
+                                _linhas[f"{_classif_ab} {_tipo_ab}"] = [int(_cnt.get(t, 0)) for t in _turnos_png]
                         return _linhas
 
-                    # Igual a tela (10.2.2c): 1 grafico por coordenação, nao mais 1 so agrupado.
-                    if len(_cats_coord_pdf) >= 2:
-                        img_24h = _fig_dupla_mpl(
-                            _desenhar_24h_coord,
-                            (_turnos_pdf, _dados_turno_coord(_cats_coord_pdf[0]), f"Realizado 24h por Turno — {_cats_coord_pdf[0]}"),
-                            (_turnos_pdf, _dados_turno_coord(_cats_coord_pdf[1]), f"Realizado 24h por Turno — {_cats_coord_pdf[1]}"),
-                            figsize=(_cel1_w, _cel1_h),
-                        )
-                    else:
-                        _coord_unica = _cats_coord_pdf[0] if _cats_coord_pdf else ""
-                        img_24h = _fig_unica_mpl(
-                            _desenhar_24h_coord, (_turnos_pdf, _dados_turno_coord(_coord_unica), f"Realizado 24h por Turno — {_coord_unica}"),
-                            figsize=(_cel1_w, _cel1_h),
-                        )
+                    # 1 imagem so (nao 2 paginas): imagem nao tem conceito de pagina, entao vira
+                    # um grid continuo via GridSpec -- cada linha com a altura proporcional ao
+                    # conteudo (Pátio Top5 mais baixo, os Pendente Top10 mais altos).
+                    _larg_fig = 16.0
+                    _alt_titulo, _alt_kpi, _alt_top, _alt_meio, _alt_patio, _alt_pend = 1.0, 0.55, 3.6, 3.1, 2.15, 3.3
+                    _alt_total = _alt_titulo + _alt_kpi + _alt_top + _alt_meio + _alt_patio + _alt_pend * 2 + 0.4
 
-                    _w1, _h1 = _cel1_w * inch, _cel1_h * inch
-                    tabela_p1 = Table(
-                        [
-                            [Image(BytesIO(img_donut), width=_w1, height=_h1), Image(BytesIO(img_coord), width=_w1, height=_h1)],
-                            [Image(BytesIO(img_classif_coord), width=_w1, height=_h1), Image(BytesIO(img_24h), width=_w1, height=_h1)],
-                        ],
-                        colWidths=[_w1, _w1],
-                        rowHeights=[_h1, _h1],
+                    fig = plt.figure(figsize=(_larg_fig, _alt_total))
+                    gs = gridspec.GridSpec(
+                        6, 4, figure=fig,
+                        height_ratios=[_alt_kpi, _alt_top, _alt_meio, _alt_patio, _alt_pend, _alt_pend],
+                        top=1 - _alt_titulo / _alt_total, bottom=0.02, left=0.045, right=0.98,
+                        hspace=0.55, wspace=0.35,
                     )
-                    tabela_p1.setStyle(TableStyle([
-                        ("VALIGN", (0, 0), (-1, -1), "TOP"), ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                        ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                    ]))
-                    story += [tabela_p1, PageBreak()]
 
-                    # ---------------- PÁGINA 2: Detalhamento por Pátio/Ativo ----------------
-                    # Mesma ordem e mesmos 3 blocos da tela (10.2.2c), de cima pra baixo:
-                    # Segurança x Pátio (Top 5) -> Confiabilidade Pendente por Coordenação ->
-                    # Segurança Pendente por Coordenação.
-                    story.append(Paragraph("Página 2 de 2 — Detalhamento por Pátio / Ativo", pagina_style))
-                    _cel2_w = 15.2
+                    _agora = agora_dt()
+                    fig.text(0.045, 0.99, "Report SGO Eletroeletrônica", fontsize=22, fontweight="bold", color="#0F172A", va="top")
+                    fig.text(0.045, 0.965, f"Data: {_agora.strftime('%d/%m/%Y')}  ·  Report Atualizado até: {_agora.strftime('%H:%M')}", fontsize=11, color="#475569", va="top")
 
+                    ax_kpi = fig.add_subplot(gs[0, :])
+                    ax_kpi.axis("off")
+                    _tabela_kpi = ax_kpi.table(
+                        cellText=[[str(_total), f"{_real_tot} ({_prazo} no prazo / {_atraso} atrasado)", str(_nao_real), f"{_taxa:.1f}%"]],
+                        colLabels=["Planejado", "Realizado", "Pendente", "Taxa de Conclusão"],
+                        cellLoc="center", loc="center", colWidths=[0.12, 0.5, 0.12, 0.2],
+                    )
+                    _tabela_kpi.auto_set_font_size(False)
+                    _tabela_kpi.set_fontsize(10)
+                    _tabela_kpi.scale(1, 2.2)
+                    for (_row, _col), _cel in _tabela_kpi.get_celld().items():
+                        _cel.set_edgecolor("#D1D5DB")
+                        if _row == 0:
+                            _cel.set_facecolor("#163A70")
+                            _cel.set_text_props(color="white", fontweight="bold")
+                        else:
+                            _cel.set_facecolor("#FFFFFF")
+
+                    # --- linha Donut + Planejado x Realizado por Coordenação ---
+                    _desenhar_donut_status(fig.add_subplot(gs[1, 0:2]), _prazo, _atraso, _nao_real)
+                    plan_ci_c, plan_si_c, _ = _contagens_micro(_df_c, "Coordenacao", _cats_coord_png)
+                    real_ci_c, real_si_c, _ = _contagens_micro(_df_c, "Coordenacao", _cats_coord_png, mask=_df_c["Status_concluida"])
+                    _desenhar_pxr_vertical(
+                        fig.add_subplot(gs[1, 2:4]), _cats_coord_png, plan_ci_c, plan_si_c, real_ci_c, real_si_c,
+                        "Planejado x Realizado (CI/SI) por Coordenação",
+                    )
+
+                    # --- linha Segurança/Confiabilidade por coordenação + 24h x2 ---
+                    for _classif_nome, _col in (("Segurança", 0), ("Confiabilidade", 1)):
+                        _mask_cl = _df_c["Classificacao"] == _classif_nome
+                        p_ci, p_si, _ = _contagens_micro(_df_c, "Coordenacao", _cats_coord_png, mask=_mask_cl)
+                        r_ci, r_si, _ = _contagens_micro(_df_c, "Coordenacao", _cats_coord_png, mask=(_mask_cl & _df_c["Status_concluida"]))
+                        _desenhar_pxr_vertical(fig.add_subplot(gs[2, _col]), _cats_coord_png, p_ci, p_si, r_ci, r_si, f"{_classif_nome} por Coordenação")
+                    for _idx, _coord_nome in enumerate(_cats_coord_png[:2]):
+                        _desenhar_24h_coord(fig.add_subplot(gs[2, 2 + _idx]), _turnos_png, _dados_turno_coord(_coord_nome), f"Realizado 24h — {_coord_nome}")
+
+                    # --- linha Segurança x Pátio (Top 5) ---
                     _mask_seg = _df_c["Classificacao"] == "Segurança"
                     _cats_seg_patio = _top_n_micro(_df_c[_mask_seg], "Patio", n=5)
                     p_ci_sp, p_si_sp, _ = _contagens_micro(_df_c, "Patio", _cats_seg_patio, mask=_mask_seg)
                     r_ci_sp, r_si_sp, _ = _contagens_micro(_df_c, "Patio", _cats_seg_patio, mask=(_mask_seg & _df_c["Status_concluida"]))
-                    _h_patio = 2.5
-                    img_patio = _fig_unica_mpl(
-                        _desenhar_pxr_horizontal, (_cats_seg_patio, p_ci_sp, p_si_sp, r_ci_sp, r_si_sp, "OS de Segurança (CI/SI) por Pátio (Top 5)"),
-                        figsize=(_cel2_w, _h_patio),
-                    )
+                    _desenhar_pxr_horizontal(fig.add_subplot(gs[3, :]), _cats_seg_patio, p_ci_sp, p_si_sp, r_ci_sp, r_si_sp, "OS de Segurança (CI/SI) por Pátio (Top 5)")
 
+                    # --- linha Confiabilidade Pendente por coordenação ---
                     _mask_conf_pend = (_df_c["Classificacao"] == "Confiabilidade") & (~_df_c["Status_concluida"])
-                    _args_conf_pend = []
-                    for _coord_nome in ("Piaçaguera", "Paranapiacaba"):
+                    for _idx, _coord_nome in enumerate(("Piaçaguera", "Paranapiacaba")):
                         _mask_cp = _mask_conf_pend & (_df_c["Coordenacao"] == _coord_nome)
                         _cats_p = _top_n_micro(_df_c[_mask_cp], "Ativo", n=10)
                         _ci_p, _si_p, _ = _contagens_micro(_df_c, "Ativo", _cats_p, mask=_mask_cp)
-                        _args_conf_pend.append((_cats_p, _ci_p, _si_p, f"Confiabilidade Pendente Top 10 — {_coord_nome}", "#1D4ED8", "#60A5FA", "#1E3A8A"))
-                    _h_pend = 3.7
-                    img_conf_pend = _fig_dupla_mpl(_desenhar_pendente_horizontal, _args_conf_pend[0], _args_conf_pend[1], figsize=(_cel2_w, _h_pend))
+                        _desenhar_pendente_horizontal(
+                            fig.add_subplot(gs[4, _idx * 2:_idx * 2 + 2]), _cats_p, _ci_p, _si_p,
+                            f"Confiabilidade Pendente Top 10 — {_coord_nome}", "#1D4ED8", "#60A5FA", "#1E3A8A",
+                        )
 
+                    # --- linha Segurança Pendente por coordenação ---
                     _mask_seg_pend = (_df_c["Classificacao"] == "Segurança") & (~_df_c["Status_concluida"])
-                    _args_seg_pend = []
-                    for _coord_nome in ("Piaçaguera", "Paranapiacaba"):
+                    for _idx, _coord_nome in enumerate(("Piaçaguera", "Paranapiacaba")):
                         _mask_cp = _mask_seg_pend & (_df_c["Coordenacao"] == _coord_nome)
                         _cats_p = _top_n_micro(_df_c[_mask_cp], "Ativo", n=10)
                         _ci_p, _si_p, _ = _contagens_micro(_df_c, "Ativo", _cats_p, mask=_mask_cp)
-                        _args_seg_pend.append((_cats_p, _ci_p, _si_p, f"Segurança Pendente Top 10 — {_coord_nome}"))
-                    img_seg_pend = _fig_dupla_mpl(_desenhar_pendente_horizontal, _args_seg_pend[0], _args_seg_pend[1], figsize=(_cel2_w, _h_pend))
+                        _desenhar_pendente_horizontal(fig.add_subplot(gs[5, _idx * 2:_idx * 2 + 2]), _cats_p, _ci_p, _si_p, f"Segurança Pendente Top 10 — {_coord_nome}")
 
-                    story += [
-                        Image(BytesIO(img_patio), width=_cel2_w * inch, height=_h_patio * inch), Spacer(1, 8),
-                        Image(BytesIO(img_conf_pend), width=_cel2_w * inch, height=_h_pend * inch), Spacer(1, 8),
-                        Image(BytesIO(img_seg_pend), width=_cel2_w * inch, height=_h_pend * inch),
-                    ]
-
-                    doc.build(story)
+                    buffer = BytesIO()
+                    fig.savefig(buffer, format="png", dpi=130, facecolor="white")
+                    plt.close(fig)
                     buffer.seek(0)
                     return buffer.getvalue()
 
-                col_btn_pdf_report, _ = st.columns([2.2, 7.8])
-                with col_btn_pdf_report:
+                col_btn_png_report, _ = st.columns([2.2, 7.8])
+                with col_btn_png_report:
                     st.download_button(
-                        "📄 Report PDF (A3, 2 pág.)",
-                        data=_gerar_pdf_report_gerencial(df_coord, _cats_coord),
-                        file_name=f"report_sgo_eletroeletronica_{agora_dt().strftime('%Y%m%d_%H%M')}.pdf",
-                        mime="application/pdf",
-                        help="Report em A3 paisagem, 2 páginas (sem menu lateral), com os mesmos gráficos e agrupamentos da Visão por Coordenação, pronto pra WhatsApp/e-mail.",
+                        "🖼️ Report PNG (WhatsApp)",
+                        data=_gerar_png_report_gerencial(df_coord, _cats_coord),
+                        file_name=f"report_sgo_eletroeletronica_{agora_dt().strftime('%Y%m%d_%H%M')}.png",
+                        mime="image/png",
+                        help="Report em 1 imagem (sem menu lateral) com todos os gráficos de Visão por Coordenação -- imagem abre com preview direto no WhatsApp.",
                     )
 #endregion 10.2.3b
 
