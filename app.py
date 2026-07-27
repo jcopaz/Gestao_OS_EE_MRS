@@ -4113,7 +4113,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v13.1.1")
+st.sidebar.caption("SGO Eletroeletrônica • v13.1.2")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -4912,7 +4912,12 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                 #endregion 10.2.2
 
 #region 10.2.2c: Visão Micro (Pátio / Grupo de Ativos / Ativo -- Top 10 por volume)
-                with st.expander("📊 Visão Micro (Pátio / Grupo de Ativos / Ativo)", expanded=False):
+                # expanded=True (nao False): ECharts mede a largura do container no momento em
+                # que o grafico nasce -- dentro de um expander fechado, nasce com 0px e nao se
+                # redesenha sozinho quando o usuario abre depois (bug reproduzido em 27/07/2026:
+                # os 3 primeiros graficos, de Patio, saiam em branco; Grupo de Ativos, alguns
+                # graficos depois, escapava porque "nascia" um instante depois).
+                with st.expander("📊 Visão Micro (Pátio / Grupo de Ativos / Ativo)", expanded=True):
                     st.caption(
                         "Top 10 por volume de OS Planejada em cada eixo. Recorte específico: use os filtros "
                         "da barra lateral (Pátio, Classificação, Ativo etc.) para restringir a análise."
