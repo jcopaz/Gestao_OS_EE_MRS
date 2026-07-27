@@ -4116,7 +4116,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v14.11.0")
+st.sidebar.caption("SGO Eletroeletrônica • v14.11.1")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -5539,9 +5539,13 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         _bottom = [b + v for b, v in zip(_bottom, _vals)]
                     ax.set_xticks(_x)
                     ax.set_xticklabels([t.split(" (")[0] for t in turnos], fontsize=8)
+                    # Espaco extra no topo pra barra alta nao empurrar a legenda em cima do
+                    # numero da ultima fatia -- legenda embaixo (nao "upper right" dentro do
+                    # grafico), que colidia com a barra do Turno Noite.
+                    ax.set_ylim(0, max(_bottom + [1]) * 1.15)
                     ax.yaxis.set_major_locator(plt.MaxNLocator(integer=True))
                     ax.set_title(titulo, fontsize=9.5, fontweight="bold", color="#0F172A")
-                    ax.legend(fontsize=6.5, ncol=2, loc="upper right", frameon=False)
+                    ax.legend(fontsize=6.5, ncol=4, loc="upper center", bbox_to_anchor=(0.5, -0.14), frameon=False)
                     ax.spines[["top", "right"]].set_visible(False)
 
                 def _gerar_png_report_gerencial(_df_c, _cats_c):
@@ -5585,14 +5589,17 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     # um grid continuo via GridSpec -- cada linha com a altura proporcional ao
                     # conteudo (Pátio Top5 mais baixo, os Pendente Top10 mais altos).
                     _larg_fig = 16.0
-                    _alt_titulo, _alt_kpi, _alt_top, _alt_meio, _alt_patio, _alt_pend = 1.0, 0.55, 3.6, 3.1, 2.15, 3.3
+                    _alt_titulo, _alt_kpi, _alt_top, _alt_meio, _alt_patio, _alt_pend = 1.0, 0.55, 3.6, 3.1, 3.3, 3.3
                     _alt_total = _alt_titulo + _alt_kpi + _alt_top + _alt_meio + _alt_patio + _alt_pend * 2 + 0.4
 
                     fig = plt.figure(figsize=(_larg_fig, _alt_total))
                     gs = gridspec.GridSpec(
                         6, 4, figure=fig,
                         height_ratios=[_alt_kpi, _alt_top, _alt_meio, _alt_patio, _alt_pend, _alt_pend],
-                        top=1 - _alt_titulo / _alt_total, bottom=0.02, left=0.045, right=0.98,
+                        # left maior (nao 0.045): nome de ativo comprido (ex. "ICQ S-ICQ005D1
+                        # SINALEIRO PN") nos graficos de Pendente cortava no eixo Y com margem
+                        # estreita.
+                        top=1 - _alt_titulo / _alt_total, bottom=0.02, left=0.115, right=0.98,
                         hspace=0.55, wspace=0.35,
                     )
 
