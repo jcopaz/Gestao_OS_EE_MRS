@@ -670,8 +670,12 @@ async def limpar_evidencias_orfas(
         "revisar_manualmente": len(revisar_manualmente),
         "sem_os_identificavel": len(sem_os_identificavel),
         "amostra_seguro_apagar": seguro_apagar[:50],
-        "amostra_revisar_manualmente": revisar_manualmente[:50],
-        "amostra_sem_os_identificavel": sem_os_identificavel[:50],
+        # Sem corte real pra revisar_manualmente/sem_os_identificavel: sao os
+        # grupos que exigem revisao humana, response pequena (dezenas), e a
+        # lista completa e necessaria pra cruzar com o Neon -- so um teto de
+        # seguranca bem folgado (nao "amostra" de fato).
+        "amostra_revisar_manualmente": revisar_manualmente[:500],
+        "amostra_sem_os_identificavel": sem_os_identificavel[:500],
         "apagadas": apagadas,
         "erros": erros,
     }
