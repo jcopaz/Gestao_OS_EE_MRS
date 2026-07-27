@@ -1351,7 +1351,7 @@ def render_tela_admin():
                         cur.execute(
                             """
                             SELECT os, status FROM baixas
-                            WHERE status IN %s
+                            WHERE UPPER(status) IN %s
                               AND TO_TIMESTAMP(realizado_em, 'DD/MM/YYYY HH24:MI') >= %s
                               AND TO_TIMESTAMP(realizado_em, 'DD/MM/YYYY HH24:MI') < %s
                             """,
@@ -4113,7 +4113,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v13.1.2")
+st.sidebar.caption("SGO Eletroeletrônica • v13.1.3")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
