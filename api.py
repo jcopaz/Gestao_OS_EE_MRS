@@ -273,6 +273,39 @@ COORDENADAS_FIXAS = {
     "Sede IPA": [-23.767355, -46.344117], "Sede IPG": [-23.850772, -46.371760]
 }
 
+_PATIOS_VALIDOS = sorted(
+    (k for k in COORDENADAS_FIXAS.keys() if not k.startswith("Sede")),
+    key=len,
+    reverse=True,
+)
+
+
+def resolver_patio_ativo(ativo_id: str) -> str | None:
+    """Resolve o codigo de patio (3 letras) a partir do nome do ativo.
+
+    Corrigido em 27/07/2026: a versao anterior so olhava os 3 primeiros
+    caracteres (COORDENADAS_FIXAS.get(ativo_id[:3])) -- funciona pra ativos
+    tipo "IPA_326_N1", mas falha pra ativos com convencao de nome diferente
+    (ex.: "MF-SJU-ISN_ISN-TELECOM-ARCCCO5", onde o codigo do patio "ISN" nao
+    esta no inicio). Nesses casos o prefixo nao batia com nada, e a versao
+    fail-closed (imediatamente anterior a esta) bloqueava a sincronizacao
+    mesmo com o tecnico fisicamente no patio certo -- confirmado em campo
+    (22/07/2026): apontamento a 1,48km do patio real (ISN) foi rejeitado por
+    medir a distancia contra Paranapiacaba (fallback antigo, ja removido),
+    17,9km de distancia. Agora tenta, na ordem: prefixo exato -> busca do
+    codigo em qualquer parte do nome (mesma logica de _resolver_patio, em
+    app.py) -- so falha (None) se nenhuma das duas encontrar nada.
+    """
+    ativo_upper = str(ativo_id).strip().upper()
+    prefixo = ativo_upper[:3]
+    if prefixo in COORDENADAS_FIXAS:
+        return prefixo
+    for patio_candidato in _PATIOS_VALIDOS:
+        if patio_candidato in ativo_upper:
+            return patio_candidato
+    return None
+
+
 # ==============================================================================
 # CONFIGURAÇÃO OPERACIONAL POR COORDENAÇÃO (Plano de Guerra)
 # ==============================================================================
@@ -374,8 +407,12 @@ async def sincronizar_baixa_offline(
     # Fail-closed: se o pátio do ativo não resolver para uma coordenada conhecida, a
     # sincronização é BLOQUEADA -- antes caía num default fixo (IPA), deixando a
     # validação de geofence passar contra o pátio errado (mesma classe de bug já
-    # corrigida no fluxo online do app.py, seção 10.3.3).
-    coordenada_ativo = COORDENADAS_FIXAS.get(str(ativo_id).strip().upper()[:3])
+    # corrigida no fluxo online do app.py, seção 10.3.3). resolver_patio_ativo() tenta
+    # prefixo E busca em qualquer parte do nome antes de desistir (ver docstring —
+    # sem isso, ativos como "MF-SJU-ISN_..." eram bloqueados mesmo com o técnico
+    # fisicamente no pátio certo).
+    patio_ativo = resolver_patio_ativo(ativo_id)
+    coordenada_ativo = COORDENADAS_FIXAS.get(patio_ativo) if patio_ativo else None
     if coordenada_ativo is None:
         raise HTTPException(status_code=400, detail=f"Não foi possível identificar o pátio do ativo '{ativo_id}' para validar a geolocalização. Contate o suporte antes de sincronizar.")
     lat_ativo, lon_ativo = coordenada_ativo[0], coordenada_ativo[1]
