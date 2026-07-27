@@ -4113,7 +4113,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v14.1.0")
+st.sidebar.caption("SGO Eletroeletrônica • v14.2.0")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -5054,28 +5054,33 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             st.info("Sem OS de Confiabilidade no recorte atual.")
 
                     st.divider()
-                    st.markdown("##### Top 10 Ativos com OS de Segurança Pendente (CI/SI)")
+                    st.markdown("##### Top 10 Ativos com OS de Segurança Pendente (CI/SI) por Coordenação")
                     _mask_seg_pendente = (df_coord["Classificacao"] == "Segurança") & (~df_coord["Status_concluida"])
-                    _cats_pendente = _top_n_micro(df_coord[_mask_seg_pendente], "Ativo", n=10)
-                    if _cats_pendente:
-                        pend_ci, pend_si, pend_nd = _contagens_micro(df_coord, "Ativo", _cats_pendente, mask=_mask_seg_pendente)
-                        pend_total = [a + b + c for a, b, c in zip(pend_ci, pend_si, pend_nd)]
-                        _series_pend = [
-                            {"name": "Com Intervalo", "type": "bar", "stack": "pend", "data": _segmentos_micro(pend_ci, "#FFFFFF"), "itemStyle": {"color": "#EF4444"}},
-                            {"name": "Sem Intervalo", "type": "bar", "stack": "pend", "data": _segmentos_micro(pend_si, "#FFFFFF"), "itemStyle": {"color": "#FCA5A5"}},
-                        ]
-                        _legend_pend = ["Com Intervalo", "Sem Intervalo"]
-                        if any(pend_nd):
-                            _series_pend.append({"name": "N/D", "type": "bar", "stack": "pend", "data": _segmentos_micro(pend_nd, "#7F1D1D"), "itemStyle": {"color": "#FEE2E2"}})
-                            _legend_pend.append("N/D")
-                        _series_pend.append({
-                            "name": "Total", "type": "bar", "stack": "pend",
-                            "data": [{"value": 0, "label": {"show": True, "position": "right", "color": "#475569", "formatter": f"{v}"}} for v in pend_total],
-                            "itemStyle": {"color": "transparent"}, "tooltip": {"show": False},
-                        })
-                        _grafico_micro(_cats_pendente, _series_pend, _legend_pend, key="coord_top10_seg_pendente", altura="420px")
-                    else:
-                        st.info("Sem OS de Segurança pendente no recorte atual.")
+                    col_pend_pia, col_pend_para = st.columns(2)
+                    for _coord_nome, _col_pend in (("Piaçaguera", col_pend_pia), ("Paranapiacaba", col_pend_para)):
+                        with _col_pend:
+                            st.caption(_coord_nome)
+                            _mask_coord_pendente = _mask_seg_pendente & (df_coord["Coordenacao"] == _coord_nome)
+                            _cats_pendente = _top_n_micro(df_coord[_mask_coord_pendente], "Ativo", n=10)
+                            if _cats_pendente:
+                                pend_ci, pend_si, pend_nd = _contagens_micro(df_coord, "Ativo", _cats_pendente, mask=_mask_coord_pendente)
+                                pend_total = [a + b + c for a, b, c in zip(pend_ci, pend_si, pend_nd)]
+                                _series_pend = [
+                                    {"name": "Com Intervalo", "type": "bar", "stack": "pend", "data": _segmentos_micro(pend_ci, "#FFFFFF"), "itemStyle": {"color": "#EF4444"}},
+                                    {"name": "Sem Intervalo", "type": "bar", "stack": "pend", "data": _segmentos_micro(pend_si, "#FFFFFF"), "itemStyle": {"color": "#FCA5A5"}},
+                                ]
+                                _legend_pend = ["Com Intervalo", "Sem Intervalo"]
+                                if any(pend_nd):
+                                    _series_pend.append({"name": "N/D", "type": "bar", "stack": "pend", "data": _segmentos_micro(pend_nd, "#7F1D1D"), "itemStyle": {"color": "#FEE2E2"}})
+                                    _legend_pend.append("N/D")
+                                _series_pend.append({
+                                    "name": "Total", "type": "bar", "stack": "pend",
+                                    "data": [{"value": 0, "label": {"show": True, "position": "right", "color": "#475569", "formatter": f"{v}"}} for v in pend_total],
+                                    "itemStyle": {"color": "transparent"}, "tooltip": {"show": False},
+                                })
+                                _grafico_micro(_cats_pendente, _series_pend, _legend_pend, key=f"coord_top10_seg_pendente_{_coord_nome}", altura="420px")
+                            else:
+                                st.info(f"Sem OS de Segurança pendente em {_coord_nome} no recorte atual.")
                 #endregion 10.2.2c
 
 #region 10.2.2b: Aderência Ponderada da Meta (Segurança / Prioridade 1 / Prioridade 2,3,4)
