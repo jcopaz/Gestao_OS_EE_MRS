@@ -4116,7 +4116,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v14.11.1")
+st.sidebar.caption("SGO Eletroeletrônica • v14.12.0")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -5406,18 +5406,24 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                                 st.info("Sem dados cronológicos.")
                 #endregion 10.2.3
 
-#region 10.2.3b: Report em Imagem (PNG p/ WhatsApp/E-mail)
-                # PNG com os GRAFICOS de fato, nao so tabela de numeros -- mas nao e
+#region 10.2.3b: Report em PDF (1 página, tamanho custom p/ WhatsApp/E-mail)
+                # PDF com os GRAFICOS de fato, nao so tabela de numeros -- mas nao e
                 # print/screenshot da tela: componente Streamlit-ECharts nao tem um jeito de
                 # exportar a imagem do grafico renderizado de volta pro Python sem JsCode (que
                 # nao serializa mais nesta nuvem), e HTML/JS pesado via components.html ja
                 # causou Segmentation fault aqui antes (ver comentario em 10.3.1/_CSS_CARD_OS).
                 # Solucao: redesenha os MESMOS graficos (mesmas cores/mesmos numeros) com
-                # matplotlib, 100% server-side, sem depender de navegador nenhum. Formato PNG
-                # (nao PDF) a pedido do Julio -- vai por WhatsApp, e imagem abre com preview
-                # direto na conversa, PDF so como anexo. Como imagem nao tem "pagina", virou 1
-                # imagem so, alta, em grid continuo (GridSpec) -- testado localmente antes de
-                # subir (ver PIL Image.open + tamanho conferido).
+                # matplotlib, 100% server-side, sem depender de navegador nenhum.
+                #
+                # PNG -> PDF (27/07/2026): tinha ido pra PNG antes pra abrir com preview direto
+                # no WhatsApp, mas o WhatsApp RECOMPRIME imagem/foto ao enviar (fica borrado,
+                # texto pequeno ilegivel) -- documento (PDF) ele so anexa, sem mexer na
+                # qualidade. Como e pra ver no celular e nao pra imprimir, NAO usa A3/A4: salva a
+                # MESMA figura matplotlib (a mesma que ia pra PNG) direto como PDF via
+                # fig.savefig(..., format="pdf") -- vira 1 pagina so, do tamanho exato do
+                # conteudo (~16x18.5 pol), texto vetorial (nao pixel, nao borra). Testado
+                # localmente antes de subir: pypdf confirmou 1 pagina, PyMuPDF renderizou pra
+                # conferencia visual.
                 #
                 # IMPORTANTE: todos os numeros vem do MESMO df_coord (recorte de Visão por
                 # Coordenação, respeita o filtro de Período da lateral) -- de propósito NÃO usa
@@ -5548,7 +5554,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     ax.legend(fontsize=6.5, ncol=4, loc="upper center", bbox_to_anchor=(0.5, -0.14), frameon=False)
                     ax.spines[["top", "right"]].set_visible(False)
 
-                def _gerar_png_report_gerencial(_df_c, _cats_c):
+                def _gerar_pdf_report_gerencial(_df_c, _cats_c):
                     from io import BytesIO
                     import matplotlib.gridspec as gridspec
 
@@ -5670,19 +5676,19 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         _desenhar_pendente_horizontal(fig.add_subplot(gs[5, _idx * 2:_idx * 2 + 2]), _cats_p, _ci_p, _si_p, f"Segurança Pendente Top 10 — {_coord_nome}")
 
                     buffer = BytesIO()
-                    fig.savefig(buffer, format="png", dpi=130, facecolor="white")
+                    fig.savefig(buffer, format="pdf", facecolor="white")
                     plt.close(fig)
                     buffer.seek(0)
                     return buffer.getvalue()
 
-                col_btn_png_report, _ = st.columns([2.2, 7.8])
-                with col_btn_png_report:
+                col_btn_pdf_report, _ = st.columns([2.2, 7.8])
+                with col_btn_pdf_report:
                     st.download_button(
-                        "🖼️ Report PNG (WhatsApp)",
-                        data=_gerar_png_report_gerencial(df_coord, _cats_coord),
-                        file_name=f"report_sgo_eletroeletronica_{agora_dt().strftime('%Y%m%d_%H%M')}.png",
-                        mime="image/png",
-                        help="Report em 1 imagem (sem menu lateral) com todos os gráficos de Visão por Coordenação -- imagem abre com preview direto no WhatsApp.",
+                        "📄 Report PDF (1 pág.)",
+                        data=_gerar_pdf_report_gerencial(df_coord, _cats_coord),
+                        file_name=f"report_sgo_eletroeletronica_{agora_dt().strftime('%Y%m%d_%H%M')}.pdf",
+                        mime="application/pdf",
+                        help="Report em PDF de 1 página (tamanho ajustado ao conteúdo, não A3/A4 -- pra ver no celular) com todos os gráficos de Visão por Coordenação, sem perda de qualidade no WhatsApp.",
                     )
 #endregion 10.2.3b
 
