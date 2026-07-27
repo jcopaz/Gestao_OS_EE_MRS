@@ -4113,7 +4113,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v14.0.0")
+st.sidebar.caption("SGO Eletroeletrônica • v14.1.0")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -5054,22 +5054,26 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             st.info("Sem OS de Confiabilidade no recorte atual.")
 
                     st.divider()
-                    st.markdown("##### Top 10 Ativos com OS de Segurança Pendente")
+                    st.markdown("##### Top 10 Ativos com OS de Segurança Pendente (CI/SI)")
                     _mask_seg_pendente = (df_coord["Classificacao"] == "Segurança") & (~df_coord["Status_concluida"])
-                    _serie_pendente = df_coord.loc[_mask_seg_pendente, "Ativo"].astype(str).str.strip()
-                    _serie_pendente = _serie_pendente[(_serie_pendente != "") & (_serie_pendente.str.upper() != "N/D") & (_serie_pendente.str.upper() != "NAN")]
-                    _top_pendente = _serie_pendente.value_counts().head(10)
-                    if not _top_pendente.empty:
-                        st_echarts(options={
-                            "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
-                            "grid": {"left": "3%", "right": "10%", "top": "4%", "bottom": "6%", "containLabel": True},
-                            "xAxis": {"type": "value"},
-                            "yAxis": {"type": "category", "data": _top_pendente.index.tolist(), "inverse": True, "axisLabel": {"interval": 0}},
-                            "series": [{
-                                "type": "bar", "data": _top_pendente.values.tolist(), "itemStyle": {"color": "#EF4444"},
-                                "label": {"show": True, "position": "right", "color": "#475569", "fontWeight": "bold"},
-                            }],
-                        }, height="420px", theme="streamlit", key="coord_top10_seg_pendente")
+                    _cats_pendente = _top_n_micro(df_coord[_mask_seg_pendente], "Ativo", n=10)
+                    if _cats_pendente:
+                        pend_ci, pend_si, pend_nd = _contagens_micro(df_coord, "Ativo", _cats_pendente, mask=_mask_seg_pendente)
+                        pend_total = [a + b + c for a, b, c in zip(pend_ci, pend_si, pend_nd)]
+                        _series_pend = [
+                            {"name": "Com Intervalo", "type": "bar", "stack": "pend", "data": _segmentos_micro(pend_ci, "#FFFFFF"), "itemStyle": {"color": "#EF4444"}},
+                            {"name": "Sem Intervalo", "type": "bar", "stack": "pend", "data": _segmentos_micro(pend_si, "#FFFFFF"), "itemStyle": {"color": "#FCA5A5"}},
+                        ]
+                        _legend_pend = ["Com Intervalo", "Sem Intervalo"]
+                        if any(pend_nd):
+                            _series_pend.append({"name": "N/D", "type": "bar", "stack": "pend", "data": _segmentos_micro(pend_nd, "#7F1D1D"), "itemStyle": {"color": "#FEE2E2"}})
+                            _legend_pend.append("N/D")
+                        _series_pend.append({
+                            "name": "Total", "type": "bar", "stack": "pend",
+                            "data": [{"value": 0, "label": {"show": True, "position": "right", "color": "#475569", "formatter": f"{v}"}} for v in pend_total],
+                            "itemStyle": {"color": "transparent"}, "tooltip": {"show": False},
+                        })
+                        _grafico_micro(_cats_pendente, _series_pend, _legend_pend, key="coord_top10_seg_pendente", altura="420px")
                     else:
                         st.info("Sem OS de Segurança pendente no recorte atual.")
                 #endregion 10.2.2c
