@@ -4116,7 +4116,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v14.8.0")
+st.sidebar.caption("SGO Eletroeletrônica • v14.9.0")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -5129,14 +5129,14 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     # zoom=True removido -- nao ha evidencia de que ajudou o amontoado de rotulo
                     # (a largura cheia sozinha ja da bem mais espaco) e e candidato a ter
                     # contribuido pro bug de renderizacao em branco.
-                    st.markdown("##### OS de Segurança (CI/SI) por Pátio")
+                    st.markdown("##### OS de Segurança (CI/SI) por Pátio (Top 5)")
                     _mask_seg_pat = df_coord["Classificacao"] == "Segurança"
-                    _cats_seg_patio = _top_n_micro(df_coord[_mask_seg_pat], "Patio", n=10)
+                    _cats_seg_patio = _top_n_micro(df_coord[_mask_seg_pat], "Patio", n=5)
                     if _cats_seg_patio:
                         p_ci, p_si, p_nd = _contagens_micro(df_coord, "Patio", _cats_seg_patio, mask=_mask_seg_pat)
                         r_ci, r_si, r_nd = _contagens_micro(df_coord, "Patio", _cats_seg_patio, mask=(_mask_seg_pat & df_coord["Status_concluida"]))
                         _series_sp, _legend_sp = _series_micro(p_ci, p_si, p_nd, r_ci, r_si, r_nd)
-                        _grafico_micro(_cats_seg_patio, _series_sp, _legend_sp, key="coord_seg_patio", altura="440px")
+                        _grafico_micro(_cats_seg_patio, _series_sp, _legend_sp, key="coord_seg_patio", altura="360px")
                     else:
                         st.info("Sem OS de Segurança no recorte atual.")
 
@@ -5495,40 +5495,37 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     ax.legend(fontsize=7, ncol=2, loc="lower right", frameon=False)
                     ax.spines[["top", "right"]].set_visible(False)
 
-                def _desenhar_pendente_horizontal(ax, categorias, ci_vals, si_vals, titulo):
+                def _desenhar_pendente_horizontal(ax, categorias, ci_vals, si_vals, titulo, cor_ci="#EF4444", cor_si="#FCA5A5", cor_txt="#7F1D1D"):
                     if not categorias:
                         ax.axis("off")
-                        ax.set_title(titulo, fontsize=10, fontweight="bold", color="#0F172A")
-                        ax.text(0.5, 0.5, "Sem OS de Segurança\npendente", ha="center", va="center", fontsize=9, color="#64748B")
+                        ax.set_title(titulo, fontsize=9.5, fontweight="bold", color="#0F172A")
+                        ax.text(0.5, 0.5, "Sem OS pendente", ha="center", va="center", fontsize=9, color="#64748B")
                         return
                     _y = np.arange(len(categorias))
-                    ax.barh(_y, ci_vals, label="Com Intervalo", color="#EF4444")
-                    ax.barh(_y, si_vals, left=ci_vals, label="Sem Intervalo", color="#FCA5A5")
+                    ax.barh(_y, ci_vals, label="Com Intervalo", color=cor_ci)
+                    ax.barh(_y, si_vals, left=ci_vals, label="Sem Intervalo", color=cor_si)
                     _fim = max([a + b for a, b in zip(ci_vals, si_vals)] + [1])
                     for i in range(len(categorias)):
                         _tot = ci_vals[i] + si_vals[i]
-                        ax.text(_tot + _fim * 0.02, _y[i], str(_tot), va="center", fontsize=8, color="#7F1D1D", fontweight="bold")
+                        ax.text(_tot + _fim * 0.02, _y[i], str(_tot), va="center", fontsize=7.5, color=cor_txt, fontweight="bold")
                     ax.set_yticks(_y)
-                    ax.set_yticklabels(categorias, fontsize=8)
+                    ax.set_yticklabels(categorias, fontsize=7.5)
                     ax.invert_yaxis()
                     ax.set_xlim(0, _fim * 1.25)
-                    ax.set_title(titulo, fontsize=10, fontweight="bold", color="#0F172A")
-                    ax.legend(fontsize=7, loc="lower right", frameon=False)
+                    ax.set_title(titulo, fontsize=9.5, fontweight="bold", color="#0F172A")
+                    ax.legend(fontsize=6.5, loc="lower right", frameon=False)
                     ax.spines[["top", "right"]].set_visible(False)
 
-                def _desenhar_24h(ax, turnos, dados_por_coord, titulo):
-                    _cores_serie = {"Seg CI": "#DC2626", "Seg SI": "#FCA5A5", "Conf CI": "#1D4ED8", "Conf SI": "#60A5FA"}
+                def _desenhar_24h_coord(ax, turnos, dados_coord, titulo):
+                    # 1 coordenação por grafico (nao mais agrupado) -- espelha a tela, que
+                    # tambem separou "Realizado 24h" em 2 graficos lado a lado (10.2.2c).
+                    _cores = {"Seg CI": "#DC2626", "Seg SI": "#FCA5A5", "Conf CI": "#1D4ED8", "Conf SI": "#60A5FA"}
                     _x = np.arange(len(turnos))
-                    _coords = list(dados_por_coord.keys())
-                    _n = max(len(_coords), 1)
-                    _larg = 0.72 / _n
-                    for idx, _coord in enumerate(_coords):
-                        _offset = (idx - (_n - 1) / 2) * _larg
-                        _bottom = [0.0] * len(turnos)
-                        for _serie_nome, _cor in _cores_serie.items():
-                            _vals = dados_por_coord[_coord].get(_serie_nome, [0] * len(turnos))
-                            ax.bar(_x + _offset, _vals, _larg * 0.9, bottom=_bottom, color=_cor, label=(_serie_nome if idx == 0 else None))
-                            _bottom = [b + v for b, v in zip(_bottom, _vals)]
+                    _bottom = [0.0] * len(turnos)
+                    for _nome, _cor in _cores.items():
+                        _vals = dados_coord.get(_nome, [0] * len(turnos))
+                        ax.bar(_x, _vals, 0.55, bottom=_bottom, color=_cor, label=_nome)
+                        _bottom = [b + v for b, v in zip(_bottom, _vals)]
                     ax.set_xticks(_x)
                     ax.set_xticklabels([t.split(" (")[0] for t in turnos], fontsize=8)
                     ax.set_title(titulo, fontsize=9.5, fontweight="bold", color="#0F172A")
@@ -5621,20 +5618,31 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     )
                     _df24_pdf = _df_c[_mask_24h_pdf]
                     _turnos_pdf = ["Turno Dia (07h-19h)", "Administrativo (08h-17h30)", "Turno Noite (19h-07h)"]
-                    _dados_24h = {}
-                    for _coord_nome in _cats_coord_pdf:
-                        _d_coord = _df24_pdf[_df24_pdf["Coordenacao"] == _coord_nome]
+
+                    def _dados_turno_coord(coord_nome):
+                        _d_coord = _df24_pdf[_df24_pdf["Coordenacao"] == coord_nome]
                         _linhas = {}
                         for _classif_ab, _classif in (("Seg", "Segurança"), ("Conf", "Confiabilidade")):
                             for _tipo_ab, _tipo in (("CI", "Com Intervalo"), ("SI", "Sem Intervalo")):
                                 _d_seg = _d_coord[(_d_coord["Classificacao"] == _classif) & (_d_coord["Tipo_Intervalo_norm"] == _tipo)]
                                 _cnt = _d_seg["Turno"].value_counts()
                                 _linhas[f"{_classif_ab} {_tipo_ab}"] = [int(_cnt.get(t, 0)) for t in _turnos_pdf]
-                        _dados_24h[_coord_nome] = _linhas
-                    _titulo_24h = "Realizado Últimas 24h por Turno" + (
-                        f" (esq {_cats_coord_pdf[0][:5]}. / dir {_cats_coord_pdf[1][:5]}.)" if len(_cats_coord_pdf) >= 2 else ""
-                    )
-                    img_24h = _fig_unica_mpl(_desenhar_24h, (_turnos_pdf, _dados_24h, _titulo_24h), figsize=(_cel1_w, _cel1_h))
+                        return _linhas
+
+                    # Igual a tela (10.2.2c): 1 grafico por coordenação, nao mais 1 so agrupado.
+                    if len(_cats_coord_pdf) >= 2:
+                        img_24h = _fig_dupla_mpl(
+                            _desenhar_24h_coord,
+                            (_turnos_pdf, _dados_turno_coord(_cats_coord_pdf[0]), f"Realizado 24h por Turno — {_cats_coord_pdf[0]}"),
+                            (_turnos_pdf, _dados_turno_coord(_cats_coord_pdf[1]), f"Realizado 24h por Turno — {_cats_coord_pdf[1]}"),
+                            figsize=(_cel1_w, _cel1_h),
+                        )
+                    else:
+                        _coord_unica = _cats_coord_pdf[0] if _cats_coord_pdf else ""
+                        img_24h = _fig_unica_mpl(
+                            _desenhar_24h_coord, (_turnos_pdf, _dados_turno_coord(_coord_unica), f"Realizado 24h por Turno — {_coord_unica}"),
+                            figsize=(_cel1_w, _cel1_h),
+                        )
 
                     _w1, _h1 = _cel1_w * inch, _cel1_h * inch
                     tabela_p1 = Table(
@@ -5652,39 +5660,45 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     story += [tabela_p1, PageBreak()]
 
                     # ---------------- PÁGINA 2: Detalhamento por Pátio/Ativo ----------------
+                    # Mesma ordem e mesmos 3 blocos da tela (10.2.2c), de cima pra baixo:
+                    # Segurança x Pátio (Top 5) -> Confiabilidade Pendente por Coordenação ->
+                    # Segurança Pendente por Coordenação.
                     story.append(Paragraph("Página 2 de 2 — Detalhamento por Pátio / Ativo", pagina_style))
-                    _cel2_w, _cel2_h = 15.2, 4.9
+                    _cel2_w = 15.2
 
                     _mask_seg = _df_c["Classificacao"] == "Segurança"
-                    _cats_seg_patio = _top_n_micro(_df_c[_mask_seg], "Patio", n=10)
+                    _cats_seg_patio = _top_n_micro(_df_c[_mask_seg], "Patio", n=5)
                     p_ci_sp, p_si_sp, _ = _contagens_micro(_df_c, "Patio", _cats_seg_patio, mask=_mask_seg)
                     r_ci_sp, r_si_sp, _ = _contagens_micro(_df_c, "Patio", _cats_seg_patio, mask=(_mask_seg & _df_c["Status_concluida"]))
-
-                    _mask_conf = _df_c["Classificacao"] == "Confiabilidade"
-                    _cats_conf_ativo = _top_n_micro(_df_c[_mask_conf], "Ativo", n=10)
-                    p_ci_ca, p_si_ca, _ = _contagens_micro(_df_c, "Ativo", _cats_conf_ativo, mask=_mask_conf)
-                    r_ci_ca, r_si_ca, _ = _contagens_micro(_df_c, "Ativo", _cats_conf_ativo, mask=(_mask_conf & _df_c["Status_concluida"]))
-
-                    img_patio_ativo = _fig_dupla_mpl(
-                        _desenhar_pxr_horizontal,
-                        (_cats_seg_patio, p_ci_sp, p_si_sp, r_ci_sp, r_si_sp, "Segurança (CI/SI) por Pátio"),
-                        (_cats_conf_ativo, p_ci_ca, p_si_ca, r_ci_ca, r_si_ca, "Confiabilidade (CI/SI) por Ativo (Top 10)"),
-                        figsize=(_cel2_w, _cel2_h),
+                    _h_patio = 2.5
+                    img_patio = _fig_unica_mpl(
+                        _desenhar_pxr_horizontal, (_cats_seg_patio, p_ci_sp, p_si_sp, r_ci_sp, r_si_sp, "OS de Segurança (CI/SI) por Pátio (Top 5)"),
+                        figsize=(_cel2_w, _h_patio),
                     )
 
+                    _mask_conf_pend = (_df_c["Classificacao"] == "Confiabilidade") & (~_df_c["Status_concluida"])
+                    _args_conf_pend = []
+                    for _coord_nome in ("Piaçaguera", "Paranapiacaba"):
+                        _mask_cp = _mask_conf_pend & (_df_c["Coordenacao"] == _coord_nome)
+                        _cats_p = _top_n_micro(_df_c[_mask_cp], "Ativo", n=10)
+                        _ci_p, _si_p, _ = _contagens_micro(_df_c, "Ativo", _cats_p, mask=_mask_cp)
+                        _args_conf_pend.append((_cats_p, _ci_p, _si_p, f"Confiabilidade Pendente Top 10 — {_coord_nome}", "#1D4ED8", "#60A5FA", "#1E3A8A"))
+                    _h_pend = 3.7
+                    img_conf_pend = _fig_dupla_mpl(_desenhar_pendente_horizontal, _args_conf_pend[0], _args_conf_pend[1], figsize=(_cel2_w, _h_pend))
+
                     _mask_seg_pend = (_df_c["Classificacao"] == "Segurança") & (~_df_c["Status_concluida"])
-                    _args_pendente = []
+                    _args_seg_pend = []
                     for _coord_nome in ("Piaçaguera", "Paranapiacaba"):
                         _mask_cp = _mask_seg_pend & (_df_c["Coordenacao"] == _coord_nome)
                         _cats_p = _top_n_micro(_df_c[_mask_cp], "Ativo", n=10)
                         _ci_p, _si_p, _ = _contagens_micro(_df_c, "Ativo", _cats_p, mask=_mask_cp)
-                        _args_pendente.append((_cats_p, _ci_p, _si_p, f"Segurança Pendente Top 10 — {_coord_nome}"))
-                    img_pendente = _fig_dupla_mpl(_desenhar_pendente_horizontal, _args_pendente[0], _args_pendente[1], figsize=(_cel2_w, _cel2_h))
+                        _args_seg_pend.append((_cats_p, _ci_p, _si_p, f"Segurança Pendente Top 10 — {_coord_nome}"))
+                    img_seg_pend = _fig_dupla_mpl(_desenhar_pendente_horizontal, _args_seg_pend[0], _args_seg_pend[1], figsize=(_cel2_w, _h_pend))
 
-                    _w2, _h2 = _cel2_w * inch, _cel2_h * inch
                     story += [
-                        Image(BytesIO(img_patio_ativo), width=_w2, height=_h2), Spacer(1, 10),
-                        Image(BytesIO(img_pendente), width=_w2, height=_h2),
+                        Image(BytesIO(img_patio), width=_cel2_w * inch, height=_h_patio * inch), Spacer(1, 8),
+                        Image(BytesIO(img_conf_pend), width=_cel2_w * inch, height=_h_pend * inch), Spacer(1, 8),
+                        Image(BytesIO(img_seg_pend), width=_cel2_w * inch, height=_h_pend * inch),
                     ]
 
                     doc.build(story)
@@ -5698,7 +5712,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         data=_gerar_pdf_report_gerencial(df_coord, _cats_coord),
                         file_name=f"report_sgo_eletroeletronica_{agora_dt().strftime('%Y%m%d_%H%M')}.pdf",
                         mime="application/pdf",
-                        help="Report em A3 paisagem, 2 páginas (sem menu lateral), com todos os gráficos de Visão por Coordenação, pronto pra WhatsApp/e-mail.",
+                        help="Report em A3 paisagem, 2 páginas (sem menu lateral), com os mesmos gráficos e agrupamentos da Visão por Coordenação, pronto pra WhatsApp/e-mail.",
                     )
 #endregion 10.2.3b
 
