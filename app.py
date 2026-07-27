@@ -4113,7 +4113,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v14.2.0")
+st.sidebar.caption("SGO Eletroeletrônica • v14.3.0")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -4602,12 +4602,21 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
             {"value": 0, "label": {"show": True, "position": "right", "color": "#475569", "formatter": f"{v}"}}
             for v in val_plan
         ]
+        # Pendente = Planejado - Realizado, em vermelho na 2a linha do rotulo -- sem JsCode
+        # (formatter em string com "rich", igual ao heatmap de 10.2.2, nao funcao JS: a nuvem
+        # forcou upgrade do Streamlit e parou de serializar JsCode nesse arquivo).
         total_real = [
             {
                 "value": 0,
                 "label": {
-                    "show": True, "position": "right", "color": "#475569",
-                    "formatter": f"{v} ({(v / p * 100):.1f}%)" if p > 0 else f"{v} (0%)",
+                    "show": True, "position": "right", "rich": {
+                        "a": {"color": "#475569", "fontSize": 10, "lineHeight": 13},
+                        "b": {"color": "#DC2626", "fontWeight": "bold", "fontSize": 10, "lineHeight": 13},
+                    },
+                    "formatter": (
+                        f"{{a|{v} ({(v / p * 100):.1f}%)}}\n{{b|Pendente: {p - v}}}" if p > 0
+                        else f"{{a|{v} (0%)}}\n{{b|Pendente: {p - v}}}"
+                    ),
                 },
             }
             for v, p in zip(val_real, val_plan)
@@ -4973,8 +4982,14 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             {
                                 "value": 0,
                                 "label": {
-                                    "show": True, "position": "right", "color": "#475569",
-                                    "formatter": f"{v} ({(v / p * 100):.1f}%)" if p > 0 else f"{v} (0%)",
+                                    "show": True, "position": "right", "rich": {
+                                        "a": {"color": "#475569", "fontSize": 10, "lineHeight": 13},
+                                        "b": {"color": "#DC2626", "fontWeight": "bold", "fontSize": 10, "lineHeight": 13},
+                                    },
+                                    "formatter": (
+                                        f"{{a|{v} ({(v / p * 100):.1f}%)}}\n{{b|Pendente: {p - v}}}" if p > 0
+                                        else f"{{a|{v} (0%)}}\n{{b|Pendente: {p - v}}}"
+                                    ),
                                 },
                             }
                             for v, p in zip(val_real, val_plan)
@@ -5020,12 +5035,83 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     df_coord["Tipo_Intervalo_norm"] = _tipo_int_norm
                     df_coord["Status_concluida"] = df_coord["Status_norm"].isin(_status_concluida_dashboard)
 
-                    _bloco_visao_micro(
-                        df_coord,
-                        "Planejado x Realizado (CI/SI) por Coordenação",
-                        "Segurança x Confiabilidade — Planejado x Realizado (CI/SI) por Coordenação",
-                        "Coordenacao", "coord",
-                    )
+                    st.markdown("##### Planejado x Realizado (CI/SI) por Coordenação")
+                    _cats_coord = _top_n_micro(df_coord, "Coordenacao", n=10)
+                    col_pxr_coord, col_24h_coord = st.columns(2)
+                    with col_pxr_coord:
+                        if _cats_coord:
+                            plan_ci, plan_si, plan_nd = _contagens_micro(df_coord, "Coordenacao", _cats_coord)
+                            real_ci, real_si, real_nd = _contagens_micro(df_coord, "Coordenacao", _cats_coord, mask=df_coord["Status_concluida"])
+                            _series_pxr, _legend_pxr = _series_micro(plan_ci, plan_si, plan_nd, real_ci, real_si, real_nd)
+                            _grafico_micro(_cats_coord, _series_pxr, _legend_pxr, key="coord_total", altura="420px")
+                        else:
+                            st.info("Sem dados suficientes para Planejado x Realizado por Coordenação.")
+
+                    with col_24h_coord:
+                        st.markdown("###### Realizado nas Últimas 24h por Turno (Segurança/Confiabilidade, CI/SI)")
+                        # dt_realizado normalmente ja vem calculado (ver 3.5); recalcula so como
+                        # defensiva, igual ao resto do arquivo, pra nao quebrar se algum dia nao vier.
+                        if "dt_realizado" not in df_coord.columns:
+                            df_coord["dt_realizado"] = df_coord["Data/Hora Realizado"].apply(parse_datahora_realizado)
+                        _agora_naive = agora_dt().replace(tzinfo=None)
+                        _cutoff_24h = _agora_naive - timedelta(hours=24)
+                        _mask_24h = (
+                            df_coord["Status_concluida"]
+                            & df_coord["dt_realizado"].notna()
+                            & (df_coord["dt_realizado"] >= _cutoff_24h)
+                            & (df_coord["dt_realizado"] <= _agora_naive)
+                        )
+                        df_24h = df_coord[_mask_24h]
+                        _turnos_24h = ["Turno Dia (07h-19h)", "Administrativo (08h-17h30)", "Turno Noite (19h-07h)"]
+                        _cores_24h = {
+                            ("Segurança", "Com Intervalo"): "#DC2626", ("Segurança", "Sem Intervalo"): "#FCA5A5",
+                            ("Confiabilidade", "Com Intervalo"): "#1D4ED8", ("Confiabilidade", "Sem Intervalo"): "#60A5FA",
+                        }
+                        if not df_24h.empty:
+                            _series_24h, _legend_24h = [], []
+                            # Cada coordenação vira um "stack" proprio -> ECharts agrupa as 2
+                            # coordenações lado a lado em cada turno, empilhando CI/SI dentro de
+                            # cada uma (mesma cor entre coordenações; a posição no eixo distingue).
+                            for _coord_nome, _abrev in (("Paranapiacaba", "Paran."), ("Piaçaguera", "Piaç.")):
+                                d_coord_24h = df_24h[df_24h["Coordenacao"] == _coord_nome]
+                                for _classif, _classif_abrev in (("Segurança", "Seg."), ("Confiabilidade", "Conf.")):
+                                    for _tipo, _tipo_label in (("Com Intervalo", "CI"), ("Sem Intervalo", "SI")):
+                                        d_seg_24h = d_coord_24h[(d_coord_24h["Classificacao"] == _classif) & (d_coord_24h["Tipo_Intervalo_norm"] == _tipo)]
+                                        _contagem_turno = d_seg_24h["Turno"].value_counts()
+                                        _valores_24h = [int(_contagem_turno.get(t, 0)) for t in _turnos_24h]
+                                        _nome_serie = f"{_abrev} {_classif_abrev} {_tipo_label}"
+                                        _series_24h.append({
+                                            "name": _nome_serie, "type": "bar", "stack": _coord_nome,
+                                            "data": _valores_24h, "itemStyle": {"color": _cores_24h[(_classif, _tipo)]},
+                                        })
+                                        _legend_24h.append(_nome_serie)
+
+                            st_echarts(options={
+                                "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
+                                "legend": {"bottom": "0%", "type": "scroll", "data": _legend_24h, "textStyle": {"fontSize": 9}},
+                                "grid": {"left": "3%", "right": "4%", "top": "6%", "bottom": "26%", "containLabel": True},
+                                "xAxis": {"type": "category", "data": _turnos_24h, "axisLabel": {"interval": 0, "fontSize": 10}},
+                                "yAxis": {"type": "value"},
+                                "series": _series_24h,
+                            }, height="420px", theme="streamlit", key="coord_realizado_24h")
+                            st.caption(
+                                f"Janela: {_cutoff_24h.strftime('%d/%m %H:%M')} até {_agora_naive.strftime('%d/%m %H:%M')} "
+                                "-- em cada turno, barra da esquerda é Paranapiacaba, da direita é Piaçaguera."
+                            )
+                        else:
+                            st.info("Nenhuma OS realizada nas últimas 24 horas.")
+
+                    st.markdown("##### Segurança x Confiabilidade — Planejado x Realizado (CI/SI) por Coordenação")
+                    if _cats_coord:
+                        col_seg_coord, col_conf_coord = st.columns(2)
+                        for _classif, _col in (("Segurança", col_seg_coord), ("Confiabilidade", col_conf_coord)):
+                            with _col:
+                                st.caption(_classif)
+                                mask_classif_coord = df_coord["Classificacao"] == _classif
+                                p_ci, p_si, p_nd = _contagens_micro(df_coord, "Coordenacao", _cats_coord, mask=mask_classif_coord)
+                                r_ci, r_si, r_nd = _contagens_micro(df_coord, "Coordenacao", _cats_coord, mask=(mask_classif_coord & df_coord["Status_concluida"]))
+                                _series_cc, _legend_cc = _series_micro(p_ci, p_si, p_nd, r_ci, r_si, r_nd)
+                                _grafico_micro(_cats_coord, _series_cc, _legend_cc, key=f"coord_classif_{_classif}")
 
                     st.divider()
                     col_seg_patio, col_conf_ativo = st.columns(2)
