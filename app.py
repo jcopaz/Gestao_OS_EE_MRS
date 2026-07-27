@@ -4116,7 +4116,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v14.12.0")
+st.sidebar.caption("SGO Eletroeletrônica • v14.12.1")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -5681,15 +5681,29 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     buffer.seek(0)
                     return buffer.getvalue()
 
+                # Gera sob clique (nao mais direto no data= do download_button) e com
+                # try/except: um erro aqui NAO pode travar o resto do script -- foi
+                # exatamente isso que aconteceu em 27/07/2026 (o botao chamava a funcao
+                # direto a cada rerun; um erro nela impedia a Aba Análise, que vem depois
+                # no codigo, de sequer rodar).
                 col_btn_pdf_report, _ = st.columns([2.2, 7.8])
                 with col_btn_pdf_report:
-                    st.download_button(
-                        "📄 Report PDF (1 pág.)",
-                        data=_gerar_pdf_report_gerencial(df_coord, _cats_coord),
-                        file_name=f"report_sgo_eletroeletronica_{agora_dt().strftime('%Y%m%d_%H%M')}.pdf",
-                        mime="application/pdf",
-                        help="Report em PDF de 1 página (tamanho ajustado ao conteúdo, não A3/A4 -- pra ver no celular) com todos os gráficos de Visão por Coordenação, sem perda de qualidade no WhatsApp.",
-                    )
+                    if st.button("📄 Gerar Report PDF (1 pág.)"):
+                        try:
+                            st.session_state["_pdf_report_bytes"] = _gerar_pdf_report_gerencial(df_coord, _cats_coord)
+                            st.session_state["_pdf_report_ts"] = agora_dt().strftime("%Y%m%d_%H%M")
+                        except Exception as _erro_pdf:
+                            st.session_state.pop("_pdf_report_bytes", None)
+                            st.error(f"Não consegui gerar o Report PDF: {_erro_pdf}")
+
+                    if "_pdf_report_bytes" in st.session_state:
+                        st.download_button(
+                            "⬇️ Baixar Report PDF",
+                            data=st.session_state["_pdf_report_bytes"],
+                            file_name=f"report_sgo_eletroeletronica_{st.session_state.get('_pdf_report_ts', agora_dt().strftime('%Y%m%d_%H%M'))}.pdf",
+                            mime="application/pdf",
+                            help="Report em PDF de 1 página (tamanho ajustado ao conteúdo, não A3/A4 -- pra ver no celular) com todos os gráficos de Visão por Coordenação, sem perda de qualidade no WhatsApp.",
+                        )
 #endregion 10.2.3b
 
 #region 10.2.4: Lista Detalhada de OS (com Evidências)
