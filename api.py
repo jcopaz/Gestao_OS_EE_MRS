@@ -687,19 +687,22 @@ async def limpar_evidencias_orfas(
         "seguro_apagar": len(seguro_apagar),
         "revisar_manualmente": len(revisar_manualmente),
         "sem_os_identificavel": len(sem_os_identificavel),
+        "apagadas": apagadas,
+        "erros": erros,
+        # Sem corte real pra revisar_manualmente/sem_os_identificavel: sao os
+        # grupos que exigem revisao humana, response pequena (dezenas). Ficam
+        # ANTES do campo gigante abaixo de proposito -- resposta grande demais
+        # pra renderizar/copiar no navegador (achado em 27/07/2026: busca no
+        # log do GitHub Actions nao encontrava nada depois do corte), entao o
+        # que importa revisar tem que vir primeiro na resposta.
+        "amostra_revisar_manualmente": revisar_manualmente[:500],
+        "amostra_sem_os_identificavel": sem_os_identificavel[:500],
         # Lista completa (nao amostra) com o par arquivo-orfao / foto-atual-da-OS,
         # pra dar pra conferir individualmente que cada exclusao tem mesmo uma
         # evidencia atual substituindo -- nao e so a classificacao "confiar no
-        # codigo", e a prova em si.
+        # codigo", e a prova em si. Deliberadamente por ultimo (ver comentario
+        # acima): e o campo mais pesado da resposta, de longe.
         "seguro_apagar_com_prova": seguro_apagar,
-        # Sem corte real pra revisar_manualmente/sem_os_identificavel: sao os
-        # grupos que exigem revisao humana, response pequena (dezenas), e a
-        # lista completa e necessaria pra cruzar com o Neon -- so um teto de
-        # seguranca bem folgado (nao "amostra" de fato).
-        "amostra_revisar_manualmente": revisar_manualmente[:500],
-        "amostra_sem_os_identificavel": sem_os_identificavel[:500],
-        "apagadas": apagadas,
-        "erros": erros,
     }
 
 
