@@ -619,7 +619,12 @@ async def limpar_evidencias_orfas(
         offset += pagina_tam
 
     agora_utc = datetime.now(timezone.utc)
-    padrao_os = re.compile(r"_OS(\d+)_")
+    # Sem exigir "_" depois do numero: revisao manual da amostra em 27/07/2026
+    # achou pelo menos 9 arquivos com OS no final do nome, colada direto na
+    # extensao (ex.: "..._OS23254048.jpg", sem "_" antes do ".jpg") -- o
+    # padrao antigo (`_OS(\d+)_`) classificava esses como sem_os_identificavel
+    # por engano. \d+ ja para sozinho no primeiro caractere nao-digito.
+    padrao_os = re.compile(r"_OS(\d+)")
 
     seguro_apagar, revisar_manualmente, sem_os_identificavel = [], [], []
 
