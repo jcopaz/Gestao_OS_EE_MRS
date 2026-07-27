@@ -4113,7 +4113,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v14.3.0")
+st.sidebar.caption("SGO Eletroeletrônica • v14.4.0")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -5373,6 +5373,99 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             else:
                                 st.info("Sem dados cronológicos.")
                 #endregion 10.2.3
+
+#region 10.2.3b: Report One Page (PDF p/ WhatsApp/E-mail)
+                # Report nativo (tabelas reportlab), nao print/screenshot da tela: HTML/JS pesado
+                # via components.html ja causou Segmentation fault nesta nuvem antes (ver
+                # comentario em 10.3.1/_CSS_CARD_OS) -- reportlab e a unica via de PDF ja
+                # comprovada estavel neste app (gerar_pdf_cronograma_bytes, regiao 10.3.3).
+                def _gerar_pdf_report_gerencial(_total, _prazo, _atraso, _real_tot, _taxa, _df_c, _cats_c):
+                    from io import BytesIO
+                    from reportlab.lib import colors
+                    from reportlab.lib.pagesizes import A4
+                    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+                    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+
+                    buffer = BytesIO()
+                    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=28, rightMargin=28, topMargin=28, bottomMargin=28)
+                    styles = getSampleStyleSheet()
+                    titulo_style = ParagraphStyle("TituloReport", parent=styles["Title"], fontSize=20, textColor=colors.HexColor("#0F172A"), spaceAfter=2)
+                    subtitulo_style = ParagraphStyle("SubtituloReport", parent=styles["Normal"], fontSize=11, textColor=colors.HexColor("#475569"))
+                    heading_style = ParagraphStyle("HeadingReport", parent=styles["Heading3"], spaceBefore=6, spaceAfter=6)
+
+                    _agora = agora_dt()
+                    story = [
+                        Paragraph("Report SGO Eletroeletrônica", titulo_style),
+                        Paragraph(f"Data: {_agora.strftime('%d/%m/%Y')}", subtitulo_style),
+                        Paragraph(f"Report Atualizado até: {_agora.strftime('%H:%M')}", subtitulo_style),
+                        Spacer(1, 14),
+                    ]
+
+                    _estilo_cab = [
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#163A70")),
+                        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                        ("FONTSIZE", (0, 0), (-1, -1), 9),
+                        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D1D5DB")),
+                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+                        ("TOPPADDING", (0, 0), (-1, -1), 5),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                    ]
+
+                    _pendente_geral = _total - _real_tot
+                    tabela_kpi = Table(
+                        [
+                            ["Planejado", "Realizado", "Pendente", "Taxa de Conclusão"],
+                            [str(_total), f"{_real_tot} ({_prazo} no prazo / {_atraso} atrasado)", str(_pendente_geral), f"{_taxa:.1f}%"],
+                        ],
+                        colWidths=[70, 230, 70, 100],
+                    )
+                    tabela_kpi.setStyle(TableStyle(_estilo_cab))
+                    story += [tabela_kpi, Spacer(1, 16)]
+
+                    story.append(Paragraph("Planejado x Realizado por Coordenação", heading_style))
+                    dados_coord = [["Coordenação", "Planejado", "Realizado", "Pendente", "Taxa"]]
+                    for _coord_nome in (_cats_c or ["Paranapiacaba", "Piaçaguera"]):
+                        _mask_c = _df_c["Coordenacao"] == _coord_nome
+                        _plan_c, _real_c = int(_mask_c.sum()), int((_mask_c & _df_c["Status_concluida"]).sum())
+                        _pend_c = _plan_c - _real_c
+                        _taxa_c = (_real_c / _plan_c * 100) if _plan_c > 0 else 0.0
+                        dados_coord.append([_coord_nome, str(_plan_c), str(_real_c), str(_pend_c), f"{_taxa_c:.1f}%"])
+                    tabela_coord = Table(dados_coord, colWidths=[140, 75, 75, 75, 105])
+                    tabela_coord.setStyle(TableStyle(_estilo_cab))
+                    story += [tabela_coord, Spacer(1, 16)]
+
+                    story.append(Paragraph("Planejado x Realizado por Classificação", heading_style))
+                    dados_classif = [["Classificação", "Planejado", "Realizado", "Pendente", "Taxa"]]
+                    for _classif_nome in ("Segurança", "Confiabilidade"):
+                        _mask_cl = _df_c["Classificacao"] == _classif_nome
+                        _plan_cl, _real_cl = int(_mask_cl.sum()), int((_mask_cl & _df_c["Status_concluida"]).sum())
+                        _pend_cl = _plan_cl - _real_cl
+                        _taxa_cl = (_real_cl / _plan_cl * 100) if _plan_cl > 0 else 0.0
+                        dados_classif.append([_classif_nome, str(_plan_cl), str(_real_cl), str(_pend_cl), f"{_taxa_cl:.1f}%"])
+                    tabela_classif = Table(dados_classif, colWidths=[140, 75, 75, 75, 105])
+                    tabela_classif.setStyle(TableStyle(_estilo_cab))
+                    story.append(tabela_classif)
+
+                    doc.build(story)
+                    buffer.seek(0)
+                    return buffer.getvalue()
+
+                col_btn_pdf_report, _ = st.columns([2.2, 7.8])
+                with col_btn_pdf_report:
+                    st.download_button(
+                        "📄 Report PDF (1 pág.)",
+                        data=_gerar_pdf_report_gerencial(
+                            total_os, realizado_prazo, realizado_atraso, realizado_total, taxa_conclusao,
+                            df_coord, _cats_coord,
+                        ),
+                        file_name=f"report_sgo_eletroeletronica_{agora_dt().strftime('%Y%m%d_%H%M')}.pdf",
+                        mime="application/pdf",
+                        help="Report resumido de 1 página (sem menu lateral), pronto pra WhatsApp/e-mail.",
+                    )
+#endregion 10.2.3b
 
 #region 10.2.4: Lista Detalhada de OS (com Evidências)
                 st.subheader("📋 Lista Detalhada de OS")
