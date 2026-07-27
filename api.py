@@ -598,6 +598,14 @@ async def limpar_evidencias_orfas(
     # OS que ja tem QUALQUER evidencia hoje (mesmo que aponte pra outro arquivo) --
     # decide se um orfao foi substituido com seguranca ou e risco real.
     os_com_evidencia_atual = set(df_ref["os_referencia"].astype(str).str.strip())
+    # os_referencia e UNIQUE em evidencias (ON CONFLICT (os_referencia) no upsert),
+    # entao 1 foto_url atual por OS -- usado so pra prova/auditoria de que
+    # "seguro_apagar" tem mesmo uma foto atual substituindo a orfa (pedido do
+    # Julio em 27/07/2026 antes de autorizar a exclusao real dos 1.337).
+    foto_atual_por_os = dict(zip(
+        df_ref["os_referencia"].astype(str).str.strip(),
+        df_ref["foto_url"].astype(str),
+    ))
 
     todos_arquivos = []
     offset = 0
@@ -647,13 +655,18 @@ async def limpar_evidencias_orfas(
             continue
 
         if match_os.group(1) in os_com_evidencia_atual:
-            seguro_apagar.append(nome)
+            seguro_apagar.append({
+                "arquivo_orfao": nome,
+                "os": match_os.group(1),
+                "foto_atual_da_mesma_os": foto_atual_por_os.get(match_os.group(1), ""),
+            })
         else:
             revisar_manualmente.append(nome)
 
     apagadas, erros = [], []
     if not dry_run:
-        for nome in seguro_apagar:
+        for item in seguro_apagar:
+            nome = item["arquivo_orfao"]
             try:
                 resp_del = requests.delete(
                     f"{SUPABASE_URL}/storage/v1/object/evidencias/{nome}",
@@ -674,7 +687,11 @@ async def limpar_evidencias_orfas(
         "seguro_apagar": len(seguro_apagar),
         "revisar_manualmente": len(revisar_manualmente),
         "sem_os_identificavel": len(sem_os_identificavel),
-        "amostra_seguro_apagar": seguro_apagar[:50],
+        # Lista completa (nao amostra) com o par arquivo-orfao / foto-atual-da-OS,
+        # pra dar pra conferir individualmente que cada exclusao tem mesmo uma
+        # evidencia atual substituindo -- nao e so a classificacao "confiar no
+        # codigo", e a prova em si.
+        "seguro_apagar_com_prova": seguro_apagar,
         # Sem corte real pra revisar_manualmente/sem_os_identificavel: sao os
         # grupos que exigem revisao humana, response pequena (dezenas), e a
         # lista completa e necessaria pra cruzar com o Neon -- so um teto de
