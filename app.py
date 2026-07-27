@@ -4116,7 +4116,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v14.5.0")
+st.sidebar.caption("SGO Eletroeletrônica • v14.5.1")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -4646,15 +4646,21 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
         series.append({"name": "Total Realizado", "type": "bar", "stack": "real", "data": total_real, "itemStyle": {"color": "transparent"}, "tooltip": {"show": False}})
         return series, legend
 
-    def _grafico_micro(categorias, series, legend, key, altura="480px"):
-        st_echarts(options={
+    def _grafico_micro(categorias, series, legend, key, altura="480px", zoom=False):
+        _opcoes = {
             "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
             "legend": {"bottom": "0%", "data": legend},
             "grid": {"left": "3%", "right": "18%", "top": "6%", "bottom": "14%", "containLabel": True},
             "xAxis": {"type": "value", "boundaryGap": [0, 0.02]},
             "yAxis": {"type": "category", "data": categorias, "inverse": True, "axisLabel": {"interval": 0}},
             "series": series,
-        }, height=altura, theme="streamlit", key=key)
+        }
+        if zoom:
+            # Scroll (roda do mouse/pinch) pra dar zoom no eixo Y quando tem muita categoria e
+            # os rotulos de total/Pendente colam uns nos outros -- so nos graficos que pedem
+            # explicitamente (zoom=True), pra nao mexer nos outros que usam este mesmo helper.
+            _opcoes["dataZoom"] = [{"type": "inside", "yAxisIndex": [0], "start": 0, "end": 100, "zoomOnMouseWheel": True, "moveOnMouseMove": True}]
+        st_echarts(options=_opcoes, height=altura, theme="streamlit", key=key)
 
     def _bloco_visao_micro(df_micro, titulo_a, titulo_b, col_cat, key_prefix):
         categorias = _top_n_micro(df_micro, col_cat, n=10)
@@ -5126,7 +5132,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             p_ci, p_si, p_nd = _contagens_micro(df_coord, "Patio", _cats_seg_patio, mask=_mask_seg_pat)
                             r_ci, r_si, r_nd = _contagens_micro(df_coord, "Patio", _cats_seg_patio, mask=(_mask_seg_pat & df_coord["Status_concluida"]))
                             _series_sp, _legend_sp = _series_micro(p_ci, p_si, p_nd, r_ci, r_si, r_nd)
-                            _grafico_micro(_cats_seg_patio, _series_sp, _legend_sp, key="coord_seg_patio", altura="420px")
+                            _grafico_micro(_cats_seg_patio, _series_sp, _legend_sp, key="coord_seg_patio", altura="420px", zoom=True)
                         else:
                             st.info("Sem OS de Segurança no recorte atual.")
 
@@ -5138,7 +5144,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             p_ci, p_si, p_nd = _contagens_micro(df_coord, "Ativo", _cats_conf_ativo, mask=_mask_conf_ativo)
                             r_ci, r_si, r_nd = _contagens_micro(df_coord, "Ativo", _cats_conf_ativo, mask=(_mask_conf_ativo & df_coord["Status_concluida"]))
                             _series_ca, _legend_ca = _series_micro(p_ci, p_si, p_nd, r_ci, r_si, r_nd)
-                            _grafico_micro(_cats_conf_ativo, _series_ca, _legend_ca, key="coord_conf_ativo", altura="420px")
+                            _grafico_micro(_cats_conf_ativo, _series_ca, _legend_ca, key="coord_conf_ativo", altura="420px", zoom=True)
                         else:
                             st.info("Sem OS de Confiabilidade no recorte atual.")
 
