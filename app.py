@@ -4116,7 +4116,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v14.6.1")
+st.sidebar.caption("SGO Eletroeletrônica • v14.7.0")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -5077,37 +5077,37 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         ("Segurança", "Com Intervalo"): "#DC2626", ("Segurança", "Sem Intervalo"): "#FCA5A5",
                         ("Confiabilidade", "Com Intervalo"): "#1D4ED8", ("Confiabilidade", "Sem Intervalo"): "#60A5FA",
                     }
+                    st.caption(f"Janela: {_cutoff_24h.strftime('%d/%m %H:%M')} até {_agora_naive.strftime('%d/%m %H:%M')}.")
                     if not df_24h.empty:
-                        _series_24h, _legend_24h = [], []
-                        # Cada coordenação vira um "stack" proprio -> ECharts agrupa as 2
-                        # coordenações lado a lado em cada turno, empilhando CI/SI dentro de
-                        # cada uma (mesma cor entre coordenações; a posição no eixo distingue).
-                        for _coord_nome, _abrev in (("Paranapiacaba", "Paran."), ("Piaçaguera", "Piaç.")):
-                            d_coord_24h = df_24h[df_24h["Coordenacao"] == _coord_nome]
-                            for _classif, _classif_abrev in (("Segurança", "Seg."), ("Confiabilidade", "Conf.")):
-                                for _tipo, _tipo_label in (("Com Intervalo", "CI"), ("Sem Intervalo", "SI")):
-                                    d_seg_24h = d_coord_24h[(d_coord_24h["Classificacao"] == _classif) & (d_coord_24h["Tipo_Intervalo_norm"] == _tipo)]
-                                    _contagem_turno = d_seg_24h["Turno"].value_counts()
-                                    _valores_24h = [int(_contagem_turno.get(t, 0)) for t in _turnos_24h]
-                                    _nome_serie = f"{_abrev} {_classif_abrev} {_tipo_label}"
-                                    _series_24h.append({
-                                        "name": _nome_serie, "type": "bar", "stack": _coord_nome,
-                                        "data": _valores_24h, "itemStyle": {"color": _cores_24h[(_classif, _tipo)]},
-                                    })
-                                    _legend_24h.append(_nome_serie)
+                        # Um grafico por coordenacao (nao mais 1 so com as 2 agrupadas) -- mesmo
+                        # padrao ja usado e comprovado no Top 10 Segurança Pendente logo abaixo
+                        # (st.columns(2), cada coluna com seu proprio st_echarts).
+                        col_24h_pia, col_24h_para = st.columns(2)
+                        for _coord_nome, _col_24h in (("Piaçaguera", col_24h_pia), ("Paranapiacaba", col_24h_para)):
+                            with _col_24h:
+                                st.caption(_coord_nome)
+                                d_coord_24h = df_24h[df_24h["Coordenacao"] == _coord_nome]
+                                _series_24h, _legend_24h = [], []
+                                for _classif, _classif_abrev in (("Segurança", "Seg."), ("Confiabilidade", "Conf.")):
+                                    for _tipo, _tipo_label in (("Com Intervalo", "CI"), ("Sem Intervalo", "SI")):
+                                        d_seg_24h = d_coord_24h[(d_coord_24h["Classificacao"] == _classif) & (d_coord_24h["Tipo_Intervalo_norm"] == _tipo)]
+                                        _contagem_turno = d_seg_24h["Turno"].value_counts()
+                                        _valores_24h = [int(_contagem_turno.get(t, 0)) for t in _turnos_24h]
+                                        _nome_serie = f"{_classif_abrev} {_tipo_label}"
+                                        _series_24h.append({
+                                            "name": _nome_serie, "type": "bar", "stack": "24h",
+                                            "data": _valores_24h, "itemStyle": {"color": _cores_24h[(_classif, _tipo)]},
+                                        })
+                                        _legend_24h.append(_nome_serie)
 
-                        st_echarts(options={
-                            "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
-                            "legend": {"bottom": "0%", "type": "scroll", "data": _legend_24h, "textStyle": {"fontSize": 9}},
-                            "grid": {"left": "3%", "right": "4%", "top": "6%", "bottom": "18%", "containLabel": True},
-                            "xAxis": {"type": "category", "data": _turnos_24h, "axisLabel": {"interval": 0, "fontSize": 10}},
-                            "yAxis": {"type": "value"},
-                            "series": _series_24h,
-                        }, height="380px", theme="streamlit", key="coord_realizado_24h")
-                        st.caption(
-                            f"Janela: {_cutoff_24h.strftime('%d/%m %H:%M')} até {_agora_naive.strftime('%d/%m %H:%M')} "
-                            "-- em cada turno, barra da esquerda é Paranapiacaba, da direita é Piaçaguera."
-                        )
+                                st_echarts(options={
+                                    "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
+                                    "legend": {"bottom": "0%", "data": _legend_24h, "textStyle": {"fontSize": 9}},
+                                    "grid": {"left": "8%", "right": "4%", "top": "6%", "bottom": "18%", "containLabel": True},
+                                    "xAxis": {"type": "category", "data": [t.split(" (")[0] for t in _turnos_24h], "axisLabel": {"interval": 0, "fontSize": 10}},
+                                    "yAxis": {"type": "value"},
+                                    "series": _series_24h,
+                                }, height="380px", theme="streamlit", key=f"coord_realizado_24h_{_coord_nome}")
                     else:
                         st.info("Nenhuma OS realizada nas últimas 24 horas.")
 
