@@ -239,6 +239,26 @@ duas correções diferentes, e só a primeira não basta pro usuário final.
 
 ---
 
+## 27/07/2026 — Endpoint de limpeza de órfãos: 2 bugs + 55 evidências reais recuperadas
+
+Primeira execução real do `/limpar_evidencias_orfas` (endpoint criado nesta mesma sessão, nunca tinha rodado em produção) — vale ler os 3 achados em sequência.
+
+**Achado 1 (bug, 500 em toda chamada):** a listagem do Supabase Storage (`POST /storage/v1/object/list/{bucket}`) exige o campo `"prefix"` no corpo, mesmo vazio. Faltava — toda chamada retornava 400 do Supabase, virando 500 sem tratamento (`resp_list.raise_for_status()` sem try/except). **Correção:** adicionar `"prefix": ""` ao payload.
+
+**Achado 2 (bug de classificação, não de exclusão):** o regex `_OS(\d+)_` exigia `_` depois do número — arquivos com o número da OS colado direto na extensão (`..._OS23254048.jpg`, sem `_` antes do `.jpg`) caíam incorretamente em "sem_os_identificavel" em vez de serem cruzados contra o banco. Revisão manual da amostra completa achou 9 desses 26 casos. **Correção:** `_OS(\d+)` sem exigir o `_` final (`\d+` já para sozinho no primeiro caractere não-numérico).
+
+**Achado 3 (não é bug, é resultado real da investigação):** cruzando os arquivos órfãos classificados como "revisar_manualmente" (órfão de OS que hoje não tem NENHUMA evidência) contra `baixas`, 55 das 62 OS tinham baixa **"Realizado"** de verdade, com técnico e data reais — a foto existia no Storage, só tinha perdido o vínculo no banco (mesma família do incidente de 14/07, mas por falha silenciosa de escrita, não por sobrescrita de chave). Recuperadas com `INSERT ... ON CONFLICT (os_referencia) DO NOTHING`, reconstruindo `ativo`/`atividade` a partir do nome do arquivo (2 convenções diferentes: `{ativo}_OS{num}_{timestamp}.jpg` no fluxo offline, `{ativo}__{atividade}__OS{num}.jpg` no online) e `geolocalizacao`/`concluido_por` a partir do `baixas` da mesma OS. Os 7 casos restantes (sem baixa registrada) e os 18 sem número de OS identificável no nome ficaram como estão — sem dado suficiente pra justificar ação automática.
+
+**Correção adicional (confiança antes de apagar em massa):** antes de autorizar a exclusão real dos ~1.400 arquivos "seguro_apagar", Julio pediu prova de que cada um tem mesmo uma foto atual substituindo — não bastava confiar na classificação (mesmo endpoint já tinha 2 bugs achados na mesma sessão). O endpoint passou a devolver, por item, a `foto_url` atual vinculada à mesma OS (`seguro_apagar_com_prova`), e não só a contagem.
+
+**Aprendizado:**
+1. Endpoint novo, primeira execução real == melhor hora pra pedir prova em vez de confiar na lógica, mesmo que pareça óbvia. Os 2 bugs (Achados 1 e 2) só apareceram rodando contra dado real, nunca em `py_compile`/teste isolado.
+2. "Classificado como precisa de revisão manual" não é o fim da investigação — cruzar contra o dado de negócio (aqui, `baixas`) pode transformar uma faxina de storage numa recuperação real de evidência de auditoria.
+3. Resposta de API muito grande (aqui, >200KB numa lista) pode truncar silenciosamente na renderização/cópia do navegador (GitHub Actions log) sem nenhum erro visível — campos pequenos e importantes devem vir primeiro no JSON, não por último.
+4. Ao reconstruir um dado perdido, usar sempre a fonte mais primária disponível (aqui, o nome do arquivo e o registro de `baixas` já existente) em vez de aproximar — os dois vinham da mesma variável/mesmo request originalmente, então a reconstrução é exata, não uma estimativa.
+
+---
+
 ## Lições transversais (válidas pra qualquer mudança futura)
 
 - **Verificar causa raiz com dado real (SQL/log) antes de aplicar patch** — não assumir, não adivinhar. Vale tanto pra bug de dado quanto pra bug de infraestrutura.
