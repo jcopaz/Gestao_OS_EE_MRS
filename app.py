@@ -4113,7 +4113,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v13.0.0")
+st.sidebar.caption("SGO Eletroeletrônica • v13.1.0")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -4773,10 +4773,24 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 #region 10.2.2: Análise Operacional (Matriz de Prioridades)
                 with st.expander("Análise Operacional: Matriz de Prioridades e Execução por Categoria", expanded=True):
                     col_h1, col_h2 = st.columns([1.2, 1])
+                    # Tipo_Intervalo pode não existir na base (planilhas antigas sem coluna
+                    # COM/SEM INTERVALO) -- trata como "N/D" em vez de quebrar o agrupamento.
+                    if "Tipo_Intervalo" in df_visao_base.columns:
+                        _tipo_int_norm = df_visao_base["Tipo_Intervalo"].fillna("N/D").astype(str).str.strip()
+                    else:
+                        _tipo_int_norm = pd.Series("N/D", index=df_visao_base.index)
+
                     with col_h1:
                         st.markdown("#### Matriz: Prioridade vs Classificação")
-                        st.caption("Volume total de OS planejadas (Cor indica concentração)")
-                        agg = df_visao_base.copy().groupby(["Classificacao", "Criticidade"]).size().reset_index(name="Total")
+                        st.caption("Volume total de OS planejadas (Cor indica concentração) · rótulo mostra Com Intervalo (CI) e Sem Intervalo (SI)")
+                        df_matriz = df_visao_base.copy()
+                        df_matriz["Tipo_Intervalo_norm"] = _tipo_int_norm
+                        agg = df_matriz.groupby(["Classificacao", "Criticidade"]).size().reset_index(name="Total")
+                        agg_ci = df_matriz[df_matriz["Tipo_Intervalo_norm"] == "Com Intervalo"].groupby(["Classificacao", "Criticidade"]).size()
+                        agg_si = df_matriz[df_matriz["Tipo_Intervalo_norm"] == "Sem Intervalo"].groupby(["Classificacao", "Criticidade"]).size()
+                        # O que não é CI nem SI (N/D) fica de fora do rótulo CI/SI só quando existe --
+                        # sem isso, CI+SI poderia ficar menor que o Total e parecer inconsistente.
+                        agg_nd = df_matriz[~df_matriz["Tipo_Intervalo_norm"].isin(["Com Intervalo", "Sem Intervalo"])].groupby(["Classificacao", "Criticidade"]).size()
                         ordem_class = ["Confiabilidade", "Segurança"]
                         ordem_crit = ["Muito Alta", "Alta", "Média", "Baixa"]
 
@@ -4786,36 +4800,80 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                                 for _xi, _crt in enumerate(ordem_crit):
                                     _row = agg[(agg["Classificacao"] == _cls) & (agg["Criticidade"] == _crt)]
                                     _val = int(_row["Total"].iloc[0]) if not _row.empty else 0
+                                    _ci = int(agg_ci.get((_cls, _crt), 0))
+                                    _si = int(agg_si.get((_cls, _crt), 0))
+                                    _nd = int(agg_nd.get((_cls, _crt), 0))
                                     # Sem JsCode: para valor 0, some o rotulo via override por item
                                     # (label.show=False) em vez de formatter em JS -- JsCode parou de
-                                    # ser serializado apos a nuvem forcar upgrade do Streamlit.
+                                    # ser serializado apos a nuvem forcar upgrade do Streamlit. Pelo
+                                    # mesmo motivo, o total+CI/SI e formatado aqui em Python (rich
+                                    # text estatico), nao via funcao JS.
                                     if _val > 0:
-                                        heat_data.append([_xi, _yi, _val])
+                                        _linha_cisi = f"CI {_ci} · SI {_si}" + (f" · ND {_nd}" if _nd > 0 else "")
+                                        heat_data.append({
+                                            "value": [_xi, _yi, _val],
+                                            "label": {
+                                                "formatter": f"{{a|{_val}}}\n{{b|{_linha_cisi}}}",
+                                                "rich": {
+                                                    "a": {"fontSize": 15, "fontWeight": "bold", "lineHeight": 18},
+                                                    "b": {"fontSize": 10, "lineHeight": 14},
+                                                },
+                                            },
+                                        })
                                     else:
                                         heat_data.append({"value": [_xi, _yi, _val], "label": {"show": False}})
                                     max_val = max(max_val, _val)
 
                             st_echarts(options={
-                                "tooltip": {"position": "top"}, "grid": {"height": "70%", "top": "10%", "left": "25%", "containLabel": True},
+                                "tooltip": {"position": "top"}, "grid": {"height": "68%", "top": "12%", "left": "25%", "containLabel": True},
                                 "xAxis": {"type": "category", "data": ordem_crit, "splitArea": {"show": True}, "axisLine": {"show": False}, "axisTick": {"show": False}},
                                 "yAxis": {"type": "category", "data": ordem_class, "splitArea": {"show": True}, "axisLine": {"show": False}, "axisTick": {"show": False}},
                                 "visualMap": {"min": 0, "max": max_val if max_val > 0 else 10, "calculable": True, "orient": "horizontal", "left": "center", "bottom": "0%", "inRange": {"color": ["#F1F5F9", "#93C5FD", "#3B82F6", "#1E3A8A"]}},
                                 "series": [{"name": "Total de OS", "type": "heatmap", "data": heat_data, "label": {"show": True, "color": "#FFFFFF", "fontWeight": "bold"}, "itemStyle": {"borderColor": "#FFFFFF", "borderWidth": 2}}],
-                            }, height="380px", theme="streamlit", key="aba1_heatmap_discrete")
+                            }, height="420px", theme="streamlit", key="aba1_heatmap_discrete")
                         else: st.info("Sem dados para a Matriz.")
 
                     with col_h2:
                         st.markdown("#### Plan x Realizado por Categoria")
-                        st.caption("Comparativo de volume total e execução.")
+                        st.caption("Comparativo de volume total e execução, detalhado por Com Intervalo (CI) e Sem Intervalo (SI).")
                         df_bar_cat = df_visao_base.copy()
-                        plan_cat = df_bar_cat.groupby("Classificacao").size()
-                        real_cat = (df_bar_cat[df_bar_cat["Status_norm"].isin(_status_concluida_dashboard)].groupby("Classificacao").size())
+                        df_bar_cat["Tipo_Intervalo_norm"] = _tipo_int_norm
                         cats = ["Segurança", "Confiabilidade"]
-                        val_plan, val_real = [int(plan_cat.get(c, 0)) for c in cats], [int(real_cat.get(c, 0)) for c in cats]
-                        # Representatividade: % do Realizado sobre o Planejado da própria categoria.
-                        data_real_cat = [
+                        mask_real_bar = df_bar_cat["Status_norm"].isin(_status_concluida_dashboard)
+                        df_real_bar = df_bar_cat[mask_real_bar]
+
+                        def _qtd_intervalo(df_base, classif, intervalo):
+                            m = (df_base["Classificacao"] == classif) & (df_base["Tipo_Intervalo_norm"] == intervalo)
+                            return int(m.sum())
+
+                        def _qtd_nd(df_base, classif):
+                            m = (df_base["Classificacao"] == classif) & (~df_base["Tipo_Intervalo_norm"].isin(["Com Intervalo", "Sem Intervalo"]))
+                            return int(m.sum())
+
+                        plan_ci = [_qtd_intervalo(df_bar_cat, c, "Com Intervalo") for c in cats]
+                        plan_si = [_qtd_intervalo(df_bar_cat, c, "Sem Intervalo") for c in cats]
+                        plan_nd = [_qtd_nd(df_bar_cat, c) for c in cats]
+                        real_ci = [_qtd_intervalo(df_real_bar, c, "Com Intervalo") for c in cats]
+                        real_si = [_qtd_intervalo(df_real_bar, c, "Sem Intervalo") for c in cats]
+                        real_nd = [_qtd_nd(df_real_bar, c) for c in cats]
+                        # Total sempre = CI + SI + ND, batendo com a contagem total original
+                        # (groupby só por Classificacao) mesmo quando há OS sem Tipo_Intervalo.
+                        val_plan = [a + b + c for a, b, c in zip(plan_ci, plan_si, plan_nd)]
+                        val_real = [a + b + c for a, b, c in zip(real_ci, real_si, real_nd)]
+
+                        def _segmento(valores, cor_txt):
+                            return [{"value": v, "label": {"show": v > 0, "color": cor_txt, "fontSize": 10}} for v in valores]
+
+                        # Series-fantasma (valor 0) empilhada por ultimo em cada stack, so para
+                        # ancorar o rotulo de total no fim da barra -- os segmentos CI/SI/ND reais
+                        # nao podem levar esse rotulo porque cada um mostraria so a sua parte.
+                        total_plan = [
+                            {"value": 0, "label": {"show": True, "position": "right", "color": "#475569", "formatter": f"{v}"}}
+                            for v in val_plan
+                        ]
+                        total_real = [
                             {
-                                "value": v,
+                                "value": 0,
                                 "label": {
                                     "show": True, "position": "right", "color": "#475569",
                                     "formatter": f"{v} ({(v / p * 100):.1f}%)" if p > 0 else f"{v} (0%)",
@@ -4824,16 +4882,164 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             for v, p in zip(val_real, val_plan)
                         ]
 
+                        series_bar = [
+                            {"name": "Planejado CI", "type": "bar", "stack": "plan", "data": _segmento(plan_ci, "#FFFFFF"), "itemStyle": {"color": "#475569"}},
+                            {"name": "Planejado SI", "type": "bar", "stack": "plan", "data": _segmento(plan_si, "#FFFFFF"), "itemStyle": {"color": "#94A3B8"}},
+                        ]
+                        legend_data = ["Planejado CI", "Planejado SI"]
+                        if any(plan_nd):
+                            series_bar.append({"name": "Planejado N/D", "type": "bar", "stack": "plan", "data": _segmento(plan_nd, "#1E293B"), "itemStyle": {"color": "#E2E8F0"}})
+                            legend_data.append("Planejado N/D")
+                        series_bar.append({"name": "Total Planejado", "type": "bar", "stack": "plan", "data": total_plan, "itemStyle": {"color": "transparent"}, "tooltip": {"show": False}})
+
+                        series_bar += [
+                            {"name": "Realizado CI", "type": "bar", "stack": "real", "data": _segmento(real_ci, "#FFFFFF"), "itemStyle": {"color": "#1D4ED8"}},
+                            {"name": "Realizado SI", "type": "bar", "stack": "real", "data": _segmento(real_si, "#FFFFFF"), "itemStyle": {"color": "#60A5FA"}},
+                        ]
+                        legend_data += ["Realizado CI", "Realizado SI"]
+                        if any(real_nd):
+                            series_bar.append({"name": "Realizado N/D", "type": "bar", "stack": "real", "data": _segmento(real_nd, "#1E293B"), "itemStyle": {"color": "#DBEAFE"}})
+                            legend_data.append("Realizado N/D")
+                        series_bar.append({"name": "Total Realizado", "type": "bar", "stack": "real", "data": total_real, "itemStyle": {"color": "transparent"}, "tooltip": {"show": False}})
+
                         st_echarts(options={
-                            "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}}, "legend": {"bottom": "0%"},
-                            "grid": {"left": "3%", "right": "14%", "bottom": "15%", "top": "10%", "containLabel": True},
+                            "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
+                            "legend": {"bottom": "0%", "data": legend_data},
+                            "grid": {"left": "3%", "right": "16%", "bottom": "20%", "top": "10%", "containLabel": True},
                             "xAxis": {"type": "value", "boundaryGap": [0, 0.01]}, "yAxis": {"type": "category", "data": cats, "axisLabel": {"interval": 0}},
-                            "series": [
-                                {"name": "Planejado", "type": "bar", "data": val_plan, "itemStyle": {"color": cor_plan}, "label": {"show": True, "position": "right", "color": "#475569"}},
-                                {"name": "Realizado", "type": "bar", "data": data_real_cat, "itemStyle": {"color": cor_real}}
-                            ]
-                        }, height="380px", theme="streamlit", key="aba1_bar_horiz")
+                            "series": series_bar,
+                        }, height="420px", theme="streamlit", key="aba1_bar_horiz")
                 #endregion 10.2.2
+
+#region 10.2.2c: Visão Micro (Pátio / Grupo de Ativos / Ativo -- Top 10 por volume)
+                with st.expander("📊 Visão Micro (Pátio / Grupo de Ativos / Ativo)", expanded=False):
+                    st.caption(
+                        "Top 10 por volume de OS Planejada em cada eixo. Recorte específico: use os filtros "
+                        "da barra lateral (Pátio, Classificação, Ativo etc.) para restringir a análise."
+                    )
+
+                    df_micro = df_visao_base.copy()
+                    df_micro["Tipo_Intervalo_norm"] = _tipo_int_norm
+                    df_micro["Status_concluida"] = df_micro["Status_norm"].isin(_status_concluida_dashboard)
+
+                    def _top_n_micro(df, col_cat, n=10):
+                        s = df[col_cat].astype(str).str.strip()
+                        s = s[(s != "") & (s.str.upper() != "N/D") & (s.str.upper() != "NAN")]
+                        return s.value_counts().head(n).index.tolist()
+
+                    def _contagens_micro(df, col_cat, categorias, mask=None):
+                        d = df if mask is None else df[mask]
+                        cat_norm = d[col_cat].astype(str).str.strip()
+                        ci_m = d["Tipo_Intervalo_norm"] == "Com Intervalo"
+                        si_m = d["Tipo_Intervalo_norm"] == "Sem Intervalo"
+                        nd_m = ~(ci_m | si_m)
+                        ci = [int(((cat_norm == c) & ci_m).sum()) for c in categorias]
+                        si = [int(((cat_norm == c) & si_m).sum()) for c in categorias]
+                        nd = [int(((cat_norm == c) & nd_m).sum()) for c in categorias]
+                        return ci, si, nd
+
+                    def _segmentos_micro(valores, cor_txt):
+                        return [{"value": v, "label": {"show": v > 0, "color": cor_txt, "fontSize": 9}} for v in valores]
+
+                    def _series_micro(plan_ci, plan_si, plan_nd, real_ci, real_si, real_nd):
+                        # Mesma lógica de reconciliação da seção 10.2.2: Total = CI + SI + ND
+                        # sempre, e o rótulo de total fica numa série-fantasma (valor 0) ancorada
+                        # no fim de cada pilha -- ver comentário em 10.2.2 para o motivo.
+                        val_plan = [a + b + c for a, b, c in zip(plan_ci, plan_si, plan_nd)]
+                        val_real = [a + b + c for a, b, c in zip(real_ci, real_si, real_nd)]
+                        total_plan = [
+                            {"value": 0, "label": {"show": True, "position": "right", "color": "#475569", "formatter": f"{v}"}}
+                            for v in val_plan
+                        ]
+                        total_real = [
+                            {
+                                "value": 0,
+                                "label": {
+                                    "show": True, "position": "right", "color": "#475569",
+                                    "formatter": f"{v} ({(v / p * 100):.1f}%)" if p > 0 else f"{v} (0%)",
+                                },
+                            }
+                            for v, p in zip(val_real, val_plan)
+                        ]
+
+                        series = [
+                            {"name": "Planejado CI", "type": "bar", "stack": "plan", "data": _segmentos_micro(plan_ci, "#FFFFFF"), "itemStyle": {"color": "#475569"}},
+                            {"name": "Planejado SI", "type": "bar", "stack": "plan", "data": _segmentos_micro(plan_si, "#FFFFFF"), "itemStyle": {"color": "#94A3B8"}},
+                        ]
+                        legend = ["Planejado CI", "Planejado SI"]
+                        if any(plan_nd):
+                            series.append({"name": "Planejado N/D", "type": "bar", "stack": "plan", "data": _segmentos_micro(plan_nd, "#1E293B"), "itemStyle": {"color": "#E2E8F0"}})
+                            legend.append("Planejado N/D")
+                        series.append({"name": "Total Planejado", "type": "bar", "stack": "plan", "data": total_plan, "itemStyle": {"color": "transparent"}, "tooltip": {"show": False}})
+
+                        series += [
+                            {"name": "Realizado CI", "type": "bar", "stack": "real", "data": _segmentos_micro(real_ci, "#FFFFFF"), "itemStyle": {"color": "#1D4ED8"}},
+                            {"name": "Realizado SI", "type": "bar", "stack": "real", "data": _segmentos_micro(real_si, "#FFFFFF"), "itemStyle": {"color": "#60A5FA"}},
+                        ]
+                        legend += ["Realizado CI", "Realizado SI"]
+                        if any(real_nd):
+                            series.append({"name": "Realizado N/D", "type": "bar", "stack": "real", "data": _segmentos_micro(real_nd, "#1E293B"), "itemStyle": {"color": "#DBEAFE"}})
+                            legend.append("Realizado N/D")
+                        series.append({"name": "Total Realizado", "type": "bar", "stack": "real", "data": total_real, "itemStyle": {"color": "transparent"}, "tooltip": {"show": False}})
+                        return series, legend
+
+                    def _grafico_micro(categorias, series, legend, key):
+                        st_echarts(options={
+                            "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
+                            "legend": {"bottom": "0%", "data": legend},
+                            "grid": {"left": "3%", "right": "18%", "top": "6%", "bottom": "14%", "containLabel": True},
+                            "xAxis": {"type": "value", "boundaryGap": [0, 0.02]},
+                            # inverse=True + categorias já ordenadas do maior pro menor -> maior
+                            # volume fica no topo do gráfico (leitura tipo ranking).
+                            "yAxis": {"type": "category", "data": categorias, "inverse": True, "axisLabel": {"interval": 0}},
+                            "dataZoom": [{"type": "inside", "yAxisIndex": 0, "start": 0, "end": 100}],
+                            "series": series,
+                        }, height="480px", theme="streamlit", key=key)
+
+                    def _bloco_visao_micro(titulo_a, titulo_b, col_cat, key_prefix):
+                        categorias = _top_n_micro(df_micro, col_cat, n=10)
+                        if not categorias:
+                            st.info(f"Sem dados suficientes para {titulo_a}.")
+                            return
+
+                        st.markdown(f"##### {titulo_a}")
+                        plan_ci, plan_si, plan_nd = _contagens_micro(df_micro, col_cat, categorias)
+                        real_ci, real_si, real_nd = _contagens_micro(df_micro, col_cat, categorias, mask=df_micro["Status_concluida"])
+                        series, legend = _series_micro(plan_ci, plan_si, plan_nd, real_ci, real_si, real_nd)
+                        _grafico_micro(categorias, series, legend, key=f"{key_prefix}_total")
+
+                        st.markdown(f"##### {titulo_b}")
+                        col_seg, col_conf = st.columns(2)
+                        for _classif, _col in (("Segurança", col_seg), ("Confiabilidade", col_conf)):
+                            with _col:
+                                st.caption(_classif)
+                                mask_classif = df_micro["Classificacao"] == _classif
+                                p_ci, p_si, p_nd = _contagens_micro(df_micro, col_cat, categorias, mask=mask_classif)
+                                r_ci, r_si, r_nd = _contagens_micro(df_micro, col_cat, categorias, mask=(mask_classif & df_micro["Status_concluida"]))
+                                _series_c, _legend_c = _series_micro(p_ci, p_si, p_nd, r_ci, r_si, r_nd)
+                                _grafico_micro(categorias, _series_c, _legend_c, key=f"{key_prefix}_{_classif}")
+
+                    # As 3 categorias (top 10) sao calculadas por volume TOTAL (Planejado, todas
+                    # as classificacoes) uma unica vez -- o grafico B reusa a mesma lista do A pra
+                    # manter os dois graficos falando do mesmo recorte de patio/grupo/ativo.
+                    _bloco_visao_micro(
+                        "Visão Pátio — Planejado x Realizado (CI/SI)",
+                        "Visão Pátio — Segurança x Confiabilidade (Planejado x Realizado, CI/SI)",
+                        "Patio", "micro_patio",
+                    )
+                    st.divider()
+                    _bloco_visao_micro(
+                        "Visão Grupo de Ativos — Planejado x Realizado (CI/SI)",
+                        "Visão Grupo de Ativos — Segurança x Confiabilidade (Planejado x Realizado, CI/SI)",
+                        "Grupo_Ativo", "micro_grupo",
+                    )
+                    st.divider()
+                    _bloco_visao_micro(
+                        "Visão Ativo (Top 10) — Planejado x Realizado (CI/SI)",
+                        "Visão Ativo (Top 10) — Segurança x Confiabilidade (Planejado x Realizado, CI/SI)",
+                        "Ativo", "micro_ativo",
+                    )
+                #endregion 10.2.2c
 
 #region 10.2.2b: Aderência Ponderada da Meta (Segurança / Prioridade 1 / Prioridade 2,3,4)
                 with st.expander("Aderência Ponderada da Meta (Segurança / Prioridade)", expanded=True):
