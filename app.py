@@ -13,6 +13,9 @@ import requests
 import streamlit as st
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")  # backend headless -- servidor da nuvem nao tem display, so gera PNG em memoria (usado no Report PDF, 10.2.3b)
+import matplotlib.pyplot as plt
 import folium
 from PIL import Image, ImageOps
 from streamlit_folium import st_folium
@@ -4113,7 +4116,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v14.4.0")
+st.sidebar.caption("SGO Eletroeletrônica • v14.5.0")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -5375,30 +5378,82 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                 #endregion 10.2.3
 
 #region 10.2.3b: Report One Page (PDF p/ WhatsApp/E-mail)
-                # Report nativo (tabelas reportlab), nao print/screenshot da tela: HTML/JS pesado
-                # via components.html ja causou Segmentation fault nesta nuvem antes (ver
-                # comentario em 10.3.1/_CSS_CARD_OS) -- reportlab e a unica via de PDF ja
-                # comprovada estavel neste app (gerar_pdf_cronograma_bytes, regiao 10.3.3).
-                def _gerar_pdf_report_gerencial(_total, _prazo, _atraso, _real_tot, _taxa, _df_c, _cats_c):
+                # PDF com os GRAFICOS de fato (imagem), nao so tabelas de numeros -- mas nao e
+                # print/screenshot da tela: componente Streamlit-ECharts nao tem um jeito de
+                # exportar a imagem do grafico renderizado de volta pro Python sem JsCode (que
+                # nao serializa mais nesta nuvem), e HTML/JS pesado via components.html ja
+                # causou Segmentation fault aqui antes (ver comentario em 10.3.1/_CSS_CARD_OS).
+                # Solucao: redesenha os MESMOS graficos (mesmas cores/mesmos numeros) com
+                # matplotlib, 100% server-side em Python, sem depender de navegador nenhum --
+                # ai sim embuti a imagem PNG gerada dentro do PDF via reportlab.
+                def _fig_para_png_bytes(fig):
+                    from io import BytesIO as _BytesIOFig
+                    buf = _BytesIOFig()
+                    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+                    plt.close(fig)
+                    buf.seek(0)
+                    return buf.getvalue()
+
+                def _grafico_donut_status_mpl(_prazo_d, _atraso_d, _pendente_d):
+                    fig, ax = plt.subplots(figsize=(3.1, 2.7))
+                    valores = [_prazo_d, _atraso_d, _pendente_d]
+                    labels = ["No Prazo", "Atrasado", "Pendentes"]
+                    cores = ["#10B981", "#F59E0B", "#FF4B4B"]
+                    _v = [v for v in valores if v > 0]
+                    _l = [l for l, v in zip(labels, valores) if v > 0]
+                    _c = [c for c, v in zip(cores, valores) if v > 0]
+                    if _v:
+                        ax.pie(
+                            _v, labels=_l, colors=_c, autopct=lambda p: f"{p:.0f}%\n({int(round(p / 100 * sum(_v))):d})",
+                            startangle=90, wedgeprops={"width": 0.42, "edgecolor": "white"}, textprops={"fontsize": 8},
+                        )
+                    ax.set_title("Distribuição por Status", fontsize=10, fontweight="bold", color="#0F172A")
+                    return _fig_para_png_bytes(fig)
+
+                def _grafico_barra_pxr_mpl(categorias, plan_ci, plan_si, real_ci, real_si, titulo):
+                    _x = np.arange(len(categorias))
+                    _larg = 0.32
+                    fig, ax = plt.subplots(figsize=(7.0, 2.7))
+                    ax.bar(_x - _larg / 2, plan_ci, _larg, label="Planejado CI", color="#475569")
+                    ax.bar(_x - _larg / 2, plan_si, _larg, bottom=plan_ci, label="Planejado SI", color="#94A3B8")
+                    ax.bar(_x + _larg / 2, real_ci, _larg, label="Realizado CI", color="#1D4ED8")
+                    ax.bar(_x + _larg / 2, real_si, _larg, bottom=real_ci, label="Realizado SI", color="#60A5FA")
+                    _topo = max([a + b for a, b in zip(plan_ci, plan_si)] + [a + b for a, b in zip(real_ci, real_si)] + [1])
+                    for i in range(len(categorias)):
+                        _tot_plan, _tot_real = plan_ci[i] + plan_si[i], real_ci[i] + real_si[i]
+                        _pend = _tot_plan - _tot_real
+                        ax.text(_x[i] - _larg / 2, _tot_plan + _topo * 0.02, str(_tot_plan), ha="center", fontsize=8, color="#334155")
+                        ax.text(_x[i] + _larg / 2, _tot_real + _topo * 0.02, str(_tot_real), ha="center", fontsize=8, color="#1D4ED8", fontweight="bold")
+                        ax.text(_x[i] + _larg / 2, _tot_real + _topo * 0.10, f"Pend: {_pend}", ha="center", fontsize=7.5, color="#DC2626", fontweight="bold")
+                    ax.set_xticks(_x)
+                    ax.set_xticklabels(categorias, fontsize=9)
+                    ax.set_ylim(0, _topo * 1.22)
+                    ax.set_title(titulo, fontsize=10, fontweight="bold", color="#0F172A")
+                    ax.legend(fontsize=7.5, ncol=4, loc="upper center", bbox_to_anchor=(0.5, -0.13), frameon=False)
+                    ax.spines[["top", "right"]].set_visible(False)
+                    fig.tight_layout()
+                    return _fig_para_png_bytes(fig)
+
+                def _gerar_pdf_report_gerencial(_total, _prazo, _atraso, _real_tot, _nao_real, _taxa, _df_c, _cats_c):
                     from io import BytesIO
                     from reportlab.lib import colors
                     from reportlab.lib.pagesizes import A4
                     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-                    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+                    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
 
                     buffer = BytesIO()
                     doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=28, rightMargin=28, topMargin=28, bottomMargin=28)
                     styles = getSampleStyleSheet()
                     titulo_style = ParagraphStyle("TituloReport", parent=styles["Title"], fontSize=20, textColor=colors.HexColor("#0F172A"), spaceAfter=2)
                     subtitulo_style = ParagraphStyle("SubtituloReport", parent=styles["Normal"], fontSize=11, textColor=colors.HexColor("#475569"))
-                    heading_style = ParagraphStyle("HeadingReport", parent=styles["Heading3"], spaceBefore=6, spaceAfter=6)
+                    heading_style = ParagraphStyle("HeadingReport", parent=styles["Heading3"], spaceBefore=4, spaceAfter=4)
 
                     _agora = agora_dt()
                     story = [
                         Paragraph("Report SGO Eletroeletrônica", titulo_style),
                         Paragraph(f"Data: {_agora.strftime('%d/%m/%Y')}", subtitulo_style),
                         Paragraph(f"Report Atualizado até: {_agora.strftime('%H:%M')}", subtitulo_style),
-                        Spacer(1, 14),
+                        Spacer(1, 10),
                     ]
 
                     _estilo_cab = [
@@ -5409,45 +5464,33 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D1D5DB")),
                         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                         ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
                         ("TOPPADDING", (0, 0), (-1, -1), 5),
                         ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
                     ]
-
-                    _pendente_geral = _total - _real_tot
                     tabela_kpi = Table(
                         [
                             ["Planejado", "Realizado", "Pendente", "Taxa de Conclusão"],
-                            [str(_total), f"{_real_tot} ({_prazo} no prazo / {_atraso} atrasado)", str(_pendente_geral), f"{_taxa:.1f}%"],
+                            [str(_total), f"{_real_tot} ({_prazo} no prazo / {_atraso} atrasado)", str(_total - _real_tot), f"{_taxa:.1f}%"],
                         ],
                         colWidths=[70, 230, 70, 100],
                     )
                     tabela_kpi.setStyle(TableStyle(_estilo_cab))
-                    story += [tabela_kpi, Spacer(1, 16)]
+                    story += [tabela_kpi, Spacer(1, 10)]
 
-                    story.append(Paragraph("Planejado x Realizado por Coordenação", heading_style))
-                    dados_coord = [["Coordenação", "Planejado", "Realizado", "Pendente", "Taxa"]]
-                    for _coord_nome in (_cats_c or ["Paranapiacaba", "Piaçaguera"]):
-                        _mask_c = _df_c["Coordenacao"] == _coord_nome
-                        _plan_c, _real_c = int(_mask_c.sum()), int((_mask_c & _df_c["Status_concluida"]).sum())
-                        _pend_c = _plan_c - _real_c
-                        _taxa_c = (_real_c / _plan_c * 100) if _plan_c > 0 else 0.0
-                        dados_coord.append([_coord_nome, str(_plan_c), str(_real_c), str(_pend_c), f"{_taxa_c:.1f}%"])
-                    tabela_coord = Table(dados_coord, colWidths=[140, 75, 75, 75, 105])
-                    tabela_coord.setStyle(TableStyle(_estilo_cab))
-                    story += [tabela_coord, Spacer(1, 16)]
+                    img_donut = _grafico_donut_status_mpl(_prazo, _atraso, _nao_real)
+                    story += [Image(BytesIO(img_donut), width=200, height=174), Spacer(1, 6)]
 
-                    story.append(Paragraph("Planejado x Realizado por Classificação", heading_style))
-                    dados_classif = [["Classificação", "Planejado", "Realizado", "Pendente", "Taxa"]]
-                    for _classif_nome in ("Segurança", "Confiabilidade"):
-                        _mask_cl = _df_c["Classificacao"] == _classif_nome
-                        _plan_cl, _real_cl = int(_mask_cl.sum()), int((_mask_cl & _df_c["Status_concluida"]).sum())
-                        _pend_cl = _plan_cl - _real_cl
-                        _taxa_cl = (_real_cl / _plan_cl * 100) if _plan_cl > 0 else 0.0
-                        dados_classif.append([_classif_nome, str(_plan_cl), str(_real_cl), str(_pend_cl), f"{_taxa_cl:.1f}%"])
-                    tabela_classif = Table(dados_classif, colWidths=[140, 75, 75, 75, 105])
-                    tabela_classif.setStyle(TableStyle(_estilo_cab))
-                    story.append(tabela_classif)
+                    _cats_coord_pdf = list(_cats_c or ["Paranapiacaba", "Piaçaguera"])
+                    plan_ci_c, plan_si_c, _ = _contagens_micro(_df_c, "Coordenacao", _cats_coord_pdf)
+                    real_ci_c, real_si_c, _ = _contagens_micro(_df_c, "Coordenacao", _cats_coord_pdf, mask=_df_c["Status_concluida"])
+                    img_coord = _grafico_barra_pxr_mpl(_cats_coord_pdf, plan_ci_c, plan_si_c, real_ci_c, real_si_c, "Planejado x Realizado (CI/SI) por Coordenação")
+                    story += [Image(BytesIO(img_coord), width=460, height=178), Spacer(1, 8)]
+
+                    _cats_classif_pdf = ["Segurança", "Confiabilidade"]
+                    plan_ci_cl, plan_si_cl, _ = _contagens_micro(_df_c, "Classificacao", _cats_classif_pdf)
+                    real_ci_cl, real_si_cl, _ = _contagens_micro(_df_c, "Classificacao", _cats_classif_pdf, mask=_df_c["Status_concluida"])
+                    img_classif = _grafico_barra_pxr_mpl(_cats_classif_pdf, plan_ci_cl, plan_si_cl, real_ci_cl, real_si_cl, "Planejado x Realizado (CI/SI) por Classificação")
+                    story += [Image(BytesIO(img_classif), width=460, height=178)]
 
                     doc.build(story)
                     buffer.seek(0)
@@ -5458,12 +5501,12 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     st.download_button(
                         "📄 Report PDF (1 pág.)",
                         data=_gerar_pdf_report_gerencial(
-                            total_os, realizado_prazo, realizado_atraso, realizado_total, taxa_conclusao,
+                            total_os, realizado_prazo, realizado_atraso, realizado_total, nao_realizado, taxa_conclusao,
                             df_coord, _cats_coord,
                         ),
                         file_name=f"report_sgo_eletroeletronica_{agora_dt().strftime('%Y%m%d_%H%M')}.pdf",
                         mime="application/pdf",
-                        help="Report resumido de 1 página (sem menu lateral), pronto pra WhatsApp/e-mail.",
+                        help="Report resumido de 1 página (sem menu lateral), com gráficos, pronto pra WhatsApp/e-mail.",
                     )
 #endregion 10.2.3b
 
