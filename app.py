@@ -4116,7 +4116,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v14.12.2")
+st.sidebar.caption("SGO Eletroeletrônica • v14.12.3")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -4601,24 +4601,28 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
     def _series_micro(plan_ci, plan_si, plan_nd, real_ci, real_si, real_nd):
         val_plan = [a + b + c for a, b, c in zip(plan_ci, plan_si, plan_nd)]
         val_real = [a + b + c for a, b, c in zip(real_ci, real_si, real_nd)]
+        # show=v>0 (nao "True"): categoria sem nada planejado nessa fatia (ex.: Grupo de Ativos
+        # filtrado por Classificacao="Seguranca" que so tem OS de Confiabilidade) nao precisa de
+        # rotulo "0 (0%) / Pendente: 0" -- e so ruido repetido em varias linhas do Top 10.
         total_plan = [
-            {"value": 0, "label": {"show": True, "position": "right", "color": "#475569", "formatter": f"{v}"}}
+            {"value": 0, "label": {"show": v > 0, "position": "right", "color": "#475569", "formatter": f"{v}"}}
             for v in val_plan
         ]
-        # Pendente = Planejado - Realizado, em vermelho na 2a linha do rotulo -- sem JsCode
-        # (formatter em string com "rich", igual ao heatmap de 10.2.2, nao funcao JS: a nuvem
-        # forcou upgrade do Streamlit e parou de serializar JsCode nesse arquivo).
+        # Pendente = Planejado - Realizado, tudo numa linha so (sem \n) -- em 2 linhas o rotulo
+        # nao cabia na faixa de cada sub-barra (Planejado e Realizado dividem a altura da
+        # categoria) e vazava por cima da linha vizinha no Top 10 (reportado em 28/07/2026).
+        # formatter em string com "rich", sem JsCode (a nuvem forcou upgrade do Streamlit e
+        # parou de serializar JsCode nesse arquivo).
         total_real = [
             {
                 "value": 0,
                 "label": {
-                    "show": True, "position": "right", "rich": {
-                        "a": {"color": "#475569", "fontSize": 10, "lineHeight": 13},
-                        "b": {"color": "#DC2626", "fontWeight": "bold", "fontSize": 10, "lineHeight": 13},
+                    "show": p > 0, "position": "right", "rich": {
+                        "a": {"color": "#475569", "fontSize": 10},
+                        "b": {"color": "#DC2626", "fontWeight": "bold", "fontSize": 10},
                     },
                     "formatter": (
-                        f"{{a|{v} ({(v / p * 100):.1f}%)}}\n{{b|Pendente: {p - v}}}" if p > 0
-                        else f"{{a|{v} (0%)}}\n{{b|Pendente: {p - v}}}"
+                        f"{{a|{v} ({(v / p * 100):.1f}%)}} {{b|· Pend: {p - v}}}" if p > 0 else ""
                     ),
                 },
             }
@@ -4646,15 +4650,22 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
         series.append({"name": "Total Realizado", "type": "bar", "stack": "real", "data": total_real, "itemStyle": {"color": "transparent"}, "tooltip": {"show": False}})
         return series, legend
 
-    def _grafico_micro(categorias, series, legend, key, altura="480px"):
+    def _grafico_micro(categorias, series, legend, key, altura=None):
         # zoom=True (dataZoom "inside" no eixo Y, roda do mouse) foi tentado em 27/07/2026 pra
         # afastar rotulo de grafico com muita categoria, mas os 2 graficos que foram pra 2a
         # coluna de um st.columns sairam em branco em producao logo depois -- removido; a
         # largura cheia (ver 10.2.2c) resolveu boa parte do amontoado sem essa complexidade.
+        # altura=None (nao mais "480px" fixo): cada categoria empilha 2 sub-barras (Planejado e
+        # Realizado) na mesma faixa -- com poucas categorias, 480px fixo sobrava; com 10 (Top
+        # 10), a faixa por categoria ficava baixa demais e o rotulo vazava por cima da linha
+        # vizinha (reportado em 28/07/2026). Altura agora cresce com o numero de categorias;
+        # quem já passa altura explicito (Visão por Coordenação, com menos categorias) mantém.
+        if altura is None:
+            altura = f"{140 + 46 * max(len(categorias), 1)}px"
         st_echarts(options={
             "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
             "legend": {"bottom": "0%", "data": legend},
-            "grid": {"left": "3%", "right": "18%", "top": "6%", "bottom": "14%", "containLabel": True},
+            "grid": {"left": "3%", "right": "20%", "top": "6%", "bottom": "16%", "containLabel": True},
             "xAxis": {"type": "value", "boundaryGap": [0, 0.02]},
             "yAxis": {"type": "category", "data": categorias, "inverse": True, "axisLabel": {"interval": 0}},
             "series": series,
