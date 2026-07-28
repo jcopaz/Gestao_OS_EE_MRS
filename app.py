@@ -4116,7 +4116,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v14.13.0")
+st.sidebar.caption("SGO Eletroeletrônica • v14.14.0")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -5615,13 +5615,13 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     # sem dobrar o overhead fixo de titulo/legenda/eixo) pra nao espremer o rotulo
                     # de 20 ativos na mesma faixa que antes cabiam so 10.
                     _larg_fig = 16.0
-                    _alt_titulo, _alt_kpi, _alt_top, _alt_meio, _alt_patio, _alt_pend, _alt_pend_seg = 1.0, 0.55, 3.6, 3.1, 3.3, 3.3, 6.2
-                    _alt_total = _alt_titulo + _alt_kpi + _alt_top + _alt_meio + _alt_patio + _alt_pend + _alt_pend_seg + 0.4
+                    _alt_titulo, _alt_kpi, _alt_top, _alt_meio, _alt_patio, _alt_pend, _alt_pend_seg, _alt_prod = 1.0, 0.55, 3.6, 3.1, 3.3, 3.3, 6.2, 2.6
+                    _alt_total = _alt_titulo + _alt_kpi + _alt_top + _alt_meio + _alt_patio + _alt_pend + _alt_pend_seg + _alt_prod + 0.4
 
                     fig = plt.figure(figsize=(_larg_fig, _alt_total))
                     gs = gridspec.GridSpec(
-                        6, 4, figure=fig,
-                        height_ratios=[_alt_kpi, _alt_top, _alt_meio, _alt_patio, _alt_pend, _alt_pend_seg],
+                        7, 4, figure=fig,
+                        height_ratios=[_alt_kpi, _alt_top, _alt_meio, _alt_patio, _alt_pend, _alt_pend_seg, _alt_prod],
                         # left maior (nao 0.045): nome de ativo comprido (ex. "ICQ S-ICQ005D1
                         # SINALEIRO PN") nos graficos de Pendente cortava no eixo Y com margem
                         # estreita.
@@ -5694,6 +5694,64 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         _cats_p = _top_n_micro(_df_c[_mask_cp], "Ativo", n=20)
                         _ci_p, _si_p, _ = _contagens_micro(_df_c, "Ativo", _cats_p, mask=_mask_cp)
                         _desenhar_pendente_horizontal(fig.add_subplot(gs[5, _idx * 2:_idx * 2 + 2]), _cats_p, _ci_p, _si_p, f"Segurança Pendente Top 20 — {_coord_nome}")
+
+                    # --- linha Produção do Dia (baixas de hoje, 00:01 até a geração do Report) ---
+                    # Pedido de 28/07/2026: abaixo do Segurança Pendente Top 20, mostrar o que a
+                    # equipe produziu HOJE (nao o acumulado do periodo filtrado) -- quantidade de
+                    # Segurança/Confiabilidade (CI/SI) baixadas e, por Pátio onde houve baixa hoje,
+                    # quanto ainda ficou pendente no local (ex.: baixou 3 de 5 na IBA -> mostra as
+                    # 2 que sobraram). Tabela (nao grafico): sao 7 numeros por linha, tabela lê
+                    # mais rapido que decorar cores de barra empilhada.
+                    _hoje_00h = _agora_png.replace(hour=0, minute=1, second=0, microsecond=0)
+                    _mask_hoje = (
+                        _df_c["Status_concluida"] & _df_c["dt_realizado"].notna()
+                        & (_df_c["dt_realizado"] >= _hoje_00h) & (_df_c["dt_realizado"] <= _agora_png)
+                    )
+                    _df_hoje = _df_c[_mask_hoje].copy()
+                    _df_hoje["Patio"] = _df_hoje["Patio"].astype(str).str.strip()
+                    _patio_c_norm = _df_c["Patio"].astype(str).str.strip()
+                    _status_pend_c = ~_df_c["Status_concluida"]
+
+                    _linhas_producao = []
+                    for _patio in sorted(_df_hoje["Patio"].dropna().unique().tolist()):
+                        _d_p = _df_hoje[_df_hoje["Patio"] == _patio]
+                        _sc = int(((_d_p["Classificacao"] == "Segurança") & (_d_p["Tipo_Intervalo_norm"] == "Com Intervalo")).sum())
+                        _ss = int(((_d_p["Classificacao"] == "Segurança") & (_d_p["Tipo_Intervalo_norm"] == "Sem Intervalo")).sum())
+                        _cc = int(((_d_p["Classificacao"] == "Confiabilidade") & (_d_p["Tipo_Intervalo_norm"] == "Com Intervalo")).sum())
+                        _cs = int(((_d_p["Classificacao"] == "Confiabilidade") & (_d_p["Tipo_Intervalo_norm"] == "Sem Intervalo")).sum())
+                        _pend_patio = int((_status_pend_c & (_patio_c_norm == _patio)).sum())
+                        _linhas_producao.append((_patio, _sc, _ss, _cc, _cs, _sc + _ss + _cc + _cs, _pend_patio))
+                    _linhas_producao.sort(key=lambda r: r[5], reverse=True)
+
+                    ax_prod = fig.add_subplot(gs[6, :])
+                    ax_prod.axis("off")
+                    ax_prod.set_title(
+                        f"Produção do Dia — Baixas de Hoje ({_hoje_00h.strftime('%d/%m %H:%M')} até {_agora_png.strftime('%H:%M')})",
+                        fontsize=10.5, fontweight="bold", color="#0F172A", loc="left",
+                    )
+                    _header_prod = ["Pátio", "Segurança CI", "Segurança SI", "Confiabilidade CI", "Confiabilidade SI", "Total Hoje", "Pendente no Pátio"]
+                    if _linhas_producao:
+                        _cell_prod = [[p, str(sc), str(ss), str(cc), str(cs), str(tot), str(pend)] for (p, sc, ss, cc, cs, tot, pend) in _linhas_producao]
+                        _cell_prod.append(["TOTAL"] + [str(sum(r[i] for r in _linhas_producao)) for i in range(1, 7)])
+                    else:
+                        _cell_prod = [["Nenhuma baixa registrada hoje até o momento.", "", "", "", "", "", ""]]
+                    _tabela_prod = ax_prod.table(
+                        cellText=_cell_prod, colLabels=_header_prod, cellLoc="center", loc="center",
+                        colWidths=[0.22, 0.13, 0.13, 0.16, 0.16, 0.10, 0.14],
+                    )
+                    _tabela_prod.auto_set_font_size(False)
+                    _tabela_prod.set_fontsize(8.5)
+                    _tabela_prod.scale(1, 1.5)
+                    for (_row, _col), _cel in _tabela_prod.get_celld().items():
+                        _cel.set_edgecolor("#D1D5DB")
+                        if _row == 0:
+                            _cel.set_facecolor("#163A70")
+                            _cel.set_text_props(color="white", fontweight="bold")
+                        elif _linhas_producao and _row == len(_cell_prod):
+                            _cel.set_facecolor("#EFF6FF")
+                            _cel.set_text_props(fontweight="bold")
+                        else:
+                            _cel.set_facecolor("#FFFFFF")
 
                     buffer = BytesIO()
                     fig.savefig(buffer, format="pdf", facecolor="white")
