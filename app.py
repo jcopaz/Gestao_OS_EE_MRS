@@ -4116,7 +4116,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v14.12.3")
+st.sidebar.caption("SGO Eletroeletrônica • v14.12.4")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -4629,8 +4629,12 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
             for v, p in zip(val_real, val_plan)
         ]
 
+        # barCategoryGap/barGap reduzidos (default do ECharts e 20%/30%): com 2 grupos
+        # empilhados por categoria (Planejado e Realizado), o default deixava a barra fininha
+        # (rotulo "grudado", grafico com cara de vazio/pequeno -- reportado em 28/07/2026).
+        # So precisa declarar numa serie bar; vale pra todas que dividem o mesmo eixo.
         series = [
-            {"name": "Planejado CI", "type": "bar", "stack": "plan", "data": _segmentos_micro(plan_ci, "#FFFFFF"), "itemStyle": {"color": "#475569"}},
+            {"name": "Planejado CI", "type": "bar", "stack": "plan", "barCategoryGap": "10%", "barGap": "10%", "data": _segmentos_micro(plan_ci, "#FFFFFF"), "itemStyle": {"color": "#475569"}},
             {"name": "Planejado SI", "type": "bar", "stack": "plan", "data": _segmentos_micro(plan_si, "#FFFFFF"), "itemStyle": {"color": "#94A3B8"}},
         ]
         legend = ["Planejado CI", "Planejado SI"]
@@ -4655,13 +4659,14 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
         # afastar rotulo de grafico com muita categoria, mas os 2 graficos que foram pra 2a
         # coluna de um st.columns sairam em branco em producao logo depois -- removido; a
         # largura cheia (ver 10.2.2c) resolveu boa parte do amontoado sem essa complexidade.
-        # altura=None (nao mais "480px" fixo): cada categoria empilha 2 sub-barras (Planejado e
-        # Realizado) na mesma faixa -- com poucas categorias, 480px fixo sobrava; com 10 (Top
-        # 10), a faixa por categoria ficava baixa demais e o rotulo vazava por cima da linha
-        # vizinha (reportado em 28/07/2026). Altura agora cresce com o numero de categorias;
-        # quem já passa altura explicito (Visão por Coordenação, com menos categorias) mantém.
+        # altura=None (nao mais "480px" fixo): com o rotulo em 1 linha so (ver _series_micro)
+        # a faixa de cada sub-barra ja sobra space suficiente sem precisar de muito mais altura
+        # que o 480px original -- a 1a tentativa (140 + 46/categoria = 600px pra 10 categorias)
+        # exagerou e deixou o grafico com cara de vazio/espremido (reportado em 28/07/2026).
+        # Formula abaixo fica perto do 480px original pra 10 categorias, e encolhe pra blocos
+        # com menos categorias (Grupo de Ativos/Ativo quando ha menos de 10 no filtro atual).
         if altura is None:
-            altura = f"{140 + 46 * max(len(categorias), 1)}px"
+            altura = f"{max(260, 90 + 36 * max(len(categorias), 1))}px"
         st_echarts(options={
             "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
             "legend": {"bottom": "0%", "data": legend},
