@@ -4116,7 +4116,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v14.15.0")
+st.sidebar.caption("SGO Eletroeletrônica • v14.15.1")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -5610,23 +5610,25 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     # --- Produção do Dia (baixas de hoje, 00:01 até a geração do Report) ---
                     # Pedido de 28/07/2026: mostrar o que a equipe produziu HOJE (nao o acumulado
                     # do periodo filtrado nos demais graficos) -- quantidade de Segurança/
-                    # Confiabilidade (CI/SI) baixadas, com drill Pátio > Grupo de Ativo > Ativo, e
-                    # quanto ainda ficou pendente em cada nivel (ex.: baixou 3 de 5 na IBA -> as 2
-                    # que sobraram aparecem tanto no Pátio quanto no Ativo especifico). Calculado
-                    # aqui (antes do GridSpec) pra saber quantas linhas vao existir e dar altura
-                    # suficiente pra tabela -- nao da pra descobrir isso depois de já ter fixado
-                    # o tamanho da figura.
+                    # Confiabilidade (CI/SI) baixadas, com drill Pátio > Grupo de Ativo, e quanto
+                    # ainda ficou pendente em cada nivel (ex.: baixou 3 de 5 na IBA -> as 2 que
+                    # sobraram aparecem tanto no Pátio quanto no Grupo de Ativo especifico). O
+                    # nivel Ativo (individual) foi tentado e removido em 28/07/2026: com muitos
+                    # ativos a tabela ficava alta demais e vazava por cima dos graficos acima dela
+                    # -- Grupo de Ativo já da o suficiente sem esse risco. Calculado aqui (antes
+                    # do GridSpec) pra saber quantas linhas vao existir e dar altura suficiente a
+                    # tabela -- nao da pra descobrir isso depois de já ter fixado o tamanho da
+                    # figura.
                     _hoje_00h = _agora_png.replace(hour=0, minute=1, second=0, microsecond=0)
                     _mask_hoje = (
                         _df_c["Status_concluida"] & _df_c["dt_realizado"].notna()
                         & (_df_c["dt_realizado"] >= _hoje_00h) & (_df_c["dt_realizado"] <= _agora_png)
                     )
                     _df_hoje = _df_c[_mask_hoje].copy()
-                    for _col_norm in ("Patio", "Grupo_Ativo", "Ativo"):
+                    for _col_norm in ("Patio", "Grupo_Ativo"):
                         _df_hoje[_col_norm] = _df_hoje[_col_norm].astype(str).str.strip()
                     _patio_c_norm = _df_c["Patio"].astype(str).str.strip()
                     _grupo_c_norm = _df_c["Grupo_Ativo"].astype(str).str.strip()
-                    _ativo_c_norm = _df_c["Ativo"].astype(str).str.strip()
                     _status_pend_c = ~_df_c["Status_concluida"]
 
                     def _contagem_seg_conf(_d):
@@ -5647,14 +5649,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             _d_g = _d_p[_d_p["Grupo_Ativo"] == _grupo]
                             _g_sc, _g_ss, _g_cc, _g_cs = _contagem_seg_conf(_d_g)
                             _pend_g = int((_status_pend_c & (_patio_c_norm == _patio) & (_grupo_c_norm == _grupo)).sum())
-                            _ativos = []
-                            for _ativo in sorted(_d_g["Ativo"].dropna().unique().tolist()):
-                                _d_a = _d_g[_d_g["Ativo"] == _ativo]
-                                _a_sc, _a_ss, _a_cc, _a_cs = _contagem_seg_conf(_d_a)
-                                _pend_a = int((_status_pend_c & (_patio_c_norm == _patio) & (_grupo_c_norm == _grupo) & (_ativo_c_norm == _ativo)).sum())
-                                _ativos.append((_ativo, _a_sc, _a_ss, _a_cc, _a_cs, _a_sc + _a_ss + _a_cc + _a_cs, _pend_a))
-                            _ativos.sort(key=lambda r: r[5], reverse=True)
-                            _grupos.append((_grupo, _g_sc, _g_ss, _g_cc, _g_cs, _g_sc + _g_ss + _g_cc + _g_cs, _pend_g, _ativos))
+                            _grupos.append((_grupo, _g_sc, _g_ss, _g_cc, _g_cs, _g_sc + _g_ss + _g_cc + _g_cs, _pend_g))
                         _grupos.sort(key=lambda r: r[5], reverse=True)
                         _blocos_patio.append((_patio, _sc, _ss, _cc, _cs, _sc + _ss + _cc + _cs, _pend_p, _grupos))
                     _blocos_patio.sort(key=lambda r: r[5], reverse=True)
@@ -5662,12 +5657,9 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     for (_patio, _sc, _ss, _cc, _cs, _tot, _pend, _grupos) in _blocos_patio:
                         _cell_prod.append([_patio, str(_sc), str(_ss), str(_cc), str(_cs), str(_tot), str(_pend)])
                         _row_tipo_prod.append("patio")
-                        for (_grupo, _g_sc, _g_ss, _g_cc, _g_cs, _g_tot, _g_pend, _ativos) in _grupos:
+                        for (_grupo, _g_sc, _g_ss, _g_cc, _g_cs, _g_tot, _g_pend) in _grupos:
                             _cell_prod.append([f"    ↳ {_grupo}", str(_g_sc), str(_g_ss), str(_g_cc), str(_g_cs), str(_g_tot), str(_g_pend)])
                             _row_tipo_prod.append("grupo")
-                            for (_ativo, _a_sc, _a_ss, _a_cc, _a_cs, _a_tot, _a_pend) in _ativos:
-                                _cell_prod.append([f"        • {_ativo}", str(_a_sc), str(_a_ss), str(_a_cc), str(_a_cs), str(_a_tot), str(_a_pend)])
-                                _row_tipo_prod.append("ativo")
                     if _blocos_patio:
                         _cell_prod.append(["TOTAL"] + [str(sum(b[i] for b in _blocos_patio)) for i in range(1, 7)])
                         _row_tipo_prod.append("total")
@@ -5682,11 +5674,18 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     # 28/07/2026 -- entao ganha uma altura propria maior (~dobro de categorias,
                     # sem dobrar o overhead fixo de titulo/legenda/eixo) pra nao espremer o rotulo
                     # de 20 ativos na mesma faixa que antes cabiam so 10. Produção do Dia (Pátio >
-                    # Grupo > Ativo) tem numero de linhas totalmente variavel dia a dia -- altura
-                    # calculada a partir do numero real de linhas (_cell_prod), nao um valor fixo.
+                    # Grupo de Ativo) tem numero de linhas variavel dia a dia -- altura calculada a
+                    # partir do numero real de linhas (_cell_prod). Duas coisas medidas num script
+                    # isolado (nao "no olho", que foi o que deu no bug de 28/07/2026 -- tabela
+                    # vazando por cima do Segurança Pendente Top 20):
+                    # 1) cada linha da tabela (fontsize=8.5, scale 1.35) ocupa ~0.225in de verdade
+                    #    (table.get_window_extent()), independente de quantas linhas existem.
+                    # 2) o GridSpec de 7 linhas com hspace=0.55 SO entrega ~67,6% do que voce
+                    #    coloca no height_ratios como area util pro eixo (o resto vira gap entre
+                    #    linhas) -- por isso divide por 0.65 (nao so por 1.0) abaixo.
                     _larg_fig = 16.0
                     _alt_titulo, _alt_kpi, _alt_top, _alt_meio, _alt_patio, _alt_pend, _alt_pend_seg = 1.0, 0.55, 3.6, 3.1, 3.3, 3.3, 6.2
-                    _alt_prod = max(1.6, 0.5 + 0.185 * len(_cell_prod))
+                    _alt_prod = max(1.6, (0.6 + (len(_cell_prod) + 1) * 0.24) / 0.65)
                     _alt_total = _alt_titulo + _alt_kpi + _alt_top + _alt_meio + _alt_patio + _alt_pend + _alt_pend_seg + _alt_prod + 0.4
 
                     fig = plt.figure(figsize=(_larg_fig, _alt_total))
@@ -5773,7 +5772,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         f"Produção do Dia — Baixas de Hoje ({_hoje_00h.strftime('%d/%m %H:%M')} até {_agora_png.strftime('%H:%M')})",
                         fontsize=10.5, fontweight="bold", color="#0F172A", loc="left",
                     )
-                    _header_prod = ["Pátio / Grupo de Ativo / Ativo", "Segurança CI", "Segurança SI", "Confiabilidade CI", "Confiabilidade SI", "Total Hoje", "Pendente"]
+                    _header_prod = ["Pátio / Grupo de Ativo", "Segurança CI", "Segurança SI", "Confiabilidade CI", "Confiabilidade SI", "Total Hoje", "Pendente"]
                     _tabela_prod = ax_prod.table(
                         cellText=_cell_prod, colLabels=_header_prod, cellLoc="center", loc="center",
                         colWidths=[0.30, 0.12, 0.12, 0.14, 0.14, 0.08, 0.12],
@@ -5798,9 +5797,6 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                         elif _tipo == "grupo":
                             _cel.set_facecolor("#FFFFFF")
                             _cel.set_text_props(color="#334155")
-                        elif _tipo == "ativo":
-                            _cel.set_facecolor("#FFFFFF")
-                            _cel.set_text_props(color="#64748B", style="italic")
                         else:
                             _cel.set_facecolor("#FFFFFF")
 
