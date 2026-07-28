@@ -4116,7 +4116,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v14.12.4")
+st.sidebar.caption("SGO Eletroeletrônica • v14.13.0")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -5609,15 +5609,19 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 
                     # 1 imagem so (nao 2 paginas): imagem nao tem conceito de pagina, entao vira
                     # um grid continuo via GridSpec -- cada linha com a altura proporcional ao
-                    # conteudo (Pátio Top5 mais baixo, os Pendente Top10 mais altos).
+                    # conteudo (Pátio Top5 mais baixo, os Pendente mais altos). Segurança Pendente
+                    # virou Top 20 (Confiabilidade Pendente continua Top 10) -- pedido de
+                    # 28/07/2026 -- entao ganha uma altura propria maior (~dobro de categorias,
+                    # sem dobrar o overhead fixo de titulo/legenda/eixo) pra nao espremer o rotulo
+                    # de 20 ativos na mesma faixa que antes cabiam so 10.
                     _larg_fig = 16.0
-                    _alt_titulo, _alt_kpi, _alt_top, _alt_meio, _alt_patio, _alt_pend = 1.0, 0.55, 3.6, 3.1, 3.3, 3.3
-                    _alt_total = _alt_titulo + _alt_kpi + _alt_top + _alt_meio + _alt_patio + _alt_pend * 2 + 0.4
+                    _alt_titulo, _alt_kpi, _alt_top, _alt_meio, _alt_patio, _alt_pend, _alt_pend_seg = 1.0, 0.55, 3.6, 3.1, 3.3, 3.3, 6.2
+                    _alt_total = _alt_titulo + _alt_kpi + _alt_top + _alt_meio + _alt_patio + _alt_pend + _alt_pend_seg + 0.4
 
                     fig = plt.figure(figsize=(_larg_fig, _alt_total))
                     gs = gridspec.GridSpec(
                         6, 4, figure=fig,
-                        height_ratios=[_alt_kpi, _alt_top, _alt_meio, _alt_patio, _alt_pend, _alt_pend],
+                        height_ratios=[_alt_kpi, _alt_top, _alt_meio, _alt_patio, _alt_pend, _alt_pend_seg],
                         # left maior (nao 0.045): nome de ativo comprido (ex. "ICQ S-ICQ005D1
                         # SINALEIRO PN") nos graficos de Pendente cortava no eixo Y com margem
                         # estreita.
@@ -5683,13 +5687,13 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             f"Confiabilidade Pendente Top 10 — {_coord_nome}", "#1D4ED8", "#60A5FA", "#1E3A8A",
                         )
 
-                    # --- linha Segurança Pendente por coordenação ---
+                    # --- linha Segurança Pendente por coordenação (Top 20 -- pedido 28/07/2026) ---
                     _mask_seg_pend = (_df_c["Classificacao"] == "Segurança") & (~_df_c["Status_concluida"])
                     for _idx, _coord_nome in enumerate(("Piaçaguera", "Paranapiacaba")):
                         _mask_cp = _mask_seg_pend & (_df_c["Coordenacao"] == _coord_nome)
-                        _cats_p = _top_n_micro(_df_c[_mask_cp], "Ativo", n=10)
+                        _cats_p = _top_n_micro(_df_c[_mask_cp], "Ativo", n=20)
                         _ci_p, _si_p, _ = _contagens_micro(_df_c, "Ativo", _cats_p, mask=_mask_cp)
-                        _desenhar_pendente_horizontal(fig.add_subplot(gs[5, _idx * 2:_idx * 2 + 2]), _cats_p, _ci_p, _si_p, f"Segurança Pendente Top 10 — {_coord_nome}")
+                        _desenhar_pendente_horizontal(fig.add_subplot(gs[5, _idx * 2:_idx * 2 + 2]), _cats_p, _ci_p, _si_p, f"Segurança Pendente Top 20 — {_coord_nome}")
 
                     buffer = BytesIO()
                     fig.savefig(buffer, format="pdf", facecolor="white")
