@@ -4116,7 +4116,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v14.12.1")
+st.sidebar.caption("SGO Eletroeletrônica • v14.12.2")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -5834,33 +5834,51 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     "da barra lateral (Pátio, Classificação, Ativo etc.) para restringir a análise."
                 )
 
-                df_micro = df_visao_base.copy()
-                df_micro["Tipo_Intervalo_norm"] = _tipo_int_norm
-                df_micro["Status_concluida"] = df_micro["Status_norm"].isin(_status_concluida_dashboard)
+                # ECharts mede a largura do container no instante em que "nasce" (echarts.init).
+                # Esta aba nunca e a aba ativa por padrao (a 1a aba, Visao Gerencial, sempre abre
+                # selecionada) e o Streamlit nao avisa o Python qual aba esta selecionada -- entao,
+                # sem esse gatilho, todo grafico daqui nasceria com largura 0px na 1a execucao do
+                # script e ficaria em branco pra sempre (mesmo bug ja visto com o expander fechado
+                # em 27/07/2026, so que agora o "container escondido" e a propria aba). Mesma
+                # solucao ja usada com sucesso na Agenda Mensal da aba Roteirizacao (10.3.1): so
+                # criar os graficos sob clique, com a pessoa ja olhando pra essa aba -- ai nascem
+                # visiveis de verdade.
+                if not st.session_state.get("analise_micro_liberada", False):
+                    if st.button("📊 Carregar gráficos desta aba", key="btn_liberar_analise_micro"):
+                        st.session_state["analise_micro_liberada"] = True
+                        st.rerun()
+                    st.info(
+                        "Clique para carregar os gráficos. (Correção de um bug do Streamlit: gráficos "
+                        "que nascem numa aba que não está selecionada ficam em branco.)"
+                    )
+                else:
+                    df_micro = df_visao_base.copy()
+                    df_micro["Tipo_Intervalo_norm"] = _tipo_int_norm
+                    df_micro["Status_concluida"] = df_micro["Status_norm"].isin(_status_concluida_dashboard)
 
-                # As 3 categorias (top 10) sao calculadas por volume TOTAL (Planejado, todas
-                # as classificacoes) uma unica vez -- o grafico B reusa a mesma lista do A pra
-                # manter os dois graficos falando do mesmo recorte de patio/grupo/ativo.
-                _bloco_visao_micro(
-                    df_micro,
-                    "Visão Pátio — Planejado x Realizado (CI/SI)",
-                    "Visão Pátio — Segurança x Confiabilidade (Planejado x Realizado, CI/SI)",
-                    "Patio", "micro_patio",
-                )
-                st.divider()
-                _bloco_visao_micro(
-                    df_micro,
-                    "Visão Grupo de Ativos — Planejado x Realizado (CI/SI)",
-                    "Visão Grupo de Ativos — Segurança x Confiabilidade (Planejado x Realizado, CI/SI)",
-                    "Grupo_Ativo", "micro_grupo",
-                )
-                st.divider()
-                _bloco_visao_micro(
-                    df_micro,
-                    "Visão Ativo (Top 10) — Planejado x Realizado (CI/SI)",
-                    "Visão Ativo (Top 10) — Segurança x Confiabilidade (Planejado x Realizado, CI/SI)",
-                    "Ativo", "micro_ativo",
-                )
+                    # As 3 categorias (top 10) sao calculadas por volume TOTAL (Planejado, todas
+                    # as classificacoes) uma unica vez -- o grafico B reusa a mesma lista do A pra
+                    # manter os dois graficos falando do mesmo recorte de patio/grupo/ativo.
+                    _bloco_visao_micro(
+                        df_micro,
+                        "Visão Pátio — Planejado x Realizado (CI/SI)",
+                        "Visão Pátio — Segurança x Confiabilidade (Planejado x Realizado, CI/SI)",
+                        "Patio", "micro_patio",
+                    )
+                    st.divider()
+                    _bloco_visao_micro(
+                        df_micro,
+                        "Visão Grupo de Ativos — Planejado x Realizado (CI/SI)",
+                        "Visão Grupo de Ativos — Segurança x Confiabilidade (Planejado x Realizado, CI/SI)",
+                        "Grupo_Ativo", "micro_grupo",
+                    )
+                    st.divider()
+                    _bloco_visao_micro(
+                        df_micro,
+                        "Visão Ativo (Top 10) — Planejado x Realizado (CI/SI)",
+                        "Visão Ativo (Top 10) — Segurança x Confiabilidade (Planejado x Realizado, CI/SI)",
+                        "Ativo", "micro_ativo",
+                    )
 #endregion 10.2.5
 
 #region 10.3: ABA 2 — Roteirização e Mapa de Campo
