@@ -924,6 +924,7 @@ def classificar_turno(dt):
 #endregion
 
 #region 3.6: Auxiliares da Sidebar — Preparação e Filtros (Blindagem)
+@st.cache_data(show_spinner=False)
 def preparar_df_visao(df_base: pd.DataFrame, filtro_visao: str) -> pd.DataFrame:
     df_visao = df_base.copy()
     _colunas_obrigatorias = ["Status da Operação", "Data/Hora Realizado", "Data inicial programada"]
@@ -4116,7 +4117,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v14.15.1")
+st.sidebar.caption("SGO Eletroeletrônica • v14.16.0")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -6995,35 +6996,68 @@ if tab2 is not None:
 #endregion 10.3.3
 
 #region 10.3.4: Mapa Interativo Otimizado (Cache da Malha)
+@st.cache_resource(show_spinner=False)
+def _construir_mapa_navegacao(lat_centro, lon_centro, zoom_mapa, lat_origem, lon_origem, local_nome, origem_tipo, raio_busca_km, agg_map):
+    # cache_resource (nao so extrair a funcao): antes, o mapa inteiro -- inclusive a malha
+    # ferroviaria inteira, 1 objeto folium.GeoJson por trecho -- era reconstruido em TODO
+    # rerun do app, mesmo quando o rerun era disparado por outra aba/botao sem nenhuma relacao
+    # com o mapa (reportado como lento em 28/07/2026). Com cache_resource, so reconstroi
+    # quando um dos argumentos abaixo muda de verdade (GPS/Base, raio, resultado da busca).
+    # Todo estado usado aqui entra por parametro (nunca st.session_state direto): ler
+    # session_state dentro de uma funcao cacheada nao invalida o cache quando o valor muda,
+    # e o tooltip/icone da origem ficaria preso no valor antigo.
+    mapa = folium.Map(
+        location=[lat_centro, lon_centro], zoom_start=zoom_mapa, max_bounds=True,
+        min_lat=-25.50, max_lat=-19.50, min_lon=-53.50, max_lon=-44.00,
+        control_scale=True, tiles="CartoDB positron", prefer_canvas=True,
+    )
+
+    # FIX: USO DO KML CACHEADO DA MEMÓRIA -- 1 GeoJson so (FeatureCollection da malha inteira)
+    # em vez de 1 objeto por trecho: eram centenas de objetos Folium individuais, o principal
+    # custo de montagem/serialização do mapa. carregar_malha_cacheada() já devolve só
+    # LineString/MultiLineString válidos (sem None/vazio), então __geo_interface__ do
+    # GeoDataFrame inteiro já sai limpo.
+    gdf_malha_cache = carregar_malha_cacheada()
+    if gdf_malha_cache is not None and not gdf_malha_cache.empty:
+        folium.GeoJson(
+            gdf_malha_cache.__geo_interface__,
+            style_function=lambda x: {"color": "#2563EB", "weight": 2, "opacity": 0.70},
+            control=False,
+        ).add_to(mapa)
+
+    folium.Marker(
+        location=[lat_origem, lon_origem], tooltip=f"Origem: {local_nome}",
+        icon=folium.Icon(color="red", icon="home" if origem_tipo != "GPS" else "map-marker", prefix="fa"),
+    ).add_to(mapa)
+    folium.Circle(
+        radius=raio_busca_km * 1000, location=[lat_origem, lon_origem], color="#3B82F6",
+        fill=True, fill_opacity=0.08, weight=2, tooltip=f"Raio: {raio_busca_km} km",
+    ).add_to(mapa)
+
+    if agg_map is not None and not agg_map.empty:
+        for _, row in agg_map.iterrows():
+            folium.CircleMarker(
+                location=[row["lat_patio"], row["lon_patio"]], radius=6, color="#1D4ED8", weight=1.5,
+                fill=True, fill_color="#3B82F6", fill_opacity=0.95,
+                tooltip=f"Pátio: {row['Patio']}<br>OS: {row['qtd_os']}<br>Distância: {row['menor_dist']:.1f} km",
+            ).add_to(mapa)
+
+    return mapa
+
 if tab2 is not None:
   with col_mapa:  # pyright: ignore[reportGeneralTypeIssues]
     lat_centro = min(max(lat_origem, -25.50), -19.50)
     lon_centro = min(max(lon_origem, -53.50), -44.00)
     zoom_mapa = int(min(18, max(6, round(math.log2(360.0 / max((2.0 * max(float(raio_busca_km), 0.5)) / (111.320 * max(math.cos(math.radians(float(lat_centro))), 0.20)), 1e-6))))))
 
-    mapa = folium.Map(location=[lat_centro, lon_centro], zoom_start=zoom_mapa, max_bounds=True, min_lat=-25.50, max_lat=-19.50, min_lon=-53.50, max_lon=-44.00, control_scale=True, tiles="CartoDB positron", prefer_canvas=True)
-
-    # FIX: USO DO KML CACHEADO DA MEMÓRIA
-    gdf_malha_cache = carregar_malha_cacheada()
-    if gdf_malha_cache is not None:
-        def adicionar_trecho(geom): folium.GeoJson(geom.__geo_interface__, style_function=lambda x: {"color": "#2563EB", "weight": 2, "opacity": 0.70}, control=False).add_to(mapa)
-        for _, row in gdf_malha_cache.iterrows():
-            geom = row.geometry
-            if geom is None or geom.is_empty:
-                continue
-            if geom.geom_type == 'LineString':
-                adicionar_trecho(geom)
-            elif geom.geom_type == 'MultiLineString':
-                for subgeom in geom.geoms:
-                    adicionar_trecho(subgeom)
-
-    folium.Marker(location=[lat_origem, lon_origem], tooltip=f"Origem: {st.session_state['local_nome']}", icon=folium.Icon(color="red", icon="home" if st.session_state.get("origem_tipo") != "GPS" else "map-marker", prefix="fa")).add_to(mapa)
-    folium.Circle(radius=raio_busca_km * 1000, location=[lat_origem, lon_origem], color="#3B82F6", fill=True, fill_opacity=0.08, weight=2, tooltip=f"Raio: {raio_busca_km} km").add_to(mapa)
-
+    agg_map = None
     if not df_recomendado.empty:
         agg_map = df_recomendado.groupby("Patio", as_index=False).agg(lat_patio=("lat_patio", "first"), lon_patio=("lon_patio", "first"), qtd_os=("Ordem servico", "count"), menor_dist=("Distancia_km", "min"))
-        for _, row in agg_map.iterrows():
-            folium.CircleMarker(location=[row["lat_patio"], row["lon_patio"]], radius=6, color="#1D4ED8", weight=1.5, fill=True, fill_color="#3B82F6", fill_opacity=0.95, tooltip=f"Pátio: {row['Patio']}<br>OS: {row['qtd_os']}<br>Distância: {row['menor_dist']:.1f} km").add_to(mapa)
+
+    mapa = _construir_mapa_navegacao(
+        lat_centro, lon_centro, zoom_mapa, lat_origem, lon_origem,
+        st.session_state["local_nome"], st.session_state.get("origem_tipo"), raio_busca_km, agg_map,
+    )
 
     st_folium(mapa, height=650, use_container_width=True, returned_objects=[], key="mapa_final_limpo")
     st.markdown("---")
