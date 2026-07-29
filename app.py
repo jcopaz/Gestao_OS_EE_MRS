@@ -3699,6 +3699,89 @@ def carregar_config_operacional(coordenacao: str) -> dict:
     }
 #endregion 4.2
 
+#region 4.2b: Cálculo do Raio de Roteirização (Cacheado)
+@st.cache_data(show_spinner=False)
+def calcular_df_recomendado(df_pendentes_f: pd.DataFrame, lat_origem: float, lon_origem: float, raio_busca_km: int, escopo_usr: str) -> pd.DataFrame:
+    # Extraído de dentro de "Ferramentas de Campo" (10.3.2) e cacheado: sem isso, essa conta
+    # (mapear lat/lon por Pátio, Haversine, rank de Segurança da Operação, ordenação) rodava em
+    # TODO rerun do app -- qualquer clique em qualquer aba, não só quando o usuário mexia no
+    # raio/GPS/Filtrar -- mesmo padrão de problema já corrigido em preparar_df_visao e no mapa
+    # (região 10.3.4) em 28-29/07/2026.
+    if df_pendentes_f.empty:
+        return pd.DataFrame()
+
+    df_calc = df_pendentes_f.copy()
+    df_calc["lat_patio"] = df_calc["Patio"].map(lambda p: COORDENADAS_FIXAS.get(str(p).strip().upper(), [np.nan, np.nan])[0])
+    df_calc["lon_patio"] = df_calc["Patio"].map(lambda p: COORDENADAS_FIXAS.get(str(p).strip().upper(), [np.nan, np.nan])[1])
+    com_coord = df_calc.dropna(subset=["lat_patio", "lon_patio"]).copy()
+
+    if com_coord.empty:
+        return com_coord
+
+    hoje_atual = datetime.now().date()
+    com_coord["Ordem_Prazo"] = com_coord["dt_prog_filtro"].apply(lambda dt: 1 if pd.notna(dt) and dt.date() < hoje_atual else (2 if pd.notna(dt) and dt.date() == hoje_atual else 3))
+    com_coord["Distancia_km"] = haversine_vectorized(lat_origem, lon_origem, com_coord["lat_patio"], com_coord["lon_patio"])
+
+    # Coordenação de referência para a config operacional: a do escopo do usuário logado; se o
+    # escopo for "Todas", usa a mais frequente na lista.
+    if escopo_usr and escopo_usr != "Todas":
+        coordenacao_rota = escopo_usr
+    elif "Coordenacao" in com_coord.columns and not com_coord["Coordenacao"].dropna().empty:
+        coordenacao_rota = str(com_coord["Coordenacao"].dropna().mode().iloc[0]).strip()
+    else:
+        coordenacao_rota = "Paranapiacaba"
+    config_rota = carregar_config_operacional(coordenacao_rota)
+
+    # Escopo de dados: quando configurado para um plano específico (ex.: "Julho/2026", escolhido
+    # na tela de Configurações Operacionais como "Plano de Julho/2026"), mantém só as OS daquele
+    # Mês de Referência — evita mostrar backlog de outros ciclos.
+    if config_rota["escopo_dados"] != "todos" and "Plano_Mes_Referencia" in com_coord.columns:
+        com_coord = com_coord[com_coord["Plano_Mes_Referencia"].astype(str).str.strip() == config_rota["escopo_dados"]].copy()
+        if not com_coord.empty:
+            com_coord["Ordem_Prazo"] = com_coord["dt_prog_filtro"].apply(lambda dt: 1 if pd.notna(dt) and dt.date() < hoje_atual else (2 if pd.notna(dt) and dt.date() == hoje_atual else 3))
+            com_coord["Distancia_km"] = haversine_vectorized(lat_origem, lon_origem, com_coord["lat_patio"], com_coord["lon_patio"])
+
+    if com_coord.empty:
+        return com_coord
+
+    # "Segurança da Operação": camada composta (classificação + criticidade), não um
+    # cascateamento simples. Correção de negócio validada com especialistas MRS (21/07/2026):
+    # não existe "Confiabilidade e Segurança" -- toda OS é Segurança OU Confiabilidade.
+    # Rank0=Segurança+MuitoAlta (toda OS de Segurança já nasce Muito Alta, não existe
+    # Segurança+Alta/Média/Baixa na prática), Rank1=Confiabilidade+MuitoAlta,
+    # Rank2=Confiabilidade+demais níveis, Rank3=todo o resto (default/fallback). Tipo de
+    # Intervalo NÃO entra aqui: já é filtrado à parte (filtro_intervalo_sel) antes da
+    # roteirização chegar neste ponto.
+    classif_col = com_coord.get("Classificacao", pd.Series("Confiabilidade", index=com_coord.index)).astype(str)
+    crit_col = com_coord.get("Criticidade", pd.Series("", index=com_coord.index)).astype(str)
+    com_coord["_rank_seguranca_operacional"] = np.select(
+        [
+            (classif_col == "Segurança") & (crit_col == "Muito Alta"),
+            (classif_col == "Confiabilidade") & (crit_col == "Muito Alta"),
+            (classif_col == "Confiabilidade") & (crit_col.isin(["Alta", "Média", "Baixa"])),
+        ],
+        [0, 1, 2],
+        default=3
+    )
+
+    # Ordem de Criticidade (filtro paralelo): reordena Muito Alta/Alta/Média/Baixa dentro do
+    # critério "criticidade" sem afetar o Criticidade_rank fixo usado pela trava de bloqueio
+    # (que continua identificando "Muito Alta" normalmente).
+    _mapa_ordem_crit = {nivel: idx for idx, nivel in enumerate(config_rota["ordem_criticidade"])}
+    com_coord["_rank_criticidade_custom"] = com_coord.get("Criticidade", pd.Series("", index=com_coord.index)).map(_mapa_ordem_crit).fillna(99)
+
+    _mapa_criterio_coluna = {
+        "seguranca_operacional": "_rank_seguranca_operacional",
+        "criticidade": "_rank_criticidade_custom",
+        "atraso": "Ordem_Prazo", "proximidade": "Distancia_km",
+    }
+    ordem_sort = [_mapa_criterio_coluna[c] for c in config_rota["ordem_criterios"] if c in _mapa_criterio_coluna]
+    if not ordem_sort:
+        ordem_sort = ["_rank_seguranca_operacional", "_rank_criticidade_custom", "Ordem_Prazo", "Distancia_km"]
+
+    return com_coord[com_coord["Distancia_km"] <= raio_busca_km].sort_values(by=ordem_sort)
+#endregion 4.2b
+
 def obter_base_padrao_usuario():
     username = str(st.session_state.get("username", "")).strip()
     escopo = str(st.session_state.get("escopo", "")).strip()
@@ -4117,7 +4200,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v14.16.0")
+st.sidebar.caption("SGO Eletroeletrônica • v14.17.0")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -6204,78 +6287,14 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 
                 lat_origem, lon_origem = float(st.session_state["lat_partida"]), float(st.session_state["lon_partida"])
 
-                # CÁLCULO DO RAIO (Acontece antes agora)
+                # CÁLCULO DO RAIO -- extraído pra calcular_df_recomendado() (cacheado, região
+                # 4.2b): antes rodava por inteiro em todo rerun do app, mesmo sem o raio/GPS/
+                # Filtrar terem mudado (mesmo problema já corrigido em preparar_df_visao e no
+                # mapa, 28-29/07/2026).
                 if not df_pendentes_f.empty:
-                    df_calc = df_pendentes_f.copy()
-                    df_calc["lat_patio"] = df_calc["Patio"].map(lambda p: COORDENADAS_FIXAS.get(str(p).strip().upper(), [np.nan, np.nan])[0])
-                    df_calc["lon_patio"] = df_calc["Patio"].map(lambda p: COORDENADAS_FIXAS.get(str(p).strip().upper(), [np.nan, np.nan])[1])
-                    com_coord = df_calc.dropna(subset=["lat_patio", "lon_patio"]).copy()
-
-                    if not com_coord.empty:
-                        hoje_atual = datetime.now().date()
-                        com_coord["Ordem_Prazo"] = com_coord["dt_prog_filtro"].apply(lambda dt: 1 if pd.notna(dt) and dt.date() < hoje_atual else (2 if pd.notna(dt) and dt.date() == hoje_atual else 3))
-                        com_coord["Distancia_km"] = haversine_vectorized(lat_origem, lon_origem, com_coord["lat_patio"], com_coord["lon_patio"])
-
-                        # Coordenação de referência para a config operacional: a do escopo do
-                        # usuário logado; se o escopo for "Todas", usa a mais frequente na lista.
-                        _escopo_usr = st.session_state.get("escopo", "")
-                        if _escopo_usr and _escopo_usr != "Todas":
-                            coordenacao_rota = _escopo_usr
-                        elif "Coordenacao" in com_coord.columns and not com_coord["Coordenacao"].dropna().empty:
-                            coordenacao_rota = str(com_coord["Coordenacao"].dropna().mode().iloc[0]).strip()
-                        else:
-                            coordenacao_rota = "Paranapiacaba"
-                        config_rota = carregar_config_operacional(coordenacao_rota)
-
-                        # Escopo de dados: quando configurado para um plano específico (ex.: "Julho/2026",
-                        # escolhido na tela de Configurações Operacionais como "Plano de Julho/2026"),
-                        # mantém só as OS daquele Mês de Referência — evita mostrar backlog de outros ciclos.
-                        if config_rota["escopo_dados"] != "todos" and "Plano_Mes_Referencia" in com_coord.columns:
-                            com_coord = com_coord[com_coord["Plano_Mes_Referencia"].astype(str).str.strip() == config_rota["escopo_dados"]].copy()
-                            if not com_coord.empty:
-                                com_coord["Ordem_Prazo"] = com_coord["dt_prog_filtro"].apply(lambda dt: 1 if pd.notna(dt) and dt.date() < hoje_atual else (2 if pd.notna(dt) and dt.date() == hoje_atual else 3))
-                                com_coord["Distancia_km"] = haversine_vectorized(lat_origem, lon_origem, com_coord["lat_patio"], com_coord["lon_patio"])
-
-                        if com_coord.empty:
-                            df_recomendado = com_coord
-                        else:
-                            # "Segurança da Operação": camada composta (classificação + criticidade),
-                            # não um cascateamento simples. Correção de negócio validada com
-                            # especialistas MRS (21/07/2026): não existe "Confiabilidade e Segurança" --
-                            # toda OS é Segurança OU Confiabilidade. Rank0=Segurança+MuitoAlta (toda OS
-                            # de Segurança já nasce Muito Alta, não existe Segurança+Alta/Média/Baixa na
-                            # prática), Rank1=Confiabilidade+MuitoAlta, Rank2=Confiabilidade+demais
-                            # níveis, Rank3=todo o resto (default/fallback). Tipo de Intervalo NÃO entra
-                            # aqui: já é filtrado à parte (filtro_intervalo_sel) antes da roteirização
-                            # chegar neste ponto.
-                            classif_col = com_coord.get("Classificacao", pd.Series("Confiabilidade", index=com_coord.index)).astype(str)
-                            crit_col = com_coord.get("Criticidade", pd.Series("", index=com_coord.index)).astype(str)
-                            com_coord["_rank_seguranca_operacional"] = np.select(
-                                [
-                                    (classif_col == "Segurança") & (crit_col == "Muito Alta"),
-                                    (classif_col == "Confiabilidade") & (crit_col == "Muito Alta"),
-                                    (classif_col == "Confiabilidade") & (crit_col.isin(["Alta", "Média", "Baixa"])),
-                                ],
-                                [0, 1, 2],
-                                default=3
-                            )
-
-                            # Ordem de Criticidade (filtro paralelo): reordena Muito Alta/Alta/Média/Baixa
-                            # dentro do critério "criticidade" sem afetar o Criticidade_rank fixo usado
-                            # pela trava de bloqueio (que continua identificando "Muito Alta" normalmente).
-                            _mapa_ordem_crit = {nivel: idx for idx, nivel in enumerate(config_rota["ordem_criticidade"])}
-                            com_coord["_rank_criticidade_custom"] = com_coord.get("Criticidade", pd.Series("", index=com_coord.index)).map(_mapa_ordem_crit).fillna(99)
-
-                            _mapa_criterio_coluna = {
-                                "seguranca_operacional": "_rank_seguranca_operacional",
-                                "criticidade": "_rank_criticidade_custom",
-                                "atraso": "Ordem_Prazo", "proximidade": "Distancia_km",
-                            }
-                            ordem_sort = [_mapa_criterio_coluna[c] for c in config_rota["ordem_criterios"] if c in _mapa_criterio_coluna]
-                            if not ordem_sort:
-                                ordem_sort = ["_rank_seguranca_operacional", "_rank_criticidade_custom", "Ordem_Prazo", "Distancia_km"]
-
-                            df_recomendado = com_coord[com_coord["Distancia_km"] <= raio_busca_km].sort_values(by=ordem_sort)
+                    df_recomendado = calcular_df_recomendado(
+                        df_pendentes_f, lat_origem, lon_origem, raio_busca_km, st.session_state.get("escopo", ""),
+                    )
 
                 st.info(f"**{len(df_recomendado)} OS pendentes** encontradas no raio de {raio_busca_km} km.")
 
