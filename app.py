@@ -2539,7 +2539,15 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     else:
         df_pendentes["MesAno"] = pd.to_datetime(df_pendentes.get("Data inicial programada"), errors="coerce").dt.strftime("%m/%Y").fillna("")  # pyright: ignore[reportCallIssue, reportArgumentType]
 
+    # Status_norm no pacote (pedido 29/07/2026): sem isso o JS nao tem como saber que uma OS
+    # ja esta em "ABER NRAV" (ja vistoriada) -- nem pra parar de bloquear o grupo, nem pra
+    # mostrar o selo visual de NRAV no card.
     colunas_export = ["Ordem servico", "Ativo", "Atividade ativo", "Patio", "Criticidade", "MesAno"]
+    if "Status_norm" in df_pendentes.columns:
+        colunas_export.append("Status_norm")
+    else:
+        df_pendentes["Status_norm"] = ""
+        colunas_export.append("Status_norm")
     if "Tipo_Intervalo" in df_pendentes.columns:
         colunas_export.append("Tipo_Intervalo")
     else:
@@ -2670,6 +2678,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         .os-title {{ font-size: 16px; font-weight: 800; color: #0F172A; }}
         .chip {{ display: inline-block; padding: 4px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #E2E8F0; color: #334155; }}
         .chip-critical {{ background: #FEE2E2; color: #991B1B; }}
+        .chip-nrav {{ background: #FEF3C7; color: #92400E; }}
         .os-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
         body.modo-horario-unico .os-time-individual {{ display: none; }}
         /* Modo NRAV (Não Realizado Após Vistoria, pedido 29/07/2026): esconde os campos de
@@ -3095,9 +3104,13 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     function gruposCriticosBloqueados(lista) {{
         // Um grupo = (Ativo | Tipo de Intervalo). Só bloqueia as demais OS do MESMO
         // grupo. Assim, Muito Alta "Com Intervalo" não trava as "Sem Intervalo" e vice-versa.
+        // Status_norm !== "ABER NRAV" (pedido 29/07/2026): uma Muito Alta ja vistoriada (NRAV)
+        // nao continua travando o grupo -- ja foi vista, so nao pode ser concluida agora por
+        // impedimento externo.
         const grupos = new Set();
         lista.forEach((os) => {{
-            if (String(os.Criticidade || "").trim().toUpperCase() === "MUITO ALTA") {{
+            const jaEmNrav = String(os.Status_norm || "").trim().toUpperCase() === "ABER NRAV";
+            if (!jaEmNrav && String(os.Criticidade || "").trim().toUpperCase() === "MUITO ALTA") {{
                 const ativo = String(os.Ativo || "").trim().toUpperCase();
                 const intervalo = String(os.Tipo_Intervalo || "N/D").trim().toUpperCase();
                 grupos.add(ativo + " | " + intervalo);
@@ -3167,6 +3180,9 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             const isCritica = criticidade.toUpperCase() === "MUITO ALTA";
             const grupoItem = ativo.toUpperCase() + " | " + intervalo.toUpperCase();
             const locked = !isCritica && gruposBloq.has(grupoItem) && TRAVA_PRIORIDADE_ATIVA;
+            // Selo NRAV (pedido 29/07/2026): identifica visualmente que essa OS já foi
+            // vistoriada e está no Backlog por impedimento externo.
+            const ehNrav = String(item.Status_norm || "").trim().toUpperCase() === "ABER NRAV";
 
             const wrapper = document.createElement("div");
             wrapper.className = "os-item" + (locked ? " locked" : "");
@@ -3176,6 +3192,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 <div class="os-header">
                     <div class="os-title">${{locked ? "🔒 " : ""}}OS ${{osId}}</div>
                     <div class="chip ${{isCritica ? "chip-critical" : ""}}">${{criticidade || "Sem criticidade"}}</div>
+                    ${{ehNrav ? '<div class="chip chip-nrav">🔍 NRAV</div>' : ""}}
                 </div>
                 ${{locked ? `<div class="os-meta" style="color:#94A3B8;"><em>🔒 Bloqueada: conclua a OS Muito Alta do mesmo Ativo e tipo de intervalo para liberar.</em></div>` : ""}}
 
@@ -4407,7 +4424,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v15.0.1")
+st.sidebar.caption("SGO Eletroeletrônica • v15.1.0")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -6595,7 +6612,7 @@ def gerar_pdf_cronograma_bytes(df_pdf: pd.DataFrame, titulo: str = "Cronograma d
     story.append(Paragraph(f"<b>{titulo}</b>", styles["Title"]))
     story.append(Spacer(1, 10))
 
-    colunas_pdf = ["Ordem servico", "Data Prog.", "Ativo", "Patio", "Criticidade", "Classificacao", "Descrição Longa"]
+    colunas_pdf = ["Ordem servico", "Status", "Data Prog.", "Ativo", "Patio", "Criticidade", "Classificacao", "Descrição Longa"]
     df_local = df_pdf.reindex(columns=colunas_pdf).fillna("").copy()
 
     data = [colunas_pdf]
@@ -6605,7 +6622,7 @@ def gerar_pdf_cronograma_bytes(df_pdf: pd.DataFrame, titulo: str = "Cronograma d
     tabela = Table(
         data,
         repeatRows=1,
-        colWidths=[70, 70, 80, 55, 70, 85, 300]
+        colWidths=[55, 55, 65, 75, 50, 65, 80, 265]
     )
 
     tabela.setStyle(TableStyle([
@@ -6639,6 +6656,7 @@ _CSS_CARD_OS = """
     .sgo-os-title { font-size: 16px; font-weight: 800; color: #0F172A; }
     .sgo-chip { display: inline-block; padding: 4px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #E2E8F0; color: #334155; }
     .sgo-chip-critical { background: #FEE2E2; color: #991B1B; }
+    .sgo-chip-nrav { background: #FEF3C7; color: #92400E; }
     .sgo-os-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; margin-bottom: 10px; }
     .sgo-os-meta { font-size: 13px; color: #475569; margin: 2px 0; }
     .sgo-desc-box { padding: 10px; background: #F8FAFC; border-radius: 10px; border: 1px solid #E2E8F0; font-size: 13px; color: #334155; }
@@ -6654,6 +6672,10 @@ def _card_os_html(row) -> str:
     os_id = html.escape(str(row.get("Ordem servico", "")).strip())
     criticidade = html.escape(str(row.get("Criticidade", "")).strip())
     chip_cls = "sgo-chip sgo-chip-critical" if criticidade == "Muito Alta" else "sgo-chip"
+    # Selo NRAV (pedido 29/07/2026): identifica visualmente que essa OS já foi vistoriada e
+    # está no Backlog por impedimento externo -- não é uma pendência "nova".
+    eh_nrav = str(row.get("Status_norm", "")).strip().upper() == "ABER NRAV"
+    chip_nrav_html = ' <span class="sgo-chip sgo-chip-nrav">🔍 NRAV</span>' if eh_nrav else ""
     ativo = html.escape(str(row.get("Ativo", "")).strip())
     atividade = html.escape(str(row.get("Atividade ativo", "")).strip())
     patio = html.escape(str(row.get("Patio", "")).strip())
@@ -6663,7 +6685,7 @@ def _card_os_html(row) -> str:
     <div class="sgo-os-item">
         <div class="sgo-os-header">
             <span class="sgo-os-title">OS {os_id}</span>
-            <span class="{chip_cls}">{criticidade}</span>
+            <span class="{chip_cls}">{criticidade}</span>{chip_nrav_html}
         </div>
         <div class="sgo-os-grid">
             <div class="sgo-os-meta"><strong>Ativo:</strong> {ativo}</div>
@@ -6712,7 +6734,11 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
     # passar Muito Alta com data futura OU sem data (NaT -> comparacao False), permitindo
     # baixar uma Alta antes da Muito Alta. O backlog (atraso) ja e priorizado na ordenacao
     # do df_recomendado (Ordem_Prazo), entao aqui basta garantir a prioridade da Muito Alta.
-    mask_critica = (df_recomendado_ui["Criticidade_rank"] == 1)
+    # Status_norm != "ABER NRAV" (pedido 29/07/2026): uma Muito Alta ja vistoriada (NRAV) NAO
+    # deve continuar travando o grupo -- ja foi vista, so nao pôde ser concluida por
+    # impedimento externo. Trava mesmo assim ate a 1a tentativa (Pendente/Atrasado); depois de
+    # baixada como NRAV, libera o grupo e ela mesma vai pra fila igual as demais.
+    mask_critica = (df_recomendado_ui["Criticidade_rank"] == 1) & (df_recomendado_ui["Status_norm"] != "ABER NRAV")
 
     grupos_bloqueados = set(_grupo_bloq[mask_critica].unique())
 
@@ -7159,7 +7185,9 @@ def _render_apontamento_nrav(df_recomendado_ui: pd.DataFrame):
     else:
         _int_g = pd.Series("N/D", index=df_recomendado_ui.index)
     _grupo_bloq = _ativo_g + " | " + _int_g
-    mask_critica = (df_recomendado_ui["Criticidade_rank"] == 1)
+    # Status_norm != "ABER NRAV" (pedido 29/07/2026): mesma regra da Conclusão -- uma Muito
+    # Alta já vistoriada (NRAV) não deve continuar travando o grupo, já foi vista.
+    mask_critica = (df_recomendado_ui["Criticidade_rank"] == 1) & (df_recomendado_ui["Status_norm"] != "ABER NRAV")
     grupos_bloqueados = set(_grupo_bloq[mask_critica].unique())
 
     if "Coordenacao" in df_recomendado_ui.columns:
@@ -7439,6 +7467,19 @@ def _render_cronograma(df_recomendado: pd.DataFrame):
         df_tabela_campo = _aplicar_filtros_cronograma(df_recomendado)
         df_tabela_campo["Data Prog."] = pd.to_datetime(df_tabela_campo["dt_prog_filtro"], errors="coerce").dt.strftime("%d/%m/%Y").fillna("")
 
+        # Selo NRAV no Cronograma (pedido 29/07/2026): identifica visualmente as OS que já
+        # foram vistoriadas e estão no Backlog por impedimento externo, em vez de aparecerem
+        # como pendência "nova" igual às demais.
+        def _rotulo_status_cronograma(s):
+            s_up = str(s).strip().upper()
+            if s_up == "ABER NRAV": return "🔍 NRAV"
+            if s_up == "ATRASADO": return "Atrasado"
+            return "Pendente"
+        df_tabela_campo["Status"] = (
+            df_tabela_campo["Status_norm"].apply(_rotulo_status_cronograma)
+            if "Status_norm" in df_tabela_campo.columns else "Pendente"
+        )
+
         if df_tabela_campo.empty:
             st.info("Nenhuma OS pendente encontrada no cronograma para os filtros selecionados.")
         else:
@@ -7455,7 +7496,7 @@ def _render_cronograma(df_recomendado: pd.DataFrame):
                 )
 
             df_exibicao = df_tabela_campo[
-                ["Ordem servico", "Data Prog.", "Ativo", "Patio", "Criticidade", "Classificacao", "Descrição Longa"]
+                ["Ordem servico", "Status", "Data Prog.", "Ativo", "Patio", "Criticidade", "Classificacao", "Descrição Longa"]
             ].fillna("").copy()
 
 
@@ -7465,6 +7506,7 @@ def _render_cronograma(df_recomendado: pd.DataFrame):
                 hide_index=True,
                 column_config={
                     "Ordem servico": st.column_config.TextColumn("OS", width="small"),
+                    "Status": st.column_config.TextColumn("Status", width="small"),
                     "Data Prog.": st.column_config.TextColumn("Data Prog.", width="small"),
                     "Ativo": st.column_config.TextColumn("Ativo", width="small"),
                     "Patio": st.column_config.TextColumn("Pátio", width="small"),
@@ -7609,12 +7651,12 @@ def gerar_pdf_concluidas_bytes(df_pdf, titulo="OS Concluídas - Fim de Turno"):
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), leftMargin=20, rightMargin=20, topMargin=20, bottomMargin=20)
     styles = getSampleStyleSheet()
     story = [Paragraph(f"<b>{titulo}</b>", styles["Title"]), Spacer(1, 10)]
-    colunas_pdf = ["OS", "Data Prog. (Data Inicial Programada)", "Patio", "Ativo", "Criticidade", "Classificação", "Descrição Longa", "Data/Hora Realizado"]
+    colunas_pdf = ["OS", "Status", "Data Prog. (Data Inicial Programada)", "Patio", "Ativo", "Criticidade", "Classificação", "Descrição Longa", "Data/Hora Realizado"]
     df_local = df_pdf.reindex(columns=colunas_pdf).fillna("").copy()
     data = [colunas_pdf]
     for _, row in df_local.iterrows():
         data.append([Paragraph(str(row[c]), styles["BodyText"]) for c in colunas_pdf])  # pyright: ignore[reportArgumentType]
-    tabela = Table(data, repeatRows=1, colWidths=[65, 130, 55, 90, 70, 85, 170, 100])
+    tabela = Table(data, repeatRows=1, colWidths=[50, 60, 110, 50, 85, 65, 75, 150, 90])
     tabela.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#163A70")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -7639,7 +7681,10 @@ if tab2 is not None:
         st.markdown("---")
         st.markdown("### 🏁 Relatório de OS Concluídas (Fim de Turno)")
         st.caption("PDF das OS concluídas para conferência ao final do turno.")
-        _status_concluido_rel = _status_prazo | _status_atraso
+        # _status_exportavel_sap (nao so prazo|atraso): inclui ABER NRAV -- a equipe foi a
+        # campo e fez a vistoria, o turno precisa mostrar essa atividade tambem, mesmo a OS
+        # continuando pendente no Backlog (pedido 29/07/2026).
+        _status_concluido_rel = _status_exportavel_sap
         if "Status_norm" in df_filtrado.columns:
             df_conc = df_filtrado[df_filtrado["Status_norm"].isin(_status_concluido_rel)].copy()
         else:
@@ -7665,8 +7710,15 @@ if tab2 is not None:
         if df_conc.empty:
             st.info("Nenhuma OS concluída encontrada para os filtros atuais.")
         else:
+            # Identifica visualmente NRAV (vistoriada, backlog pendente) x Realizado de verdade
+            # -- senão o relatório passa a impressão de que tudo virou conclusão definitiva.
+            def _rotulo_status_rel(s):
+                if s == "ABER NRAV": return "🔍 NRAV"
+                if s in _status_atraso: return "Realizado (Atraso)"
+                return "Realizado"
             df_rel = pd.DataFrame({
                 "OS": df_conc["Ordem servico"].astype(str),
+                "Status": df_conc["Status_norm"].apply(_rotulo_status_rel),
                 "Data Prog. (Data Inicial Programada)": pd.to_datetime(df_conc["dt_prog_filtro"], errors="coerce").dt.strftime("%d/%m/%Y").fillna(""),
                 "Patio": df_conc["Patio"].astype(str),
                 "Ativo": df_conc["Ativo"].astype(str),
