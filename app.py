@@ -1013,7 +1013,8 @@ def aplicar_filtros_sidebar(
     df_visao: pd.DataFrame, patios_selecionados: list, classif_selecionadas: list,
     turnos_selecionados: list, start_date, end_date, status_sel: str = "Todos", intervalo_sel: str = "Todas",
     crit_selecionadas: list | None = None, exec_start_date=None, exec_end_date=None,
-    grupos_ativo_selecionados: list | None = None, ativos_selecionados: list | None = None
+    grupos_ativo_selecionados: list | None = None, ativos_selecionados: list | None = None,
+    baixa_evidencia_sel: str = "Todas"
 ) -> pd.DataFrame:
     df = df_visao.copy()
     if "dt_prog_filtro" in df.columns:
@@ -1044,7 +1045,29 @@ def aplicar_filtros_sidebar(
         elif status_sel == "Concluídas com Atraso": df = df[df["Status_norm"].isin(_status_atraso)]
         elif status_sel == "Pendentes": df = df[df["Status_norm"].isin(_status_aberto)]
         elif status_sel == "Atrasado": df = df[df["Status_norm"] == "ATRASADO"]
+        # NOVO (30/07/2026): NRAV já é um Status_norm real ("ABER NRAV"). NAPL não tem status
+        # próprio (grava "Realizado" comum, por decisão do Julio de 30/07/2026) -- só dá pra
+        # isolar essas OS pela tag administrativa gravada em "Geolocalização de Baixa".
+        elif status_sel == "NRAV": df = df[df["Status_norm"] == "ABER NRAV"]
+        elif status_sel == "NAPL":
+            if "Geolocalização de Baixa" in df.columns:
+                df = df[df["Geolocalização de Baixa"].astype(str).str.strip() == "Baixa NAPL Manual"]
+            else:
+                df = df.iloc[0:0]
     if intervalo_sel != "Todas" and "Tipo_Intervalo" in df.columns: df = df[df["Tipo_Intervalo"] == intervalo_sel]
+    if baixa_evidencia_sel != "Todas" and "Geolocalização de Baixa" in df.columns:
+        _geo_f = df["Geolocalização de Baixa"].astype(str).str.strip()
+        _adm_f = _geo_f.isin({"Baixa IW47", "Importação IW47", "Baixa Manual", "Baixa NAPL Manual"})
+        _offline_f = _geo_f.str.startswith("Offline Sync -")
+        _tem_baixa_f = _geo_f != ""
+        if "Foto Evidência (URL)" in df.columns:
+            _tem_foto_f = df["Foto Evidência (URL)"].notna() & (df["Foto Evidência (URL)"].astype(str).str.strip() != "")
+        else:
+            _tem_foto_f = pd.Series(False, index=df.index)
+        if baixa_evidencia_sel == "Manual IW47": df = df[_adm_f]
+        elif baixa_evidencia_sel == "Com Evidência Offline": df = df[_offline_f & _tem_foto_f]
+        elif baixa_evidencia_sel == "Com Evidências Online": df = df[~_adm_f & ~_offline_f & _tem_baixa_f & _tem_foto_f]
+        elif baixa_evidencia_sel == "Sem Evidências": df = df[~_adm_f & _tem_baixa_f & ~_tem_foto_f]
     return df
 #endregion 3.6
 
@@ -4331,6 +4354,27 @@ def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, bai
         df_base["foto_evidencia"] = np.where(baixa_do_ciclo_atual, df_base["foto_evidencia_baixado"], _foto_base)
         df_base.drop(columns=["foto_evidencia_baixado"], inplace=True)
 
+    # NOVO (30/07/2026): "baixas.foto_evidencia" nunca é gravada por upsert_baixa (nem
+    # online nem offline) -- fica sempre vazia. A foto real fica na tabela 'evidencias'
+    # (chave os_referencia), então traz o link de lá para dar suporte ao filtro de sidebar
+    # "Baixa de OS" (Com/Sem Evidências). Mesma trava de ciclo vigente das demais colunas
+    # de baixa acima, senão uma foto de um ciclo já encerrado vazaria pra reprogramação atual.
+    try:
+        df_evid = carregar_evidencias_df()
+    except Exception:
+        df_evid = pd.DataFrame()
+    if not df_evid.empty and "os_referencia" in df_evid.columns:
+        df_evid = df_evid.drop_duplicates(subset=["os_referencia"], keep="last")
+        df_evid = df_evid.rename(columns={"os_referencia": "_os_evid", "foto_url": "_foto_url_evid"})
+        df_base = df_base.merge(df_evid[["_os_evid", "_foto_url_evid"]].assign(_os_evid=lambda d: d["_os_evid"].astype(str).str.strip()),
+                                 left_on="Ordem servico", right_on="_os_evid", how="left")
+        df_base.drop(columns=["_os_evid"], inplace=True, errors="ignore")
+    else:
+        df_base["_foto_url_evid"] = None
+    _tem_foto_evid_valida = df_base["_foto_url_evid"].notna() & (df_base["_foto_url_evid"].astype(str).str.strip() != "") & baixa_do_ciclo_atual
+    df_base["Foto Evidência (URL)"] = np.where(_tem_foto_evid_valida, df_base["_foto_url_evid"], None)
+    df_base.drop(columns=["_foto_url_evid"], inplace=True, errors="ignore")
+
     # _data_upload_ciclo é preservada (não derrubada aqui) porque a roteirização usa essa
     # coluna para o filtro de "Escopo de dados: Somente o ciclo mais recente" (config
     # operacional por coordenação) — ver seção de Roteirização e Mapa de Campo.
@@ -4555,7 +4599,8 @@ lista_planos_mes = (
 lista_classificacoes = ["Segurança", "Confiabilidade"]
 lista_criticidades = ["Muito Alta", "Alta", "Média", "Baixa"]
 lista_turnos = ["Turno Dia (07h-19h)", "Administrativo (08h-17h30)", "Turno Noite (19h-07h)", "Pendente (Sem Turno)"]
-status_opcoes = ["Todos", "Todas Concluídas", "Concluídas no Prazo", "Concluídas com Atraso", "Pendentes", "Atrasado"]
+status_opcoes = ["Todos", "Todas Concluídas", "Concluídas no Prazo", "Concluídas com Atraso", "Pendentes", "Atrasado", "NRAV", "NAPL"]
+baixa_evidencia_opcoes = ["Todas", "Com Evidências Online", "Com Evidência Offline", "Sem Evidências", "Manual IW47"]
 
 def _sanear_lista_filtro(chave: str, opcoes: list[str], padrao: list[str]):
     # Pega o que o usuário selecionou no st.multiselect
@@ -4604,6 +4649,7 @@ def fragmento_filtros_sidebar_seguro():
         st.session_state["filtro_turnos"] = list(lista_turnos)
         st.session_state["filtro_intervalo_sel"] = "Todas"
         st.session_state["filtro_status_sel"] = "Todos"
+        st.session_state["filtro_baixa_evidencia_sel"] = "Todas"
     st.session_state["_escopo_dos_filtros"] = st.session_state.get("escopo")
 
     if _escopo_mudou:
@@ -4657,6 +4703,7 @@ def fragmento_filtros_sidebar_seguro():
         # Intervalo e Status
         st.selectbox("Tipo de Intervalo", ["Todas", "Com Intervalo", "Sem Intervalo"], key="filtro_intervalo_sel")
         st.selectbox("Status da OS", status_opcoes, key="filtro_status_sel")
+        st.selectbox("Baixa de OS", baixa_evidencia_opcoes, key="filtro_baixa_evidencia_sel")
     
         # O botão fica DENTRO do form e SÓ para quem não é técnico
         submit_filtros = st.form_submit_button("✅ Aplicar Filtros", use_container_width=True, type="primary")
@@ -4696,6 +4743,7 @@ ativos_selecionados = st.session_state.get("filtro_ativos", list(lista_ativos))
 turnos_selecionados = st.session_state.get("filtro_turnos", list(lista_turnos))
 status_sel = st.session_state.get("filtro_status_sel", "Todos")
 intervalo_sel = st.session_state.get("filtro_intervalo_sel", "Todas")
+baixa_evidencia_sel = st.session_state.get("filtro_baixa_evidencia_sel", "Todas")
 
 # Base dos 4 cards do topo (região 9.3/9.4): sempre o Último Plano/Ciclo (maior
 # _data_upload_ciclo por Plano_Mes_Referencia, mesmo critério da query de planos_disponiveis,
@@ -4724,7 +4772,8 @@ if ultimo_plano is not None:
         classif_selecionadas=classif_selecionadas, turnos_selecionados=turnos_selecionados,
         start_date=_start_ultimo, end_date=_end_ultimo, status_sel=status_sel, intervalo_sel=intervalo_sel,
         crit_selecionadas=crit_selecionadas, exec_start_date=None, exec_end_date=None,
-        grupos_ativo_selecionados=grupos_ativo_selecionados, ativos_selecionados=ativos_selecionados
+        grupos_ativo_selecionados=grupos_ativo_selecionados, ativos_selecionados=ativos_selecionados,
+        baixa_evidencia_sel=baixa_evidencia_sel
     )
 else:
     df_kpi_topo = None  # sem dado de ciclo/upload -- região 9.3 cai para df_filtrado
@@ -4738,7 +4787,8 @@ df_filtrado = aplicar_filtros_sidebar(
     classif_selecionadas=classif_selecionadas, turnos_selecionados=turnos_selecionados,
     start_date=start_date, end_date=end_date, status_sel=status_sel, intervalo_sel=intervalo_sel,
     crit_selecionadas=crit_selecionadas, exec_start_date=exec_start_date, exec_end_date=exec_end_date,
-    grupos_ativo_selecionados=grupos_ativo_selecionados, ativos_selecionados=ativos_selecionados
+    grupos_ativo_selecionados=grupos_ativo_selecionados, ativos_selecionados=ativos_selecionados,
+    baixa_evidencia_sel=baixa_evidencia_sel
 )
 #endregion 7.3
 #endregion
