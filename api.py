@@ -217,7 +217,10 @@ def upsert_evidencia(ativo: str, atividade: str, foto_url: str, os_referencia: s
     finally:
         release_connection(conn)
 
-def upsert_baixa(os_id, status, realizado_em_str, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim):
+def upsert_baixa(os_id, status, realizado_em_str, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim, causa_nrav="", texto_confirmacao=""):
+    # causa_nrav/texto_confirmacao sempre entram no UPDATE (nao so no INSERT), mesmo vazios --
+    # mesma logica do upsert_baixa espelhado em app.py: limpa resquicio de NRAV anterior quando
+    # a OS e concluida de verdade depois.
     conn = get_connection()
     try:
         cur = conn.cursor()
@@ -226,9 +229,9 @@ def upsert_baixa(os_id, status, realizado_em_str, coordenacao, concluido_por, ge
             INSERT INTO baixas (
                 os, status, realizado_em, coordenacao, concluido_por,
                 geolocalizacao_baixa, equipe, data_inicio, hora_inicio,
-                data_fim, hora_fim, atualizado_em
+                data_fim, hora_fim, causa_nrav, texto_confirmacao, atualizado_em
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (os) DO UPDATE SET
                 status = EXCLUDED.status,
                 realizado_em = EXCLUDED.realizado_em,
@@ -239,9 +242,11 @@ def upsert_baixa(os_id, status, realizado_em_str, coordenacao, concluido_por, ge
                 hora_inicio = EXCLUDED.hora_inicio,
                 data_fim = EXCLUDED.data_fim,
                 hora_fim = EXCLUDED.hora_fim,
+                causa_nrav = EXCLUDED.causa_nrav,
+                texto_confirmacao = EXCLUDED.texto_confirmacao,
                 atualizado_em = NOW();
             """,
-            (str(os_id), str(status), str(realizado_em_str), str(coordenacao), str(concluido_por), str(geolocalizacao_baixa), str(equipe), str(data_inicio), str(hora_inicio), str(data_fim), str(hora_fim))
+            (str(os_id), str(status), str(realizado_em_str), str(coordenacao), str(concluido_por), str(geolocalizacao_baixa), str(equipe), str(data_inicio), str(hora_inicio), str(data_fim), str(hora_fim), str(causa_nrav), str(texto_confirmacao))
         )
         conn.commit()
         cur.close()
@@ -374,6 +379,13 @@ app_api.add_middleware(
     allow_headers=["*"]
 )
 
+# Codigos de Justificativa Padrao aceitos no NRAV (IT-ENG-3113) -- so impedimento EXTERNO.
+# E001 (Ativo Inativado) e E008 (Plano incompativel com o ativo) ficam de fora de proposito:
+# pelo documento oficial sao causa de "Nao se Aplica" (cadastro errado), nao de NRAV (vistoria
+# feita, impedimento externo). Mesma lista de app.py (_JUSTIFICATIVAS_NRAV) -- sem import
+# cruzado entre os dois arquivos, mantida em paralelo aqui.
+CODIGOS_NRAV_VALIDOS = {"E002", "E003", "E004", "E005", "E006", "E007", "E009", "E010", "E011"}
+
 init_connection_pool()
 
 # ==============================================================================
@@ -391,6 +403,9 @@ async def sincronizar_baixa_offline(
     acompanhante: str = Form(default=""),
     horario_inicio: str = Form(...),
     horario_fim: str = Form(...),
+    tipo_baixa: str = Form(default="CONCLUSAO"),
+    causa_nrav: str = Form(default=""),
+    texto_confirmacao: str = Form(default=""),
     foto: UploadFile = File(...)
 ):
     # 1) Origem do GPS: SOMENTE o navegador (localizacao obrigatoria no app).
@@ -426,6 +441,19 @@ async def sincronizar_baixa_offline(
     if dist_km > geofence_limite_km:
         raise HTTPException(status_code=403, detail=f"Bloqueio Geográfico: O apontamento foi realizado a {dist_km:.1f}km do ativo (Limite máximo: {geofence_limite_km:.1f}km). Verifique seu GPS.")
 
+    # 3.1) NRAV (Não Realizado Após Vistoria, IT-ENG-3113, pedido 29/07/2026): fluxo distinto
+    # da Conclusão -- valida ANTES do upload da foto (falha rápido, sem gastar upload pro
+    # Supabase à toa). Causa validada contra a lista server-side (não confia só no <select> do
+    # cliente) e Observações truncada em 38 chars (limite do campo "Txt. confirmação" do SAP).
+    tipo_baixa_norm = (tipo_baixa or "CONCLUSAO").strip().upper()
+    causa_nrav_norm = causa_nrav.strip().upper()
+    texto_confirmacao_norm = texto_confirmacao.strip()[:38]
+    if tipo_baixa_norm == "NRAV":
+        if causa_nrav_norm not in CODIGOS_NRAV_VALIDOS:
+            raise HTTPException(status_code=400, detail=f"Causa NRAV inválida ou não informada: '{causa_nrav}'.")
+        if not texto_confirmacao_norm:
+            raise HTTPException(status_code=400, detail="Observações (Texto de confirmação) obrigatórias para registrar NRAV.")
+
     # 4) Datas / horários
     hora_apontamento = datetime.fromisoformat(data_hora_local.replace("Z", "+00:00")).astimezone(timezone(timedelta(hours=-3)))
     equipe_formatada = acompanhante.strip() if acompanhante.strip() else "Sozinho"
@@ -452,18 +480,38 @@ async def sincronizar_baixa_offline(
         upsert_evidencia(ativo=ativo_id, atividade="Baixa Offline", foto_url=foto_b64, os_referencia=os_id, concluido_por=usuario, geolocalizacao=geo_string)
 
     # 7) Persistência da baixa (Sem a coluna de foto, respeitando o schema do banco)
+    # NRAV: status "ABER NRAV" (conta como Concluída na Meta, mas fica Aberta pro Backlog --
+    # já tratado em app.py, região 1.3); Hora Início/Fim Real fixas em "00:00:00" (formato
+    # exigido pelo export SAP), Data Início/Fim Real = data do apontamento (mesma data usada
+    # na Conclusão normal, não a data de sincronização).
+    data_ref_str = hora_apontamento.strftime("%d/%m/%Y")
+    if tipo_baixa_norm == "NRAV":
+        status_final = "ABER NRAV"
+        hora_inicio_final = "00:00:00"
+        hora_fim_final = "00:00:00"
+        causa_final = causa_nrav_norm
+        texto_final = texto_confirmacao_norm
+    else:
+        status_final = "Realizado"
+        hora_inicio_final = horario_inicio
+        hora_fim_final = horario_fim
+        causa_final = ""
+        texto_final = ""
+
     upsert_baixa(
         os_id=os_id,
-        status="Realizado",
+        status=status_final,
         realizado_em_str=formatar_dt_br(hora_apontamento),
         coordenacao=coordenacao_os,
         concluido_por=usuario,
         geolocalizacao_baixa=geo_string,
         equipe=equipe_formatada,
-        data_inicio=hora_apontamento.strftime("%d/%m/%Y"),
-        hora_inicio=horario_inicio,
-        data_fim=hora_apontamento.strftime("%d/%m/%Y"),
-        hora_fim=horario_fim
+        data_inicio=data_ref_str,
+        hora_inicio=hora_inicio_final,
+        data_fim=data_ref_str,
+        hora_fim=hora_fim_final,
+        causa_nrav=causa_final,
+        texto_confirmacao=texto_final,
     )
 
     return {"status": "sucesso", "os_id": os_id, "dist_km": round(float(dist_km), 2), "fonte_gps": fonte_gps, "auditoria": "OK"}

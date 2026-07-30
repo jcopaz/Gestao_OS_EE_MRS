@@ -146,6 +146,10 @@ _status_atraso = {"REALIZADO FORA DA DATA DE PROGRAMAÇÃO", "REALIZADO FORA DO 
 _status_aberto = {"NÃO REALIZADO", "NAO REALIZADO", "PENDENTE", "ATRASADO", "ABER NRAV", ""}
 _status_concluida_dashboard = _status_prazo | _status_atraso | {"ABER NRAV"}
 _status_aberto_dashboard = _status_aberto - {"ABER NRAV"}
+# Exportação SAP (região 3.4/3.8.4): ABER NRAV precisa sair no arquivo (é uma confirmação de
+# verdade pro SAP, com Causa/Texto de confirmação preenchidos) -- sem incluir aqui, a baixa
+# NRAV nunca aparecia no export (pedido 29/07/2026).
+_status_exportavel_sap = _status_prazo | _status_atraso | {"ABER NRAV"}
 #endregion 1.3
 
 #region 1.4: Inicialização do Banco de Dados (init_db)
@@ -264,6 +268,12 @@ def init_db():
             # baixa nova/atualizada tinha data lexicograficamente "menor" que o maximo ja no banco,
             # mantendo a OS aparecendo como pendente na Roteirizacao mesmo ja baixada (13/07/2026).
             cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS atualizado_em TIMESTAMP DEFAULT NOW();")
+            # Fluxo NRAV (Não Realizada Após Vistoria, IT-ENG-3113): causa_nrav guarda o codigo
+            # padrao (E002..E011) e texto_confirmacao a observacao livre (max 38 char, limite do
+            # campo "Txt. confirmação" do SAP) -- ficam NULL/vazio pra qualquer baixa que nao seja
+            # NRAV (pedido 29/07/2026).
+            cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS causa_nrav VARCHAR(10);")
+            cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS texto_confirmacao VARCHAR(38);")
         except Exception: conn.rollback()
         
         # Criar o admin mestre se não existir
@@ -644,18 +654,23 @@ def reverse_geocode_coordenada(lat: float, lon: float) -> str:
 #region 3.2: Persistência (SQLite/Neon)
 def upsert_baixa(os_id: str, status: str, realizado_em_str: str, coordenacao: str, concluido_por: str,
                 geolocalizacao_baixa: str = "", equipe: str = "", data_inicio: str = "", hora_inicio: str = "",
-                data_fim: str = "", hora_fim: str = ""):
+                data_fim: str = "", hora_fim: str = "", causa_nrav: str = "", texto_confirmacao: str = ""):
+    # causa_nrav/texto_confirmacao sempre entram no UPDATE (nao so no INSERT), mesmo vazios:
+    # se uma OS foi NRAV antes e agora esta sendo REALMENTE concluida, essa baixa nova precisa
+    # limpar o resquicio da NRAV anterior -- senao o proximo export SAP mostraria Causa/Texto de
+    # confirmação de uma OS que ja foi concluida normalmente.
     conn = get_connection()
     try:
         cur = conn.cursor()
         cur.execute("""
-            INSERT INTO baixas (os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim, atualizado_em)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            INSERT INTO baixas (os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim, causa_nrav, texto_confirmacao, atualizado_em)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (os) DO UPDATE SET
                 status = EXCLUDED.status, realizado_em = EXCLUDED.realizado_em, concluido_por = EXCLUDED.concluido_por,
                 geolocalizacao_baixa = EXCLUDED.geolocalizacao_baixa, equipe = EXCLUDED.equipe, data_inicio = EXCLUDED.data_inicio,
-                hora_inicio = EXCLUDED.hora_inicio, data_fim = EXCLUDED.data_fim, hora_fim = EXCLUDED.hora_fim, atualizado_em = NOW();
-        """, (str(os_id), str(status), str(realizado_em_str), str(coordenacao), str(concluido_por), str(geolocalizacao_baixa), str(equipe), str(data_inicio), str(hora_inicio), str(data_fim), str(hora_fim)))
+                hora_inicio = EXCLUDED.hora_inicio, data_fim = EXCLUDED.data_fim, hora_fim = EXCLUDED.hora_fim,
+                causa_nrav = EXCLUDED.causa_nrav, texto_confirmacao = EXCLUDED.texto_confirmacao, atualizado_em = NOW();
+        """, (str(os_id), str(status), str(realizado_em_str), str(coordenacao), str(concluido_por), str(geolocalizacao_baixa), str(equipe), str(data_inicio), str(hora_inicio), str(data_fim), str(hora_fim), str(causa_nrav), str(texto_confirmacao)))
         conn.commit()
         cur.close()
     finally: release_connection(conn)
@@ -767,18 +782,20 @@ MAPA_CENTRO_SAP = {
 }
 
 def gerar_excel_sap_bytes(df_filtrado_atual: pd.DataFrame) -> tuple[bytes, list[str]]:
-    df_concluidas = df_filtrado_atual[df_filtrado_atual["Status_norm"].isin(_status_prazo | _status_atraso)].copy()
+    # _status_exportavel_sap (não só _status_prazo | _status_atraso): inclui ABER NRAV, senão a
+    # baixa NRAV nunca aparece no arquivo -- ver região 1.3 (pedido 29/07/2026).
+    df_concluidas = df_filtrado_atual[df_filtrado_atual["Status_norm"].isin(_status_exportavel_sap)].copy()
     if df_concluidas.empty: return b"", []
 
     lista_os = df_concluidas["Ordem servico"].astype(str).tolist()
     conn = get_connection()
     try:
         if len(lista_os) == 1:
-            query = "SELECT os, data_inicio, hora_inicio, data_fim, hora_fim, concluido_por, equipe, coordenacao FROM baixas WHERE os = %s"
+            query = "SELECT os, data_inicio, hora_inicio, data_fim, hora_fim, concluido_por, equipe, coordenacao, causa_nrav, texto_confirmacao FROM baixas WHERE os = %s"
             df_detalhes = pd.read_sql_query(query, conn, params=(lista_os[0],))
         else:
             placeholders = ",".join(["%s"] * len(lista_os))
-            query = f"SELECT os, data_inicio, hora_inicio, data_fim, hora_fim, concluido_por, equipe, coordenacao FROM baixas WHERE os IN ({placeholders})"
+            query = f"SELECT os, data_inicio, hora_inicio, data_fim, hora_fim, concluido_por, equipe, coordenacao, causa_nrav, texto_confirmacao FROM baixas WHERE os IN ({placeholders})"
             df_detalhes = pd.read_sql_query(query, conn, params=tuple(lista_os))
     finally: release_connection(conn)
 
@@ -879,6 +896,10 @@ def gerar_excel_sap_bytes(df_filtrado_atual: pd.DataFrame) -> tuple[bytes, list[
         'Hora Inicio Real': df_sap_explodido['hora_inicio'].values,
         'Data Fim Real': df_sap_explodido['data_fim'].astype(str).str.replace('/', '.').values,
         'Hora Fim Real': df_sap_explodido['hora_fim'].values,
+        # Colunas AC/AD (pedido 29/07/2026): em branco pra qualquer baixa que não seja NRAV --
+        # causa_nrav/texto_confirmacao só vêm preenchidos no banco pra essas.
+        'Causa': df_sap_explodido['causa_nrav'].fillna("").values,
+        'Texto de confirmação': df_sap_explodido['texto_confirmacao'].fillna("").values,
     })
 
     col_names = []
@@ -1360,7 +1381,10 @@ def render_tela_admin():
                               AND TO_TIMESTAMP(realizado_em, 'DD/MM/YYYY HH24:MI') < %s
                             """,
                             (
-                                tuple(_status_prazo | _status_atraso),
+                                # _status_exportavel_sap (não só prazo|atraso): inclui ABER NRAV
+                                # -- senão a baixa NRAV nunca entra na consulta por período,
+                                # antes mesmo de chegar em gerar_excel_sap_bytes (29/07/2026).
+                                tuple(_status_exportavel_sap),
                                 datetime.combine(sap_data_ini, datetime.min.time()),
                                 datetime.combine(sap_data_fim + timedelta(days=1), datetime.min.time()),
                             )
@@ -2559,6 +2583,11 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         coordenacao_pacote = "Paranapiacaba"
     trava_prioridade_ativa_pacote = carregar_config_operacional(coordenacao_pacote)["trava_prioridade_ativa"]
 
+    # Justificativas do NRAV embutidas como JSON (mesmo padrao de usuarios_json acima) -- fonte
+    # unica com _JUSTIFICATIVAS_NRAV (usado no fluxo Online, região 10.3.3), so impedimento
+    # EXTERNO (sem E001/E008, que sao "Nao se Aplica" pelo IT-ENG-3113).
+    justificativas_nrav_json = json.dumps(_JUSTIFICATIVAS_NRAV, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
+
     html_head = f"""<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -2626,6 +2655,13 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         .chip-critical {{ background: #FEE2E2; color: #991B1B; }}
         .os-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
         body.modo-horario-unico .os-time-individual {{ display: none; }}
+        /* Modo NRAV (Não Realizado Após Vistoria, pedido 29/07/2026): esconde os campos de
+        horário (Concluir) e mostra Justificativa Padrão + Observações; !important porque
+        aplicarModoHorarioUnico() também mexe no display inline do #blocoHorarioUnico. */
+        body.modo-nrav #blocoHorarioUnico {{ display: none !important; }}
+        body.modo-nrav .field-horario-unico-toggle {{ display: none !important; }}
+        body.modo-nrav .os-time-individual {{ display: none !important; }}
+        body:not(.modo-nrav) .os-nrav-fields {{ display: none !important; }}
         .os-meta {{ font-size: 13px; color: #475569; margin: 4px 0; }}
         .desc-box {{ padding: 10px; background: #F8FAFC; border-radius: 10px; border: 1px solid #E2E8F0; font-size: 13px; color: #334155; }}
         .small {{ font-size: 12px; color: #64748B; }}
@@ -2721,6 +2757,14 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                         </div>
                     </div>
                     <div class="field">
+                        <label>🧭 Tipo de Registro</label>
+                        <div class="toolbar" style="gap:6px;">
+                            <button type="button" id="btnModoConcluir" class="btn btn-primary">✅ Concluir</button>
+                            <button type="button" id="btnModoNrav" class="btn btn-secondary">🔍 NRAV</button>
+                        </div>
+                        <div class="small">NRAV = vistoria feita, mas não concluída por impedimento externo (linha ocupada, chave taramelada etc.). Fluxo distinto da Conclusão — não dá pra gravar os dois tipos juntos no mesmo clique.</div>
+                    </div>
+                    <div class="field">
                         <label>👥 Acompanhante / Equipe (aplica a todas as OS — vazio = sozinho)</label>
                         <div class="ms" id="msEquipe">
                             <button type="button" class="ms-btn" id="msEquipeBtn">Sozinho (Nenhum) ▾</button>
@@ -2732,7 +2776,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                     </div>
                 </div>
 
-                <div class="field" style="margin-top: 12px;">
+                <div class="field field-horario-unico-toggle" style="margin-top: 12px;">
                     <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
                         <input type="checkbox" id="horarioUnicoGlobal" checked style="width:auto; transform: scale(1.3);">
                         ⏱️ Usar um único horário para todas as OS (baixa em massa)
@@ -2791,12 +2835,16 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     const API_URL_FIXA = {json.dumps(api_url_fixa, ensure_ascii=False)};
     const API_KEY_FIXA = {json.dumps(api_key_fixa, ensure_ascii=False)};
     const TRAVA_PRIORIDADE_ATIVA = {json.dumps(trava_prioridade_ativa_pacote)};
+    const JUSTIFICATIVAS_NRAV = {justificativas_nrav_json};
 
     const DB_NAME = "sgo_mrs_offline_prod";
     const STORE_NAME = "apontamentos";
     let db = null;
     let gpsAtual = null;
     let filtroIntervalo = "";
+    // "CONCLUSAO" (padrao) ou "NRAV" -- alterna quais campos aparecem no card de cada OS e
+    // qual funcao de gravacao roda ao tocar "Gravar" (pedido 29/07/2026, fluxos distintos).
+    let modoRegistro = "CONCLUSAO";
     // OS ja gravadas na fila local (pendentes ou sincronizadas). Usado para NAO reexibir
     // uma OS baixada quando a lista e reconstruida (troca de filtro / reabertura do pacote).
     let osGravadasSet = new Set();
@@ -2834,6 +2882,21 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             if (b) b.className = "btn " + (ativos[val] === id ? "btn-primary" : "btn-secondary");
         }});
         renderListaOS();
+    }}
+
+    // Alterna entre "Concluir" (padrao) e "NRAV" -- so troca visibilidade via classe no
+    // <body> (CSS ja definido no <head>) e o texto do botao de gravar; os campos das duas
+    // secoes ficam SEMPRE no DOM (so escondidos), entao renderListaOS() nao precisa saber
+    // o modo atual.
+    function setModoRegistro(modo) {{
+        modoRegistro = modo;
+        document.body.classList.toggle("modo-nrav", modo === "NRAV");
+        const bConcluir = document.getElementById("btnModoConcluir");
+        const bNrav = document.getElementById("btnModoNrav");
+        if (bConcluir) bConcluir.className = "btn " + (modo === "CONCLUSAO" ? "btn-primary" : "btn-secondary");
+        if (bNrav) bNrav.className = "btn " + (modo === "NRAV" ? "btn-primary" : "btn-secondary");
+        const btnSalvar = document.getElementById("btnSalvarLote");
+        if (btnSalvar) btnSalvar.textContent = modo === "NRAV" ? "🔍 Gravar NRAV(s)" : "💾 Gravar OS(s) Preenchida(s)";
     }}
 
     function abrirDB() {{
@@ -3070,6 +3133,10 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             criticaAlertEl.style.display = "none";
         }}
 
+        const opcoesJustificativaNravHtml = '<option value="">-- Selecione --</option>' + Object.entries(JUSTIFICATIVAS_NRAV)
+            .map(([cod, desc]) => `<option value="${{cod}}">${{cod}} - ${{desc}}</option>`)
+            .join("");
+
         listaBase.forEach((item) => {{
             const idx = item._origIdx;
             const osId = String(item["Ordem servico"] || "").trim();
@@ -3117,6 +3184,17 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                     <div class="field">
                         <label for="fim_${{idx}}">Horário Fim</label>
                         <input id="fim_${{idx}}" type="time" ${{locked ? "disabled" : ""}}>
+                    </div>
+                </div>
+
+                <div class="os-grid os-nrav-fields" style="margin-top: 10px;">
+                    <div class="field">
+                        <label for="causa_${{idx}}">Justificativa Padrão</label>
+                        <select id="causa_${{idx}}" ${{locked ? "disabled" : ""}}>${{opcoesJustificativaNravHtml}}</select>
+                    </div>
+                    <div class="field">
+                        <label for="obs_${{idx}}">Observações (máx. 38 caracteres)</label>
+                        <input id="obs_${{idx}}" type="text" maxlength="38" ${{locked ? "disabled" : ""}}>
                     </div>
                 </div>
 
@@ -3388,6 +3466,107 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         alert(`✅ ${{selecionadas.length}} OS movida(s) para a fila de envio.`);
     }}
 
+    // Espelha salvarSelecionadasNoLote(), mas le Justificativa Padrao + Observacoes em vez de
+    // horario -- funcao SEPARADA (nao um "if" dentro da existente) pra nao arriscar a logica
+    // de Conclusao ja em producao. Grava tipo_baixa:"NRAV" no IndexedDB; Data/Hora Real
+    // ficam fixas (hoje, 00:00:00) igual ao fluxo Online (pedido 29/07/2026, formato exigido
+    // pelo export SAP).
+    async function salvarSelecionadasNoLoteNRAV() {{
+        if (!gpsAtual) {{
+            await capturarGPS();
+        }}
+        if (!gpsAtual) {{
+            alert("⛔ Localização obrigatória. Toque em '📍 Atualizar GPS Atual' com a localização do aparelho ativada antes de gravar. Se estiver no arquivo local, abra o pacote pelo atalho HTTPS/PWA.");
+            return;
+        }}
+
+        const acompanhanteGlobal = (msEquipe ? msEquipe.getSelected() : []).join(", ");
+        const hojeBr = (function () {{
+            const p = HOJE_ISO.split("-");
+            return p.length === 3 ? `${{p[2]}}/${{p[1]}}/${{p[0]}}` : "";
+        }})();
+
+        const selecionadas = [];
+        const indicesParaLimpar = [];
+        let incompletas = 0;
+
+        for (let i = 0; i < OS_DATA.length; i += 1) {{
+            if (!document.getElementById(`card_os_${{i}}`)) continue;
+
+            const elCausa = document.getElementById(`causa_${{i}}`);
+            const elObs = document.getElementById(`obs_${{i}}`);
+            const causaVal = elCausa ? elCausa.value : "";
+            const obsVal = elObs ? elObs.value.trim() : "";
+            const fileInput = document.getElementById(`foto_${{i}}`);
+            const fotoOriginal = (fileInput && fileInput.files && fileInput.files.length > 0) ? fileInput.files[0] : null;
+            const osItem = OS_DATA[i];
+
+            const algumPreenchido = causaVal || obsVal || fotoOriginal;
+            if (!algumPreenchido) continue;
+
+            if (!(causaVal && obsVal && fotoOriginal)) {{
+                incompletas += 1;
+                continue;
+            }}
+
+            const fotoTratada = await comprimirImagemArquivo(fotoOriginal);
+
+            selecionadas.push({{
+                os_id: String(osItem["Ordem servico"] || "").trim(),
+                ativo_id: String(osItem["Ativo"] || "").trim(),
+                usuario: USUARIO_LOGADO,
+                acompanhante: acompanhanteGlobal,
+                tipo_baixa: "NRAV",
+                causa_nrav: causaVal,
+                texto_confirmacao: obsVal,
+                horario_inicio: "00:00:00",
+                horario_fim: "00:00:00",
+                data_inicio_exec: hojeBr,
+                data_fim_exec: hojeBr,
+                data_hora_local: new Date().toISOString(),
+                lat_browser: gpsAtual.lat,
+                lon_browser: gpsAtual.lon,
+                criticidade: String(osItem["Criticidade"] || "").trim(),
+                status_sync: "pendente",
+                foto_blob: fotoTratada,
+                foto_nome: fotoTratada && fotoTratada.name ? fotoTratada.name : "evidencia.jpg",
+                criado_em: new Date().toISOString()
+            }});
+
+            indicesParaLimpar.push(i);
+        }}
+
+        if (!selecionadas.length) {{
+            if (incompletas > 0) {{
+                alert(`Existem ${{incompletas}} OS com Justificativa/Observação/foto preenchidas parcialmente. Preencha a Justificativa Padrão, as Observações e anexe a foto antes de gravar.`);
+            }} else {{
+                alert("Nenhuma OS preenchida para gravação de NRAV.");
+            }}
+            return;
+        }}
+
+        await Promise.all(
+            selecionadas.map((item) => new Promise((resolve, reject) => {{
+                const req = txStore("readwrite").put(item);
+                req.onsuccess = () => resolve(true);
+                req.onerror = () => reject(req.error);
+            }}))
+        );
+
+        selecionadas.forEach((it) => osGravadasSet.add(String(it.os_id).trim()));
+
+        indicesParaLimpar.forEach((i) => {{
+            const cardOS = document.getElementById(`card_os_${{i}}`);
+            if (cardOS) {{
+                cardOS.style.display = "none";
+            }}
+        }});
+
+        await atualizarFila();
+        setSyncMsg(`${{selecionadas.length}} OS registrada(s) como NRAV localmente com sucesso.`, "blue");
+        alert(`✅ ${{selecionadas.length}} OS movida(s) para a fila de envio (NRAV).`);
+    }}
+
     async function atualizarFila() {{
         return new Promise((resolve, reject) => {{
             const req = txStore("readonly").getAll();
@@ -3497,10 +3676,16 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                     formData.append("lon_browser", String(item.lon_browser || 0.0));
                     formData.append("data_hora_local", item.data_hora_local);
                     formData.append("acompanhante", item.acompanhante || "");
-                    formData.append("horario_inicio", item.horario_inicio);
-                    formData.append("horario_fim", item.horario_fim);
+                    formData.append("horario_inicio", item.horario_inicio || "");
+                    formData.append("horario_fim", item.horario_fim || "");
                     formData.append("data_inicio_exec", item.data_inicio_exec || "");
                     formData.append("data_fim_exec", item.data_fim_exec || "");
+                    // NRAV (pedido 29/07/2026): tipo_baixa + causa/observacao sempre enviados
+                    // (vazios em item Conclusao normal) -- servidor decide o que fazer com base
+                    // em tipo_baixa.
+                    formData.append("tipo_baixa", item.tipo_baixa || "CONCLUSAO");
+                    formData.append("causa_nrav", item.causa_nrav || "");
+                    formData.append("texto_confirmacao", item.texto_confirmacao || "");
                     formData.append("foto", item.foto_blob, item.foto_nome || "evidencia.jpg");
 
                     const resp = await fetch(apiUrl, {{
@@ -3587,9 +3772,14 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         document.getElementById("btnIntCI").addEventListener("click", () => setFiltroIntervalo("Com Intervalo"));
         document.getElementById("btnIntSI").addEventListener("click", () => setFiltroIntervalo("Sem Intervalo"));
         document.getElementById("btnCapturarGps").addEventListener("click", capturarGPS);
-        document.getElementById("btnSalvarLote").addEventListener("click", salvarSelecionadasNoLote);
+        document.getElementById("btnSalvarLote").addEventListener("click", () => {{
+            if (modoRegistro === "NRAV") {{ salvarSelecionadasNoLoteNRAV(); }} else {{ salvarSelecionadasNoLote(); }}
+        }});
         document.getElementById("btnSync").addEventListener("click", sincronizarFila);
         document.getElementById("btnClear").addEventListener("click", limparFila);
+        document.getElementById("btnModoConcluir").addEventListener("click", () => setModoRegistro("CONCLUSAO"));
+        document.getElementById("btnModoNrav").addEventListener("click", () => setModoRegistro("NRAV"));
+        setModoRegistro("CONCLUSAO");
 
         // Horario unico (baixa em massa): default = ativado. Um horario replica p/ todas as OS.
         const diG = document.getElementById("dataIniGlobal");
@@ -4200,7 +4390,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v14.17.0")
+st.sidebar.caption("SGO Eletroeletrônica • v15.0.0")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -6918,6 +7108,325 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
             time.sleep(1.5)
             st.rerun()
 
+# Justificativas padrao do NRAV (IT-ENG-3113): so os codigos de impedimento EXTERNO (linha
+# ocupada, chave taramelada, chuva, falta de material/efetivo/intervalo, area interditada/ZAS,
+# tabela desviada, animais peconhentos). E001 (Ativo Inativado) e E008 (Plano incompativel com
+# o ativo) ficam de fora de proposito -- pelo documento oficial sao causa de "Nao se Aplica"
+# (cadastro errado), nao de NRAV (vistoria feita, impedimento externo); confirmado com o
+# usuario em 29/07/2026.
+_JUSTIFICATIVAS_NRAV = {
+    "E002": "Baixo Efetivo", "E003": "Chave taramelada", "E004": "Chuva, intemperes",
+    "E005": "Falta de Material", "E006": "Falta de intervalo", "E007": "Local interditado temporariamente",
+    "E009": "Região ZAS", "E010": "Tabela desviada", "E011": "Animais peçonhentos",
+}
+
+def _render_apontamento_nrav(df_recomendado_ui: pd.DataFrame):
+    # Fluxo DISTINTO da Conclusão (pedido 29/07/2026, IT-ENG-3113): NRAV = a equipe foi a campo,
+    # fez a vistoria, mas não conseguiu concluir por um impedimento EXTERNO (linha ocupada, chave
+    # taramelada etc.). Grava status "ABER NRAV" -- já tratado em todo o resto do app (região 1.3)
+    # como Concluída pra Meta/Taxa de Conclusão, mas Aberta pra Roteirização/Cronograma/pendências
+    # (a OS volta como Backlog). Seleção de OS, equipe e fotos são PRÓPRIAS desta seção -- não
+    # compartilha estado com a Conclusão, então não dá pra concluir e NRAV as mesmas OS junto.
+    if st.session_state.pop("_apontamento_nrav_retry_falhas", False):
+        st.session_state["campo_os_nrav_selecionadas"] = st.session_state.pop("_apontamento_nrav_os_falhas", [])
+    _falhas_anteriores_nrav = st.session_state.pop("_apontamento_nrav_falhas_relatorio", None)
+
+    st.markdown("---")
+    st.markdown("#### 🔍 Registrar NRAV (Não Realizado Após Vistoria)")
+    st.caption(
+        "Use quando a equipe foi a campo, fez a vistoria, mas não conseguiu concluir por um "
+        "impedimento externo (ex.: linha ocupada, chave taramelada). A OS conta como Concluída "
+        "na Meta do mês, mas continua pendente no Backlog para conclusão em outro momento."
+    )
+    if _falhas_anteriores_nrav:
+        st.error(f"⛔ {len(_falhas_anteriores_nrav)} OS NÃO tiveram o NRAV gravado (evidência falhou) — corrija a foto e reenvie:")
+        for _os_falha, _motivo in _falhas_anteriores_nrav:
+            st.warning(f"OS {_os_falha}: {_motivo}")
+    if df_recomendado_ui.empty:
+        st.info("Nenhuma OS encontrada para os filtros selecionados.")
+        return
+
+    # Mesma trava de Foco Operacional (Muito Alta) da Conclusão -- recalculada aqui (não
+    # reaproveitada de _render_apontamento) pra manter as duas seções 100% independentes.
+    _ativo_g = df_recomendado_ui["Ativo"].astype(str).str.strip()
+    if "Tipo_Intervalo" in df_recomendado_ui.columns:
+        _int_g = df_recomendado_ui["Tipo_Intervalo"].fillna("N/D").astype(str).str.strip()
+    else:
+        _int_g = pd.Series("N/D", index=df_recomendado_ui.index)
+    _grupo_bloq = _ativo_g + " | " + _int_g
+    mask_critica = (df_recomendado_ui["Criticidade_rank"] == 1)
+    grupos_bloqueados = set(_grupo_bloq[mask_critica].unique())
+
+    if "Coordenacao" in df_recomendado_ui.columns:
+        _coord_row = df_recomendado_ui["Coordenacao"].fillna("Paranapiacaba").astype(str).str.strip()
+    else:
+        _coord_row = pd.Series("Paranapiacaba", index=df_recomendado_ui.index)
+    _trava_por_coord = {c: carregar_config_operacional(c)["trava_prioridade_ativa"] for c in _coord_row.unique()}
+    _trava_ativa_row = _coord_row.map(_trava_por_coord).fillna(True)
+
+    if grupos_bloqueados:
+        mask_liberada = mask_critica | (~_grupo_bloq.isin(grupos_bloqueados)) | (~_trava_ativa_row)
+        opcoes_os_nrav = df_recomendado_ui[mask_liberada]["Ordem servico"].astype(str).unique().tolist()
+    else:
+        opcoes_os_nrav = df_recomendado_ui["Ordem servico"].astype(str).unique().tolist()
+
+    os_selecionadas_nrav = st.multiselect(
+        "1. Selecione as OSs para registrar NRAV:",
+        opcoes_os_nrav,
+        key="campo_os_nrav_selecionadas"
+    )
+    if not os_selecionadas_nrav:
+        return
+
+    conn = get_connection()
+    try:
+        df_users_equipe = pd.read_sql_query("SELECT username, escopo FROM usuarios", conn)
+    finally:
+        release_connection(conn)
+    escopo_logado = st.session_state.get("escopo", "Todas")
+    if escopo_logado != "Todas" and "escopo" in df_users_equipe.columns:
+        df_users_equipe = df_users_equipe[df_users_equipe["escopo"].astype(str).str.strip() == str(escopo_logado).strip()]
+    lista_equipe_disp = df_users_equipe["username"].dropna().astype(str).tolist()
+    usr_logado = st.session_state.get("username", "")
+    if usr_logado in lista_equipe_disp:
+        lista_equipe_disp.remove(usr_logado)
+
+    equipe_selecionada_nrav = st.multiselect(
+        "2. Selecione a sua equipe:",
+        lista_equipe_disp,
+        key="campo_equipe_nrav_selecionada"
+    )
+
+    st.markdown("---")
+    st.markdown("#### 📷 Evidências Fotográficas")
+    st.caption("Registre a evidência de cada OS. A imagem será comprimida automaticamente.")
+    st.markdown(_CSS_CARD_OS, unsafe_allow_html=True)
+
+    # Mesmo padrao de sequenciamento por DESABILITAR (nao esconder) do form de Conclusão --
+    # ver comentario original em _render_apontamento sobre o incidente de 16/07/2026.
+    fotos_por_os_nrav = {}
+    _bloqueado_nrav = False
+    for _idx_foto, _os_id_raw in enumerate(os_selecionadas_nrav, start=1):
+        _os_id_foto = str(_os_id_raw).strip()
+        _linha_card = df_recomendado_ui.loc[
+            df_recomendado_ui["Ordem servico"].astype(str).str.strip() == _os_id_foto
+        ]
+        if not _linha_card.empty:
+            st.markdown(_card_os_html(_linha_card.iloc[0]), unsafe_allow_html=True)
+        _arquivo = st.file_uploader(
+            f"📸 Evidência da OS {_os_id_foto} ({_idx_foto}/{len(os_selecionadas_nrav)})",
+            type=["jpg", "jpeg", "png"],
+            key=f"foto_nrav_{_os_id_foto}",
+            disabled=_bloqueado_nrav
+        )
+        fotos_por_os_nrav[_os_id_foto] = _arquivo
+        if _arquivo is None and not _bloqueado_nrav:
+            _bloqueado_nrav = True
+
+    with st.form("form_apontamento_nrav"):
+        justificativas_nrav = {}
+        observacoes_nrav = {}
+        todos_preenchidos_nrav = True
+        st.markdown("#### 🔍 Justificativa da NRAV (por OS)")
+        _opcoes_justificativa = ["-- Selecione --"] + [f"{cod} - {desc}" for cod, desc in _JUSTIFICATIVAS_NRAV.items()]
+        for os_id_raw in os_selecionadas_nrav:
+            os_id = str(os_id_raw).strip()
+            st.markdown(f"**OS: {os_id}**")
+            c1, c2 = st.columns([1, 1])
+            with c1:
+                _sel = st.selectbox(
+                    "Justificativa Padrão", _opcoes_justificativa,
+                    key=f"justificativa_nrav_{os_id}"
+                )
+            with c2:
+                _obs = st.text_input(
+                    "Observações (máx. 38 caracteres)", key=f"observacao_nrav_{os_id}",
+                    max_chars=38
+                )
+            justificativas_nrav[os_id] = _sel
+            observacoes_nrav[os_id] = _obs
+            if _sel == "-- Selecione --" or not _obs.strip():
+                todos_preenchidos_nrav = False
+
+        st.markdown(
+            """
+            <style>
+            .st-key-btn_registrar_nrav button {
+                background-color: #D97706 !important;
+                color: #FFFFFF !important;
+                border-color: #D97706 !important;
+            }
+            .st-key-btn_registrar_nrav button:hover {
+                background-color: #B45309 !important;
+                border-color: #B45309 !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+        submit_nrav = st.form_submit_button(
+            "🔍 Registrar NRAV",
+            use_container_width=True,
+            key="btn_registrar_nrav"
+        )
+
+        if submit_nrav:
+            origem = st.session_state.get("origem_tipo", "BASE")
+            if origem != "GPS":
+                st.warning("📍 A geolocalização é obrigatória. Atualize sua posição.")
+                return
+
+            if not todos_preenchidos_nrav:
+                st.warning("⚠️ Preencha a Justificativa Padrão e as Observações de todas as OS.")
+                return
+
+            os_sem_foto_nrav = [
+                os_id_raw for os_id_raw in os_selecionadas_nrav
+                if fotos_por_os_nrav.get(str(os_id_raw).strip()) is None
+            ]
+            if os_sem_foto_nrav:
+                st.warning(
+                    "📷 Evidência fotográfica obrigatória. Anexe a foto antes de registrar NRAV na(s) OS: "
+                    + ", ".join(str(o) for o in os_sem_foto_nrav)
+                )
+                return
+
+            # Geofence 2,0km (Haversine): mesma trava da Conclusão (região 10.3.3).
+            lat_atual = st.session_state.get("lat_partida")
+            lon_atual = st.session_state.get("lon_partida")
+            os_fora_raio_nrav = []
+            os_sem_geo_nrav = []
+            for os_id_raw in os_selecionadas_nrav:
+                os_id_geo = str(os_id_raw).strip()
+                df_match_geo = st.session_state["df_os"].loc[
+                    st.session_state["df_os"]["Ordem servico"].astype(str).str.strip() == os_id_geo
+                ]
+                if df_match_geo.empty or lat_atual is None or lon_atual is None:
+                    os_sem_geo_nrav.append(os_id_geo)
+                    continue
+                patio_geo = str(df_match_geo["Patio"].iloc[0]).strip().upper() if "Patio" in df_match_geo.columns else ""
+                coord_ativo = COORDENADAS_FIXAS.get(patio_geo)
+                if coord_ativo is None:
+                    os_sem_geo_nrav.append(os_id_geo)
+                    continue
+                coord_os = str(df_match_geo["Coordenacao"].iloc[0]).strip() if "Coordenacao" in df_match_geo.columns else "Paranapiacaba"
+                geofence_limite = carregar_config_operacional(coord_os)["geofence_km"]
+                dist_km = haversine_vectorized(lat_atual, lon_atual, pd.Series([coord_ativo[0]]), pd.Series([coord_ativo[1]]))[0]
+                if dist_km > geofence_limite:
+                    os_fora_raio_nrav.append(f"{os_id_geo} ({dist_km:.1f}km, limite {geofence_limite:.1f}km)")
+
+            if os_sem_geo_nrav:
+                st.error(
+                    "⛔ Não foi possível confirmar a localização do pátio para a(s) OS: "
+                    + ", ".join(os_sem_geo_nrav) + ". Contate o suporte antes de registrar NRAV."
+                )
+                return
+
+            if os_fora_raio_nrav:
+                st.error(
+                    "⛔ Bloqueio Geográfico: o registro de NRAV só é permitido dentro do limite configurado para a coordenação (Haversine). "
+                    "Fora do raio: " + ", ".join(os_fora_raio_nrav)
+                )
+                return
+
+            geo_baixa_nrav = (
+                f"{st.session_state.get('local_nome', 'Local')} "
+                f"(Lat: {st.session_state.get('lat_partida')}, Lon: {st.session_state.get('lon_partida')})"
+            )
+            equipe_str_nrav = ", ".join(equipe_selecionada_nrav) if equipe_selecionada_nrav else "Sozinho"
+            # Data Início/Fim Real = hoje, Hora Início/Fim Real = 00:00:00 (pedido 29/07/2026,
+            # formato exigido pelo export SAP para confirmação NRAV) -- diferente de
+            # realizado_em_str abaixo, que usa o horário REAL do registro (usado no resto do
+            # app: Dashboard, Realizado 24h, período da Exportação SAP -- precisa refletir
+            # quando a NRAV foi de fato registrada, não meia-noite).
+            agora_ref_nrav = agora_dt().replace(tzinfo=None)
+            hoje_str_nrav = agora_ref_nrav.strftime("%d/%m/%Y")
+
+            fotos_enviadas_nrav = 0
+            os_com_falha_nrav = []
+            total_selecionadas_nrav = len(os_selecionadas_nrav)
+            barra_upload_nrav = st.progress(0, text=f"Enviando evidências e registrando NRAV... 0/{total_selecionadas_nrav}")
+
+            for idx_upload, os_id_raw in enumerate(os_selecionadas_nrav, start=1):
+                os_id = str(os_id_raw).strip()
+                barra_upload_nrav.progress(
+                    (idx_upload - 1) / total_selecionadas_nrav,
+                    text=f"Enviando evidências e registrando NRAV... {idx_upload}/{total_selecionadas_nrav} (OS {os_id})"
+                )
+                foto_da_os = fotos_por_os_nrav.get(os_id)
+
+                if foto_da_os is None:
+                    os_com_falha_nrav.append((os_id, "Evidência fotográfica não encontrada."))
+                    continue
+
+                try:
+                    df_match = st.session_state["df_os"].loc[
+                        st.session_state["df_os"]["Ordem servico"].astype(str).str.strip() == os_id
+                    ]
+                    if df_match.empty:
+                        os_com_falha_nrav.append((os_id, "OS não encontrada na base carregada."))
+                        continue
+
+                    ativo_val = str(df_match["Ativo"].iloc[0]).strip()
+                    atividade_val = (
+                        str(df_match["Atividade ativo"].iloc[0]).strip()
+                        if "Atividade ativo" in df_match.columns else "N_A"
+                    )
+
+                    nome_foto = _sanear_nome_arquivo(f"{ativo_val}__{atividade_val}__OS{os_id}_NRAV.jpg")
+                    url_foto = upload_foto_supabase(foto_da_os.getvalue(), nome_foto)
+
+                    upsert_evidencia(
+                        ativo=ativo_val,
+                        atividade=atividade_val,
+                        foto_url=url_foto,
+                        os_referencia=os_id,
+                        concluido_por=usr_logado,
+                        geolocalizacao=(
+                            f"Lat: {st.session_state.get('lat_partida')}, "
+                            f"Lon: {st.session_state.get('lon_partida')}"
+                        )
+                    )
+
+                    coord = df_match["Coordenacao"].iloc[0] if "Coordenacao" in df_match.columns else "Campo"
+                    _codigo_causa = justificativas_nrav[os_id].split(" - ")[0].strip()
+
+                    upsert_baixa(
+                        os_id=os_id,
+                        status="ABER NRAV",
+                        realizado_em_str=formatar_dt_br(agora_ref_nrav),
+                        coordenacao=coord,
+                        concluido_por=usr_logado,
+                        geolocalizacao_baixa=geo_baixa_nrav,
+                        equipe=equipe_str_nrav,
+                        data_inicio=hoje_str_nrav,
+                        hora_inicio="00:00:00",
+                        data_fim=hoje_str_nrav,
+                        hora_fim="00:00:00",
+                        causa_nrav=_codigo_causa,
+                        texto_confirmacao=observacoes_nrav[os_id].strip(),
+                    )
+                    fotos_enviadas_nrav += 1
+
+                except Exception as e_foto:
+                    os_com_falha_nrav.append((os_id, str(e_foto)))
+
+            barra_upload_nrav.progress(1.0, text="Concluído.")
+            barra_upload_nrav.empty()
+
+            if fotos_enviadas_nrav > 0:
+                st.info(f"🔍 {fotos_enviadas_nrav} OS registrada(s) como NRAV com sucesso! Contam como Concluída na Meta, mas seguem no Backlog.")
+
+            if os_com_falha_nrav:
+                st.session_state["_apontamento_nrav_falhas_relatorio"] = os_com_falha_nrav
+                st.session_state["_apontamento_nrav_retry_falhas"] = True
+                st.session_state["_apontamento_nrav_os_falhas"] = [_os for _os, _ in os_com_falha_nrav]
+            else:
+                st.success("✅ NRAV registrada com sucesso!")
+
+            time.sleep(1.5)
+            st.rerun()
+
 def _render_cronograma(df_recomendado: pd.DataFrame):
     st.markdown("### 🗓️ Cronograma de Execução de Campo")
     st.caption("OS Pendentes recomendadas no raio de atuação visual por prioridade")
@@ -7005,6 +7514,7 @@ def bloco_roteirizacao_interativo():
 
     df_recomendado_ui = _aplicar_filtros_cronograma(df_recomendado)
     _render_apontamento(df_recomendado_ui)
+    _render_apontamento_nrav(df_recomendado_ui)
     st.markdown("---")
     _render_cronograma(df_recomendado)
 
