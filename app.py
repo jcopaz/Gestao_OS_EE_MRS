@@ -150,6 +150,23 @@ _status_aberto_dashboard = _status_aberto - {"ABER NRAV"}
 # verdade pro SAP, com Causa/Texto de confirmação preenchidos) -- sem incluir aqui, a baixa
 # NRAV nunca aparecia no export (pedido 29/07/2026).
 _status_exportavel_sap = _status_prazo | _status_atraso | {"ABER NRAV"}
+
+# Justificativas padrao do NRAV (IT-ENG-3113): so os codigos de impedimento EXTERNO (linha
+# ocupada, chave taramelada, chuva, falta de material/efetivo/intervalo, area interditada/ZAS,
+# tabela desviada, animais peconhentos). E001 (Ativo Inativado) e E008 (Plano incompativel com
+# o ativo) ficam de fora de proposito -- pelo documento oficial sao causa de "Nao se Aplica"
+# (cadastro errado), nao de NRAV (vistoria feita, impedimento externo); confirmado com o
+# usuario em 29/07/2026. Definido aqui (bem no topo do arquivo, nao perto de onde e usado) de
+# proposito: gerar_html_offline() e CHAMADA (nao so definida) na região 10.3.3, ANTES de onde
+# esse dicionario estava antes (perto de _render_apontamento_nrav, região 10.3.3 mais abaixo)
+# -- Streamlit executa o script inteiro sequencialmente, entao a 1a versao deu NameError em
+# producao (29/07/2026): a linha que definia o dict ainda nao tinha rodado nesse ponto do
+# script quando gerar_html_offline() foi chamada mais acima.
+_JUSTIFICATIVAS_NRAV = {
+    "E002": "Baixo Efetivo", "E003": "Chave taramelada", "E004": "Chuva, intemperes",
+    "E005": "Falta de Material", "E006": "Falta de intervalo", "E007": "Local interditado temporariamente",
+    "E009": "Região ZAS", "E010": "Tabela desviada", "E011": "Animais peçonhentos",
+}
 #endregion 1.3
 
 #region 1.4: Inicialização do Banco de Dados (init_db)
@@ -4390,7 +4407,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v15.0.0")
+st.sidebar.caption("SGO Eletroeletrônica • v15.0.1")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -7107,18 +7124,6 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
 
             time.sleep(1.5)
             st.rerun()
-
-# Justificativas padrao do NRAV (IT-ENG-3113): so os codigos de impedimento EXTERNO (linha
-# ocupada, chave taramelada, chuva, falta de material/efetivo/intervalo, area interditada/ZAS,
-# tabela desviada, animais peconhentos). E001 (Ativo Inativado) e E008 (Plano incompativel com
-# o ativo) ficam de fora de proposito -- pelo documento oficial sao causa de "Nao se Aplica"
-# (cadastro errado), nao de NRAV (vistoria feita, impedimento externo); confirmado com o
-# usuario em 29/07/2026.
-_JUSTIFICATIVAS_NRAV = {
-    "E002": "Baixo Efetivo", "E003": "Chave taramelada", "E004": "Chuva, intemperes",
-    "E005": "Falta de Material", "E006": "Falta de intervalo", "E007": "Local interditado temporariamente",
-    "E009": "Região ZAS", "E010": "Tabela desviada", "E011": "Animais peçonhentos",
-}
 
 def _render_apontamento_nrav(df_recomendado_ui: pd.DataFrame):
     # Fluxo DISTINTO da Conclusão (pedido 29/07/2026, IT-ENG-3113): NRAV = a equipe foi a campo,
