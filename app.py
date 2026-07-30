@@ -4372,7 +4372,7 @@ def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, bai
     else:
         df_base["_foto_url_evid"] = None
     _tem_foto_evid_valida = df_base["_foto_url_evid"].notna() & (df_base["_foto_url_evid"].astype(str).str.strip() != "") & baixa_do_ciclo_atual
-    df_base["Foto Evidência (URL)"] = np.where(_tem_foto_evid_valida, df_base["_foto_url_evid"], None)
+    df_base["Foto Evidência (URL)"] = np.where(_tem_foto_evid_valida, df_base["_foto_url_evid"], np.nan)
     df_base.drop(columns=["_foto_url_evid"], inplace=True, errors="ignore")
 
     # _data_upload_ciclo é preservada (não derrubada aqui) porque a roteirização usa essa
