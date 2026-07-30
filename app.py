@@ -16,6 +16,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")  # backend headless -- servidor da nuvem nao tem display, so gera PNG em memoria (usado no Report PDF, 10.2.3b)
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 import folium
 from PIL import Image, ImageOps
 from streamlit_folium import st_folium
@@ -5436,7 +5437,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     # dt_realizado normalmente ja vem calculado (ver 3.5); recalcula so como
                     # defensiva, igual ao resto do arquivo, pra nao quebrar se algum dia nao vier.
                     if "dt_realizado" not in df_coord.columns:
-                        df_coord["dt_realizado"] = df_coord["Data/Hora Realizado"].apply(parse_datahora_realizado)
+                        df_coord["dt_realizado"] = df_coord["Data/Hora Realizado"].apply(parse_datahora_realizado)  # pyright: ignore[reportCallIssue, reportArgumentType]
                     _agora_naive = agora_dt().replace(tzinfo=None)
                     _cutoff_24h = _agora_naive - timedelta(hours=24)
                     _mask_24h = (
@@ -5844,7 +5845,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     ax.set_xticks(_x)
                     ax.set_xticklabels(categorias, fontsize=9)
                     ax.set_ylim(0, _topo * 1.3)
-                    ax.yaxis.set_major_locator(plt.MaxNLocator(integer=True))  # contagem de OS e sempre inteira
+                    ax.yaxis.set_major_locator(MaxNLocator(integer=True))  # contagem de OS e sempre inteira
                     ax.set_title(titulo, fontsize=10, fontweight="bold", color="#0F172A")
                     ax.legend(fontsize=7, ncol=2, loc="upper center", bbox_to_anchor=(0.5, -0.16), frameon=False)
                     ax.spines[["top", "right"]].set_visible(False)
@@ -5873,7 +5874,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     ax.set_yticklabels(categorias, fontsize=8)
                     ax.invert_yaxis()
                     ax.set_xlim(0, _fim * 1.42)
-                    ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+                    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
                     ax.set_title(titulo, fontsize=10, fontweight="bold", color="#0F172A")
                     ax.legend(fontsize=7, ncol=2, loc="lower right", frameon=False)
                     ax.spines[["top", "right"]].set_visible(False)
@@ -5899,7 +5900,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     ax.set_yticklabels(categorias, fontsize=7.5)
                     ax.invert_yaxis()
                     ax.set_xlim(0, _fim * 1.25)
-                    ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+                    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
                     ax.set_title(titulo, fontsize=9.5, fontweight="bold", color="#0F172A")
                     ax.legend(fontsize=6.5, loc="lower right", frameon=False)
                     ax.spines[["top", "right"]].set_visible(False)
@@ -5923,7 +5924,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     # numero da ultima fatia -- legenda embaixo (nao "upper right" dentro do
                     # grafico), que colidia com a barra do Turno Noite.
                     ax.set_ylim(0, max(_bottom + [1]) * 1.15)
-                    ax.yaxis.set_major_locator(plt.MaxNLocator(integer=True))
+                    ax.yaxis.set_major_locator(MaxNLocator(integer=True))
                     ax.set_title(titulo, fontsize=9.5, fontweight="bold", color="#0F172A")
                     ax.legend(fontsize=6.5, ncol=4, loc="upper center", bbox_to_anchor=(0.5, -0.14), frameon=False)
                     ax.spines[["top", "right"]].set_visible(False)
