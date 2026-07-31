@@ -1198,6 +1198,14 @@ def render_tela_admin():
     if "msg_upload_os" in st.session_state: st.success(st.session_state["msg_upload_os"]); del st.session_state["msg_upload_os"]
     if "msg_upload_mapa" in st.session_state: st.success(st.session_state["msg_upload_mapa"]); del st.session_state["msg_upload_mapa"]
 
+    # Governanca granular (pedido 31/07/2026): "Importação IW47" e "Mapeamento de
+    # Ativos" liberam so a respectiva secao sem exigir o "Upload de Dados" completo
+    # (que tambem inclui a Carga de OS Programadas, mais sensivel).
+    gov_admin = st.session_state.get("governanca", "")
+    tem_upload_dados = "Upload de Dados" in gov_admin
+    tem_ativos_gov = tem_upload_dados or "Mapeamento de Ativos" in gov_admin
+    tem_iw47_gov = tem_upload_dados or "Importação IW47" in gov_admin
+
     # --- MANUAL DE PADRONIZAÇÃO DE DADOS (GOVERNANÇA) ---
     with st.expander("📖 MANUAL DE IMPORTAÇÃO (Padrão Exigido para Planilhas)", expanded=True):
         st.markdown("""
@@ -1225,162 +1233,164 @@ def render_tela_admin():
     st.markdown("---")
 #endregion
 
-#region 3.8.1: Upload e Processamento de OS Programadas
-    st.markdown("### 📥 Carga de OS Programadas")
-    col_up1, col_up2 = st.columns(2)
-    with col_up1: mes_ref = st.text_input("Mês de Referência (ex: Junho/2026)", placeholder="Mês/Ano")
-    with col_up2: coord_upload_fallback = st.selectbox("Coordenação (fallback caso a planilha não informe)", ["Paranapiacaba", "Piaçaguera"])
+    if tem_upload_dados:
+    #region 3.8.1: Upload e Processamento de OS Programadas
+        st.markdown("### 📥 Carga de OS Programadas")
+        col_up1, col_up2 = st.columns(2)
+        with col_up1: mes_ref = st.text_input("Mês de Referência (ex: Junho/2026)", placeholder="Mês/Ano")
+        with col_up2: coord_upload_fallback = st.selectbox("Coordenação (fallback caso a planilha não informe)", ["Paranapiacaba", "Piaçaguera"])
 
-    arquivo_upload = st.file_uploader("Selecione a planilha Excel ou CSV", type=["csv", "xlsx"], key="upload_os_prog")
-    if arquivo_upload is not None and mes_ref:
-        if st.button("🚀 Processar e Salvar no Banco", use_container_width=True, type="primary"):
-            escopo_user = st.session_state.get("escopo", "Todas")
-            with st.spinner("Lendo e processando dados..."):
-                try:
-                    df = pd.read_csv(arquivo_upload, sep=';', encoding='utf-8-sig') if arquivo_upload.name.endswith('.csv') else pd.read_excel(arquivo_upload)
-                    if "Ordem servico" not in df.columns and "OS" not in [str(c).upper() for c in df.columns]: 
-                        st.error("❌ Coluna 'Ordem servico' não encontrada."); return
-                    
-                    df = df.fillna("")
-                    col_depto = next((c for c in df.columns if str(c).strip().upper().replace(" ", "") in ("CODIGODEPARTAMENTO", "CÓDIGODEPARTAMENTO", "CODIGO_DEPARTAMENTO")), None)
-                    if not col_depto: col_depto = next((c for c in df.columns if str(c).strip().upper() == "CONCATENAR"), None)
-
-                    if col_depto is not None:
-                        df["_coord_auto"] = df[col_depto].apply(lambda v: "Paranapiacaba" if str(v).strip().upper().startswith("E.SP.IPA") else ("Piaçaguera" if str(v).strip().upper().startswith("E.SP.IPG") else None))
-                        df = df[df["_coord_auto"].notna()].copy()
-                    else: df["_coord_auto"] = coord_upload_fallback
-
-                    if escopo_user != "Todas": df = df[df["_coord_auto"] == escopo_user].copy()
-
-                    barra, registros_por_coord = st.progress(0, text="Preparando dados..."), {}
-                    for idx, (_, row) in enumerate(df.iterrows()):
-                        col_os_real = "Ordem servico" if "Ordem servico" in df.columns else df.columns[[str(c).upper() == "OS" for c in df.columns]][0]
-                        os_num, coord_linha = str(row[col_os_real]).strip(), row["_coord_auto"]
-                        if os_num and coord_linha:
-                            registros_por_coord.setdefault(coord_linha, []).append((os_num, mes_ref, coord_linha, json.dumps(row.drop(labels=["_coord_auto"], errors="ignore").to_dict(), default=lambda x: x.strftime('%d/%m/%Y') if isinstance(x, (pd.Timestamp, datetime)) else str(x))))
-                        if (idx + 1) % 200 == 0: barra.progress(min((idx + 1) / len(df), 0.5), text=f"Preparando... {idx + 1}/{len(df)} linhas")
-
-                    barra.progress(0.5, text="Gravando no banco de dados...")
-                    conn = get_connection()
+        arquivo_upload = st.file_uploader("Selecione a planilha Excel ou CSV", type=["csv", "xlsx"], key="upload_os_prog")
+        if arquivo_upload is not None and mes_ref:
+            if st.button("🚀 Processar e Salvar no Banco", use_container_width=True, type="primary"):
+                escopo_user = st.session_state.get("escopo", "Todas")
+                with st.spinner("Lendo e processando dados..."):
                     try:
-                        cur = conn.cursor()
-                        todos_registros = [r for regs in registros_por_coord.values() for r in regs]
-                        for i in range(0, len(todos_registros), 500):
-                            execute_values(cur, "INSERT INTO os_programadas (os, mes_referencia, coordenacao, dados_completos) VALUES %s ON CONFLICT (os) DO UPDATE SET mes_referencia = EXCLUDED.mes_referencia, coordenacao = EXCLUDED.coordenacao, dados_completos = EXCLUDED.dados_completos", todos_registros[i:i + 500], page_size=500)
-                            barra.progress(min(0.5 + (i + 500) / len(todos_registros) * 0.5, 1.0), text=f"Gravando... {min(i + 500, len(todos_registros))}/{len(todos_registros)} registros")
-                        conn.commit(); cur.close()
-                    finally: release_connection(conn)
+                        df = pd.read_csv(arquivo_upload, sep=';', encoding='utf-8-sig') if arquivo_upload.name.endswith('.csv') else pd.read_excel(arquivo_upload)
+                        if "Ordem servico" not in df.columns and "OS" not in [str(c).upper() for c in df.columns]: 
+                            st.error("❌ Coluna 'Ordem servico' não encontrada."); return
+                    
+                        df = df.fillna("")
+                        col_depto = next((c for c in df.columns if str(c).strip().upper().replace(" ", "") in ("CODIGODEPARTAMENTO", "CÓDIGODEPARTAMENTO", "CODIGO_DEPARTAMENTO")), None)
+                        if not col_depto: col_depto = next((c for c in df.columns if str(c).strip().upper() == "CONCATENAR"), None)
 
-                    st.session_state["msg_upload_os"] = f"✅ Sucesso! {len(todos_registros)} OS processadas."
-                    st.cache_data.clear(); st.rerun()
-                except Exception as e: st.error(f"❌ Erro ao processar o arquivo: {e}")
-#endregion 3.8.1
-    
-#region 3.8.2: Histórico de Uploads
-    with st.expander("📋 Histórico de Uploads", expanded=False):
-        perfil_user = st.session_state.get("perfil", "")
-        escopo_user = st.session_state.get("escopo", "")
-        
-        # Define o filtro de visão baseado no perfil
-        ver_tudo = perfil_user in ("Gerência",) or escopo_user == "Todas"
-        
-        conn = get_connection()
-        try:
-            if ver_tudo:
-                query_hist = """
-                        SELECT coordenacao AS "Coordenação",
-                            MAX(data_upload) AS "Último Upload",
-                            COUNT(*) AS "Linhas Carregadas"
-                        FROM os_programadas
-                        GROUP BY coordenacao
-                        ORDER BY MAX(data_upload) DESC
-                    """
-                df_hist = pd.read_sql_query(query_hist, conn)
-            else:
-                # Filtra pela coordenação do usuário
-                filtro_coord = escopo_user if escopo_user else "Paranapiacaba"
-                query_hist = """
-                        SELECT coordenacao AS "Coordenação",
-                            MAX(data_upload) AS "Último Upload",
-                            COUNT(*) AS "Linhas Carregadas"
-                        FROM os_programadas
-                        WHERE coordenacao = %s
-                        GROUP BY coordenacao
-                        ORDER BY MAX(data_upload) DESC
-                    """
-                df_hist = pd.read_sql_query(query_hist, conn, params=(filtro_coord,))
-        finally:
-            release_connection(conn)
-        
-        if not df_hist.empty:
-            # Formata a data e fuso horário direto no Pandas (Evita erro de sintaxe do PostgreSQL)
-            df_hist["Último Upload"] = pd.to_datetime(df_hist["Último Upload"])
-            if df_hist["Último Upload"].dt.tz is None:
-                df_hist["Último Upload"] = df_hist["Último Upload"].dt.tz_localize("UTC")
-            df_hist["Último Upload"] = df_hist["Último Upload"].dt.tz_convert("America/Sao_Paulo").dt.strftime("%d/%m/%Y %H:%M")
-            
-            df_hist["Linhas Carregadas"] = df_hist["Linhas Carregadas"].astype(int)
-            
-            if ver_tudo:
-                st.caption("📊 **Visão Consolidada** (todas as coordenações)")
-            else:
-                st.caption(f"📊 Visão restrita à coordenação **{escopo_user}**")
-            
-            st.dataframe(
-                df_hist.style.set_properties(**{'text-align': 'center'}).set_table_styles(  # pyright: ignore[reportArgumentType]
-                    [{'selector': 'th', 'props': [('text-align', 'center')]}]
-                ),
-                use_container_width=True,
-                hide_index=True
-            )
-            
-            # Totalizador
-            total_geral = int(df_hist["Linhas Carregadas"].sum())
-            st.info(f"📦 **Total de OS na base:** {total_geral:,} registros".replace(",", "."))
-        else:
-            st.info("Nenhum upload realizado até o momento.")
-    #endregion 3.8.2
+                        if col_depto is not None:
+                            df["_coord_auto"] = df[col_depto].apply(lambda v: "Paranapiacaba" if str(v).strip().upper().startswith("E.SP.IPA") else ("Piaçaguera" if str(v).strip().upper().startswith("E.SP.IPG") else None))
+                            df = df[df["_coord_auto"].notna()].copy()
+                        else: df["_coord_auto"] = coord_upload_fallback
 
-#region 3.8.3: Upload de Mapeamento de Pátios
-    with st.expander("🗺️ Mapeamento de Ativos → Pátios", expanded=False):
-        arquivo_mapa = st.file_uploader("Selecione a planilha de mapeamento", type=["xlsx"], key="upload_mapeamento_patios")
-        if arquivo_mapa and st.button("🚀 Processar Mapeamento", use_container_width=True, type="primary"):
-            with st.spinner("Processando..."):
-                try:
-                    xls = pd.ExcelFile(arquivo_mapa, engine="openpyxl")
-                    registros = []
-                    if "Ativos_SP" in xls.sheet_names:
-                        df_at = pd.read_excel(xls, sheet_name="Ativos_SP")
-                        for _, row in df_at.iterrows():
-                            patio = str(row.iloc[10]).strip()
-                            if patio and patio != "nan":
-                                if str(row.iloc[0]).strip() != "nan": registros.append((str(row.iloc[0]).strip(), patio, "Ativo"))
-                                if str(row.iloc[1]).strip() != "nan" and str(row.iloc[1]).strip() != str(row.iloc[0]).strip(): registros.append((str(row.iloc[1]).strip(), patio, "Ativo_Denom"))
-                    for nome_aba in ["Equipamento_SP", "Equipamentos_SP"]:
-                        if nome_aba in xls.sheet_names:
-                            df_eq = pd.read_excel(xls, sheet_name=nome_aba)
-                            for _, row in df_eq.iterrows():
-                                patio = str(row.iloc[6]).strip()
-                                if patio and patio != "nan":
-                                    if str(row.iloc[0]).strip() != "nan": registros.append((str(row.iloc[0]).strip(), patio, "Equipamento"))
-                                    if str(row.iloc[1]).strip() != "nan" and str(row.iloc[1]).strip() != str(row.iloc[0]).strip(): registros.append((str(row.iloc[1]).strip(), patio, "Equipamento_Denom"))
-                            break
+                        if escopo_user != "Todas": df = df[df["_coord_auto"] == escopo_user].copy()
 
-                    chaves_vistas, registros_unicos = set(), []
-                    for reg in registros:
-                        if reg[0].upper() not in chaves_vistas: chaves_vistas.add(reg[0].upper()); registros_unicos.append(reg)
+                        barra, registros_por_coord = st.progress(0, text="Preparando dados..."), {}
+                        for idx, (_, row) in enumerate(df.iterrows()):
+                            col_os_real = "Ordem servico" if "Ordem servico" in df.columns else df.columns[[str(c).upper() == "OS" for c in df.columns]][0]
+                            os_num, coord_linha = str(row[col_os_real]).strip(), row["_coord_auto"]
+                            if os_num and coord_linha:
+                                registros_por_coord.setdefault(coord_linha, []).append((os_num, mes_ref, coord_linha, json.dumps(row.drop(labels=["_coord_auto"], errors="ignore").to_dict(), default=lambda x: x.strftime('%d/%m/%Y') if isinstance(x, (pd.Timestamp, datetime)) else str(x))))
+                            if (idx + 1) % 200 == 0: barra.progress(min((idx + 1) / len(df), 0.5), text=f"Preparando... {idx + 1}/{len(df)} linhas")
 
-                    if registros_unicos:
+                        barra.progress(0.5, text="Gravando no banco de dados...")
                         conn = get_connection()
                         try:
                             cur = conn.cursor()
-                            for i in range(0, len(registros_unicos), 500): execute_values(cur, "INSERT INTO mapeamento_patios (ativo_chave, patio, tipo) VALUES %s ON CONFLICT (ativo_chave) DO UPDATE SET patio = EXCLUDED.patio, tipo = EXCLUDED.tipo", registros_unicos[i:i + 500], page_size=500)
+                            todos_registros = [r for regs in registros_por_coord.values() for r in regs]
+                            for i in range(0, len(todos_registros), 500):
+                                execute_values(cur, "INSERT INTO os_programadas (os, mes_referencia, coordenacao, dados_completos) VALUES %s ON CONFLICT (os) DO UPDATE SET mes_referencia = EXCLUDED.mes_referencia, coordenacao = EXCLUDED.coordenacao, dados_completos = EXCLUDED.dados_completos", todos_registros[i:i + 500], page_size=500)
+                                barra.progress(min(0.5 + (i + 500) / len(todos_registros) * 0.5, 1.0), text=f"Gravando... {min(i + 500, len(todos_registros))}/{len(todos_registros)} registros")
                             conn.commit(); cur.close()
                         finally: release_connection(conn)
-                        st.session_state["msg_upload_mapa"] = f"✅ Mapeamento atualizado com {len(registros_unicos)} registros!"
+
+                        st.session_state["msg_upload_os"] = f"✅ Sucesso! {len(todos_registros)} OS processadas."
                         st.cache_data.clear(); st.rerun()
-                except Exception as e: st.error(f"❌ Erro: {e}")
-    #endregion 3.8.3
+                    except Exception as e: st.error(f"❌ Erro ao processar o arquivo: {e}")
+    #endregion 3.8.1
+    
+    #region 3.8.2: Histórico de Uploads
+        with st.expander("📋 Histórico de Uploads", expanded=False):
+            perfil_user = st.session_state.get("perfil", "")
+            escopo_user = st.session_state.get("escopo", "")
+        
+            # Define o filtro de visão baseado no perfil
+            ver_tudo = perfil_user in ("Gerência",) or escopo_user == "Todas"
+        
+            conn = get_connection()
+            try:
+                if ver_tudo:
+                    query_hist = """
+                            SELECT coordenacao AS "Coordenação",
+                                MAX(data_upload) AS "Último Upload",
+                                COUNT(*) AS "Linhas Carregadas"
+                            FROM os_programadas
+                            GROUP BY coordenacao
+                            ORDER BY MAX(data_upload) DESC
+                        """
+                    df_hist = pd.read_sql_query(query_hist, conn)
+                else:
+                    # Filtra pela coordenação do usuário
+                    filtro_coord = escopo_user if escopo_user else "Paranapiacaba"
+                    query_hist = """
+                            SELECT coordenacao AS "Coordenação",
+                                MAX(data_upload) AS "Último Upload",
+                                COUNT(*) AS "Linhas Carregadas"
+                            FROM os_programadas
+                            WHERE coordenacao = %s
+                            GROUP BY coordenacao
+                            ORDER BY MAX(data_upload) DESC
+                        """
+                    df_hist = pd.read_sql_query(query_hist, conn, params=(filtro_coord,))
+            finally:
+                release_connection(conn)
+        
+            if not df_hist.empty:
+                # Formata a data e fuso horário direto no Pandas (Evita erro de sintaxe do PostgreSQL)
+                df_hist["Último Upload"] = pd.to_datetime(df_hist["Último Upload"])
+                if df_hist["Último Upload"].dt.tz is None:
+                    df_hist["Último Upload"] = df_hist["Último Upload"].dt.tz_localize("UTC")
+                df_hist["Último Upload"] = df_hist["Último Upload"].dt.tz_convert("America/Sao_Paulo").dt.strftime("%d/%m/%Y %H:%M")
+            
+                df_hist["Linhas Carregadas"] = df_hist["Linhas Carregadas"].astype(int)
+            
+                if ver_tudo:
+                    st.caption("📊 **Visão Consolidada** (todas as coordenações)")
+                else:
+                    st.caption(f"📊 Visão restrita à coordenação **{escopo_user}**")
+            
+                st.dataframe(
+                    df_hist.style.set_properties(**{'text-align': 'center'}).set_table_styles(  # pyright: ignore[reportArgumentType]
+                        [{'selector': 'th', 'props': [('text-align', 'center')]}]
+                    ),
+                    use_container_width=True,
+                    hide_index=True
+                )
+            
+                # Totalizador
+                total_geral = int(df_hist["Linhas Carregadas"].sum())
+                st.info(f"📦 **Total de OS na base:** {total_geral:,} registros".replace(",", "."))
+            else:
+                st.info("Nenhum upload realizado até o momento.")
+        #endregion 3.8.2
+
+    if tem_ativos_gov:
+    #region 3.8.3: Upload de Mapeamento de Pátios
+        with st.expander("🗺️ Mapeamento de Ativos → Pátios", expanded=False):
+            arquivo_mapa = st.file_uploader("Selecione a planilha de mapeamento", type=["xlsx"], key="upload_mapeamento_patios")
+            if arquivo_mapa and st.button("🚀 Processar Mapeamento", use_container_width=True, type="primary"):
+                with st.spinner("Processando..."):
+                    try:
+                        xls = pd.ExcelFile(arquivo_mapa, engine="openpyxl")
+                        registros = []
+                        if "Ativos_SP" in xls.sheet_names:
+                            df_at = pd.read_excel(xls, sheet_name="Ativos_SP")
+                            for _, row in df_at.iterrows():
+                                patio = str(row.iloc[10]).strip()
+                                if patio and patio != "nan":
+                                    if str(row.iloc[0]).strip() != "nan": registros.append((str(row.iloc[0]).strip(), patio, "Ativo"))
+                                    if str(row.iloc[1]).strip() != "nan" and str(row.iloc[1]).strip() != str(row.iloc[0]).strip(): registros.append((str(row.iloc[1]).strip(), patio, "Ativo_Denom"))
+                        for nome_aba in ["Equipamento_SP", "Equipamentos_SP"]:
+                            if nome_aba in xls.sheet_names:
+                                df_eq = pd.read_excel(xls, sheet_name=nome_aba)
+                                for _, row in df_eq.iterrows():
+                                    patio = str(row.iloc[6]).strip()
+                                    if patio and patio != "nan":
+                                        if str(row.iloc[0]).strip() != "nan": registros.append((str(row.iloc[0]).strip(), patio, "Equipamento"))
+                                        if str(row.iloc[1]).strip() != "nan" and str(row.iloc[1]).strip() != str(row.iloc[0]).strip(): registros.append((str(row.iloc[1]).strip(), patio, "Equipamento_Denom"))
+                                break
+
+                        chaves_vistas, registros_unicos = set(), []
+                        for reg in registros:
+                            if reg[0].upper() not in chaves_vistas: chaves_vistas.add(reg[0].upper()); registros_unicos.append(reg)
+
+                        if registros_unicos:
+                            conn = get_connection()
+                            try:
+                                cur = conn.cursor()
+                                for i in range(0, len(registros_unicos), 500): execute_values(cur, "INSERT INTO mapeamento_patios (ativo_chave, patio, tipo) VALUES %s ON CONFLICT (ativo_chave) DO UPDATE SET patio = EXCLUDED.patio, tipo = EXCLUDED.tipo", registros_unicos[i:i + 500], page_size=500)
+                                conn.commit(); cur.close()
+                            finally: release_connection(conn)
+                            st.session_state["msg_upload_mapa"] = f"✅ Mapeamento atualizado com {len(registros_unicos)} registros!"
+                            st.cache_data.clear(); st.rerun()
+                    except Exception as e: st.error(f"❌ Erro: {e}")
+        #endregion 3.8.3
 
 #region 3.8.4: Exportação SAP
     if "Exportar SAP" in st.session_state.get("governanca", ""):
@@ -1471,6 +1481,8 @@ def render_tela_admin():
     #endregion 3.8.4
 
 #region 3.8.5: Importação de Baixas em Massa (IW47)
+    if not tem_iw47_gov:
+        return
     st.markdown("---")
     st.subheader("📥 Importação de Baixas em Massa (IW47)")
 
@@ -2379,7 +2391,10 @@ def render_tela_gestao_usuarios():
             elif escopo == "Piaçaguera": return ["Sede IPG"]
             return ["Sede IPA", "Sede IPG"]
 
-        opcoes_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Gestão de Usuários", "Exportar SAP", "Governança", "Configurações Operacionais"]
+        # "Importação IW47" e "Mapeamento de Ativos" (pedido 31/07/2026): permissões
+        # granulares -- liberam só a respectiva seção de render_tela_admin() sem exigir
+        # o "Upload de Dados" completo (que também inclui a Carga de OS Programadas).
+        opcoes_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Importação IW47", "Mapeamento de Ativos", "Gestão de Usuários", "Exportar SAP", "Governança", "Configurações Operacionais"]
 
         #region 8.2.1: Criar Novo Usuário (Formulário)
         with st.form("form_novo_user", clear_on_submit=True):
@@ -4477,7 +4492,9 @@ if "tela_atual" not in st.session_state: st.session_state["tela_atual"] = "dashb
 
 gov_usuario = st.session_state.get("governanca", "")
 tem_painel = "Painel Gerencial" in gov_usuario or "Mapa de Campo" in gov_usuario
-tem_dados = "Upload de Dados" in gov_usuario
+# any(...) (31/07/2026): "Importação IW47" e "Mapeamento de Ativos" também abrem a
+# tela "⚙️ Dados" (render_tela_admin já gate cada seção internamente por permissão).
+tem_dados = any(p in gov_usuario for p in ("Upload de Dados", "Importação IW47", "Mapeamento de Ativos"))
 tem_gestao_usuarios = "Gestão de Usuários" in gov_usuario
 tem_governanca = "Governança" in gov_usuario
 tem_config_operacional = "Configurações Operacionais" in gov_usuario
