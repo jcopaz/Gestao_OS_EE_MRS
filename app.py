@@ -4492,9 +4492,11 @@ if "tela_atual" not in st.session_state: st.session_state["tela_atual"] = "dashb
 
 gov_usuario = st.session_state.get("governanca", "")
 tem_painel = "Painel Gerencial" in gov_usuario or "Mapa de Campo" in gov_usuario
-# any(...) (31/07/2026): "Importação IW47" e "Mapeamento de Ativos" também abrem a
-# tela "⚙️ Dados" (render_tela_admin já gate cada seção internamente por permissão).
-tem_dados = any(p in gov_usuario for p in ("Upload de Dados", "Importação IW47", "Mapeamento de Ativos"))
+# any(...) (31/07/2026): qualquer uma das 4 permissões da tela abre o ícone "⚙️ Dados"
+# -- antes só "Upload de Dados" abria, então usuário com só "Exportar SAP" (ex.:
+# Assistente sem Upload de Dados) ficava sem acesso à própria seção que tinha
+# (render_tela_admin já gate cada seção internamente por permissão).
+tem_dados = any(p in gov_usuario for p in ("Upload de Dados", "Importação IW47", "Mapeamento de Ativos", "Exportar SAP"))
 tem_gestao_usuarios = "Gestão de Usuários" in gov_usuario
 tem_governanca = "Governança" in gov_usuario
 tem_config_operacional = "Configurações Operacionais" in gov_usuario
