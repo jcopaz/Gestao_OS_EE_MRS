@@ -4484,7 +4484,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v15.1.0")
+st.sidebar.caption("SGO Eletroeletrônica • v16.0.0")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -4765,20 +4765,52 @@ status_sel = st.session_state.get("filtro_status_sel", "Todos")
 intervalo_sel = st.session_state.get("filtro_intervalo_sel", "Todas")
 baixa_evidencia_sel = st.session_state.get("filtro_baixa_evidencia_sel", "Todas")
 
-# Base dos 4 cards do topo (região 9.3/9.4): sempre o Último Plano/Ciclo (maior
-# _data_upload_ciclo por Plano_Mes_Referencia, mesmo critério da query de planos_disponiveis,
-# linha ~1994), respeitando Pátio/Classificação/Criticidade/Turno/Status/Intervalo já
-# selecionados na sidebar -- só o Período de Programação/Execução e o seletor de Plano
-# (Mês de Referência) são ignorados aqui de propósito (pedido 24/07/2026). Calculado sobre
-# df_visao ainda SEM o filtro de Plano abaixo, para não herdar uma escolha manual do usuário.
-if "Plano_Mes_Referencia" in df_visao.columns and "_data_upload_ciclo" in df_visao.columns:
+# Lido aqui (antes do bloco do Ciclo Vigente abaixo) porque a CORREÇÃO 2 de 31/07/2026 precisa
+# saber se o usuário travou um Mês de Referência explícito antes de decidir o "ultimo_plano".
+plano_mes_sel = st.session_state.get("filtro_mes_referencia", "Todos")
+
+# Base dos 4 cards do topo (região 9.3/9.4): sempre o Ciclo Vigente, respeitando
+# Pátio/Classificação/Criticidade/Turno/Status/Intervalo já selecionados na sidebar -- o
+# Período de Programação/Execução continua ignorado aqui de propósito (pedido 24/07/2026).
+# Calculado sobre df_visao ainda SEM o filtro de Plano abaixo, para não herdar o filtro de
+# Plano que vai ser aplicado embaixo (evitaria comparar o ciclo vigente contra ele mesmo).
+#
+# CORREÇÃO (31/07/2026, pedido Julio): "Ciclo Vigente" deixou de ser simplesmente "maior
+# _data_upload_ciclo por Plano_Mes_Referencia" (mesmo critério da query de planos_disponiveis,
+# linha ~1994). Bug real reportado em 31/07/2026: subir o plano de Agosto no último dia de
+# Julho fazia os cards do topo "pularem" pra Agosto (tudo zerado) mesmo com a sidebar ainda
+# filtrando Julho -- upload mais recente nem sempre é o mês que o calendário está vivendo.
+# Agora o Ciclo Vigente é o Plano_Mes_Referencia cujo período de programação (min/max de
+# "Data inicial programada") cobre a data de hoje; só cai pro critério antigo (upload mais
+# recente) se nenhum plano cobrir hoje (ex.: fim de mês sem o próximo plano ainda carregado).
+#
+# CORREÇÃO 2 (31/07/2026, pedido Julio): a auto-detecção acima só entra quando o usuário
+# deixa o filtro de Plano (Mês de Referência) em "Todos". Se ele escolher um mês específico
+# na sidebar, os cards do topo passam a respeitar essa escolha explícita em vez do Ciclo
+# Vigente automático -- o filtro manual do usuário tem prioridade sobre a detecção por
+# calendário.
+if plano_mes_sel != "Todos":
+    ultimo_plano = plano_mes_sel
+elif "Plano_Mes_Referencia" in df_visao.columns and "_data_upload_ciclo" in df_visao.columns:
     _upload_por_plano = (
         df_visao.dropna(subset=["Plano_Mes_Referencia"])
         .groupby("Plano_Mes_Referencia")["_data_upload_ciclo"].max()
         .dropna()
         .sort_values(ascending=False)
     )
-    ultimo_plano = _upload_por_plano.index[0] if not _upload_por_plano.empty else None
+    _hoje_ciclo = agora_dt().date()
+    _periodo_por_plano = (
+        df_visao.dropna(subset=["Plano_Mes_Referencia", "dt_prog_filtro"])
+        .groupby("Plano_Mes_Referencia")["dt_prog_filtro"].agg(["min", "max"])
+    )
+    _planos_vigentes_hoje = {
+        _plano for _plano, _row in _periodo_por_plano.iterrows()
+        if _row["min"].date() <= _hoje_ciclo <= _row["max"].date()
+    }
+    # Entre os vigentes hoje, desempata pelo upload mais recente (ordem de _upload_por_plano).
+    ultimo_plano = next((p for p in _upload_por_plano.index if p in _planos_vigentes_hoje), None)
+    if ultimo_plano is None:
+        ultimo_plano = _upload_por_plano.index[0] if not _upload_por_plano.empty else None
 else:
     ultimo_plano = None
 
@@ -4798,7 +4830,6 @@ if ultimo_plano is not None:
 else:
     df_kpi_topo = None  # sem dado de ciclo/upload -- região 9.3 cai para df_filtrado
 
-plano_mes_sel = st.session_state.get("filtro_mes_referencia", "Todos")
 if plano_mes_sel != "Todos" and "Plano_Mes_Referencia" in df_visao.columns:
     df_visao = df_visao[df_visao["Plano_Mes_Referencia"].astype(str).str.strip() == plano_mes_sel].copy()
 
