@@ -844,7 +844,9 @@ def gerar_excel_sap_bytes(df_filtrado_atual: pd.DataFrame) -> tuple[bytes, list[
 
     df_sap["_duracao_min"] = df_sap.apply(lambda r: _duracao_minutos(r['hora_inicio'], r['hora_fim']), axis=1)
     df_sap["_hh_plano_min"] = (
-        pd.to_numeric(df_sap["Hxh Plano"], errors="coerce").fillna(0.0) * 60.0
+        # .str.replace(",", ".") -- mesmo motivo do HXH_CAN em tratar_df_os: Hxh Plano em
+        # formato BR ("3,50") virava NaN -> fillna(0) e derrubava um plano válido pra zero.
+        pd.to_numeric(df_sap["Hxh Plano"].astype(str).str.strip().str.replace(",", ".", regex=False), errors="coerce").fillna(0.0) * 60.0
         if "Hxh Plano" in df_sap.columns else 0.0
     )
 
@@ -855,12 +857,30 @@ def gerar_excel_sap_bytes(df_filtrado_atual: pd.DataFrame) -> tuple[bytes, list[
         if n == 1:
             return pd.Series([total_min], index=grupo.index)
 
-        soma_plano = grupo["_hh_plano_min"].sum()
-        # Sem HH planejado para ratear (planilha sem "Hxh Plano"): divide o tempo igualmente
-        # entre as OS do grupo em vez de creditar o tempo cheio em cada uma.
-        pesos = grupo["_hh_plano_min"] / soma_plano if soma_plano > 0 else pd.Series([1.0 / n] * n, index=grupo.index)
+        hh = grupo["_hh_plano_min"]
+        tem_plano = hh > 0
+        qtd_com_plano = int(tem_plano.sum())
 
-        brutos = total_min * pesos
+        if qtd_com_plano == 0:
+            # Ninguém do grupo tem Hxh Plano: divide o tempo igualmente entre as OS do
+            # grupo em vez de creditar o tempo cheio (ou zero) em cada uma.
+            brutos = pd.Series(total_min / n, index=grupo.index)
+        elif qtd_com_plano == n:
+            # Todo mundo do grupo tem Hxh Plano: rateio proporcional puro, como antes.
+            soma_plano = hh.sum()
+            brutos = total_min * hh / soma_plano
+        else:
+            # Grupo misto: quem NÃO tem Hxh Plano recebia peso 0 (zerava mesmo tendo
+            # apontamento real) -- agora recebe uma fatia-base igual (total_min/n), e só o
+            # tempo restante é rateado proporcionalmente ao Hxh Plano entre quem tem plano.
+            fatia_base = total_min / n
+            sem_plano = ~tem_plano
+            restante = total_min - fatia_base * int(sem_plano.sum())
+            soma_plano_com = hh[tem_plano].sum()
+            brutos = pd.Series(0.0, index=grupo.index)
+            brutos[sem_plano] = fatia_base
+            brutos[tem_plano] = restante * hh[tem_plano] / soma_plano_com
+
         base = np.floor(brutos).astype(int)
         # Método do maior resto: distribui os minutos que sobraram do arredondamento para as
         # OS com a maior fração fracionária, garantindo que a soma bata exatamente com o total apontado.
@@ -4115,7 +4135,12 @@ def tratar_df_os(df: pd.DataFrame):
     df["ATIVO_CAN"] = df[col_ativo].astype(str).str.strip()
     df["ATIVIDADE_CAN"] = df[col_atividade].astype(str).str.strip()
     df["PRIORIDADE_CAN"] = df[col_prioridade].astype(str).str.strip()
-    df["HXH_CAN"] = pd.to_numeric(df[col_hxh], errors="coerce").fillna(0) if col_hxh else 0.0
+    # .str.replace(",", ".") antes do to_numeric -- planilha com Hxh Plano em formato BR
+    # (ex.: "3,50") virava NaN -> fillna(0), zerando um plano que na verdade existia.
+    df["HXH_CAN"] = (
+        pd.to_numeric(df[col_hxh].astype(str).str.strip().str.replace(",", ".", regex=False), errors="coerce").fillna(0)
+        if col_hxh else 0.0
+    )
     
     _mapa_patios = carregar_mapeamento_patios()
     _patios_validos = set(k for k in COORDENADAS_FIXAS.keys() if not k.startswith("Sede"))
@@ -4484,7 +4509,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v16.0.0")
+st.sidebar.caption("SGO Eletroeletrônica • v16.0.1")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
