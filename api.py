@@ -1,8 +1,10 @@
 import io
 import os
 import re
+import hmac
 import time
 import base64
+import hashlib
 import unicodedata
 from datetime import datetime, timezone, timedelta
 
@@ -26,6 +28,29 @@ NEON_POSTGRES_URL = os.environ.get("NEON_POSTGRES_URL")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 API_KEY_SECRET = os.environ.get("API_KEY_SECRET")
+# Chave dedicada para o endpoint /auth/validar (integracao SGO Workforce, ver
+# ENDPOINT DE AUTENTICACAO abaixo) -- deliberadamente separada de
+# API_KEY_SECRET (essa e' distribuida dentro do pacote HTML offline da PWA,
+# entao um vazamento dela nunca deveria permitir validar login de usuario).
+# Ao contrario de NEON_POSTGRES_URL/API_KEY_SECRET, NAO derruba o processo
+# inteiro se estiver ausente -- so desativa esse endpoint especifico (ver
+# validar_api_key_workforce), pra um deploy sem a variavel ainda configurada
+# no Render nao quebrar /sincronizar_baixa_offline nem o resto da API.
+WORKFORCE_API_KEY_SECRET = os.environ.get("WORKFORCE_API_KEY_SECRET")
+# MESMO segredo que app.py le de st.secrets["AUTH_TOKEN_SECRET"] (Streamlit
+# Cloud) -- precisa ser configurado aqui com o valor IDENTICO, senao o token
+# gerado por um lado nunca valida do outro. Usado so para montar o link de
+# SSO do EE17 (ver gerar_token_sessao/POST /auth/validar) -- decisao
+# 2026-08-07: fica restrito aos dois deploys do proprio SGO (app.py e
+# api.py), nunca e' entregue ao SGO Workforce. Tambem opcional no boot
+# (mesmo motivo de WORKFORCE_API_KEY_SECRET): sem ela, /auth/validar
+# continua validando login normalmente, so nao devolve "sid" na resposta.
+AUTH_TOKEN_SECRET = os.environ.get("AUTH_TOKEN_SECRET")
+# TTL curto (ver uso em auth_validar) -- nao reaproveita o default de 12h de
+# gerar_token_sessao, pensado para outro uso (sobreviver a reconexao da
+# camera em app.py). Aqui o token so precisa viver o suficiente pra um
+# clique no botao "Abrir apontamento de OS no SGO" ser processado.
+TTL_HORAS_SID_SSO = 5 / 60  # 5 minutos
 
 if not NEON_POSTGRES_URL:
     raise RuntimeError("Variável de ambiente NEON_POSTGRES_URL não configurada.")
@@ -99,6 +124,37 @@ async def validar_api_key(api_key: str = Security(api_key_header)):
     if api_key != API_KEY_SECRET:
         raise HTTPException(status_code=403, detail="Acesso negado.")
     return api_key
+
+
+async def validar_api_key_workforce(api_key: str = Security(api_key_header)):
+    # Fail closed: sem WORKFORCE_API_KEY_SECRET configurado no ambiente (Render),
+    # NENHUMA chave passa -- nunca cai para trás em "sem checagem".
+    if not WORKFORCE_API_KEY_SECRET or api_key != WORKFORCE_API_KEY_SECRET:
+        raise HTTPException(status_code=403, detail="Acesso negado.")
+    return api_key
+
+
+def hash_senha(senha):
+    # Mesma funcao de app.py (SESSAO 2.3, Login Padrao) -- sem import cruzado
+    # entre os dois arquivos (deploys separados, ver Agente/09_APRENDIZADOS_E_ERROS.md),
+    # mantida em paralelo aqui. Qualquer mudanca de algoritmo de hash em
+    # app.py precisa ser replicada aqui manualmente, senao login via
+    # /auth/validar para de bater com o hash gravado no cadastro.
+    return hashlib.sha256(senha.encode()).hexdigest()
+
+
+def gerar_token_sessao(username: str, ttl_horas: int = 12) -> str:
+    # Copia EXATA de app.py (regiao 1.6, Persistencia de Sessao) -- mesmo
+    # formato usuario|validade|HMAC, mesma codificacao base64. Precisa
+    # continuar identica dos dois lados: um token gerado aqui so e' aceito
+    # por app.py (validar_token_sessao) se AUTH_TOKEN_SECRET e o formato do
+    # payload baterem byte a byte. So chamada depois de auth_validar ja ter
+    # conferido a senha de verdade -- nunca gera token para um usuario sem
+    # antes confirmar a senha dele (decisao 2026-08-07, ver ADR pendente).
+    exp = int(time.time()) + ttl_horas * 3600
+    payload = f"{username}|{exp}"
+    assin = hmac.new(AUTH_TOKEN_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return base64.urlsafe_b64encode(f"{payload}|{assin}".encode()).decode()
 
 
 # ==============================================================================
@@ -261,13 +317,13 @@ COORDENADAS_FIXAS = {
     "IBA": [-23.907681, -46.325638], "ICB": [-23.886147, -46.416167], "ICG": [-23.767863, -46.343114],
     "ICP": [-23.658495, -46.490753], "ICQ": [-23.926493, -46.402720], "ICR": [-23.640310, -46.323992],
     "ICZ": [-23.954824, -46.293306], "IEF": [-23.477809, -46.360984], "IES": [-23.545441, -46.603648],
-    "IIP": [-23.564977, -46.604896], "IJN": [-23.195297, -46.870829], "IJU": [-23.889626, -46.338534], 
+    "IIP": [-23.564977, -46.604896], "IJN": [-23.195297, -46.870829], "IJU": [-23.889626, -46.338534],
     "ILA": [-23.520217, -46.698082], "IMO": [-23.557803, -46.608382], "IOF": [-23.658579, -46.338538],
     "IPA": [-23.774399, -46.306769], "IPG": [-23.847950, -46.370812], "IPR": [-23.537749, -46.625522],
-    "IQA": [-23.925948, -46.380123], "IQB": [-23.875674, -46.348587], "IRA": [-23.500572, -46.339448], 
+    "IQA": [-23.925948, -46.380123], "IQB": [-23.875674, -46.348587], "IRA": [-23.500572, -46.339448],
     "IRG": [-23.736705, -46.382241], "IRP": [-23.713578, -46.414862], "IRS": [-23.828162, -46.363101],
     "ISA": [-23.647553, -46.531007], "ISC": [-23.613874, -46.558834], "ISL": [-23.752383, -46.389262],
-    "ISN": [-23.928399, -46.363015], "ISU": [-23.551210, -46.288671], "IUF": [-23.860615, -46.359726], 
+    "ISN": [-23.928399, -46.363015], "ISU": [-23.551210, -46.288671], "IUF": [-23.860615, -46.359726],
     "IUT": [-23.624864, -46.544716], "IVP": [-23.848139, -46.390430], "OAR": [-23.500419, -46.339111],
     "OBF": [-23.525591, -46.666726], "OBR": [-23.545397, -46.616293], "OCE": [-23.484980, -46.481471],
     "OCV": [-23.525061, -46.333701], "OEG": [-23.498082, -46.519759], "OET": [-23.510887, -46.552273],
@@ -760,6 +816,70 @@ async def limpar_evidencias_orfas(
 @app_api.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# ==============================================================================
+# ENDPOINT DE AUTENTICACAO (integracao SGO Workforce, app irmao separado)
+#
+# Reaproveita a MESMA tabela `usuarios` do SGO (perfil/escopo/governanca) sem
+# o Workforce precisar guardar a connection string do Postgres de producao --
+# o Workforce so conhece WORKFORCE_API_KEY_SECRET (chave dedicada, nunca a
+# credencial do banco). A comparacao de senha e' identica a' de app.py
+# (SESSAO 2.3): compara hash_senha(senha) com usuarios.senha_hash, nunca
+# devolve a resposta "usuario nao existe" separada de "senha errada" (evita
+# enumeracao de usuario). senha_hash NUNCA entra na resposta.
+# ==============================================================================
+@app_api.post("/auth/validar")
+async def auth_validar(
+    api_key: str = Security(validar_api_key_workforce),
+    username: str = Form(...),
+    senha: str = Form(...),
+):
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT senha_hash, nome, perfil, escopo, reset_obrigatorio, governanca "
+            "FROM usuarios WHERE username = %s",
+            (username.strip(),),
+        )
+        row = cur.fetchone()
+        cur.close()
+    finally:
+        release_connection(conn)
+
+    if not row or row[0] != hash_senha(senha):
+        raise HTTPException(status_code=401, detail="Usuário ou senha inválidos.")
+
+    _senha_hash, nome, perfil, escopo, reset_obrigatorio, governanca = row
+    if reset_obrigatorio == 1:
+        # Mesma regra de app.py (SESSAO 2.3): usuario com senha pendente de
+        # troca nao completa o login ate resetar -- o Workforce nao tem tela
+        # de reset propria, entao recusa aqui em vez de deixar logar com
+        # senha provisoria (fail closed).
+        raise HTTPException(
+            status_code=403,
+            detail="Senha pendente de troca. Acesse o SGO para definir uma nova senha antes de entrar no Workforce.",
+        )
+
+    resposta = {
+        "username": username.strip(),
+        "nome": nome,
+        "perfil": perfil,
+        "escopo": escopo,
+        "governanca": (governanca or "Mapa de Campo").split(","),
+    }
+    if AUTH_TOKEN_SECRET:
+        # TTL curto de proposito (revisao de seguranca 2026-08-07): o sid
+        # viaja na query string (?sid=...) do link aberto pelo EE17 do
+        # Workforce, que fica gravado no historico do navegador e em logs
+        # de acesso -- diferente do uso original em app.py (12h, token
+        # sobrevive a reconexao da camera dentro da mesma sessao), aqui e'
+        # so a ponte de um clique so entre os dois apps. Corrigir de vez
+        # (cookie HttpOnly + endpoint de troca em app.py) fica para uma
+        # decisao maior, registrada no ADR-0062 como pendente.
+        resposta["sid"] = gerar_token_sessao(username.strip(), ttl_horas=TTL_HORAS_SID_SSO)
+    return resposta
 
 
 # ==============================================================================
