@@ -6835,6 +6835,19 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
 
     st.markdown("---")
     st.markdown("#### ✅ Apontamento e Conclusão de OS")
+    # Botao de retorno ao Workforce (integracao SGO Workforce, EE17 -- ver
+    # docs/90_ADR_0062_INTEGRACAO_LOGIN_SGO_E_APONTAMENTO_OS.md do repositorio
+    # SGO Workforce, e o ADR novo desta rodada 2026-08-11). Link estatico sem
+    # nenhum estado compartilhado entre os dois apps -- "voltar" e' so trocar
+    # de aba/fechar esta; a jornada/atividade continua rodando sozinha do
+    # lado do Workforce enquanto o colaborador aponta a OS aqui (nunca soube
+    # que ele saiu, decisao consciente do responsavel do produto - ver ADR).
+    # Sempre visivel (nao so quando veio via ?sid=): nao ha como distinguir
+    # de forma confiavel "chegou aqui pelo Workforce" de "chegou direto no
+    # SGO" sem guardar estado novo, e mostrar o botao a mais nunca atrapalha
+    # quem nao usa o Workforce.
+    url_workforce = st.secrets.get("URL_APP_WORKFORCE", "https://sgoworkforce.mrslogistica.workers.dev")
+    st.link_button("↩️ Voltar ao Workforce", url_workforce, use_container_width=True)
     if _falhas_anteriores:
         st.error(f"⛔ {len(_falhas_anteriores)} OS NÃO foram gravadas (evidência falhou) — corrija a foto e reenvie:")
         for _os_falha, _motivo in _falhas_anteriores:
