@@ -151,7 +151,14 @@ def gerar_token_sessao(username: str, ttl_horas: int = 12) -> str:
     # payload baterem byte a byte. So chamada depois de auth_validar ja ter
     # conferido a senha de verdade -- nunca gera token para um usuario sem
     # antes confirmar a senha dele (decisao 2026-08-07, ver ADR pendente).
-    exp = int(time.time()) + ttl_horas * 3600
+    # int() em volta da soma inteira (nao so' time.time()) e' proposital:
+    # ttl_horas fracionario (TTL_HORAS_SID_SSO = 5/60, ver uso abaixo) fazia
+    # "int + float" virar float em Python - exp gravado como "...940.0" em
+    # vez de "...940", e int("...940.0") SEMPRE falha (ValueError), engolido
+    # em silencio pelo except Exception de validar_token_sessao (app.py).
+    # Bug real: o sid de SSO nunca validou desde o primeiro dia, pra
+    # qualquer TTL fracionario - nao era timing nem segredo divergente.
+    exp = int(time.time() + ttl_horas * 3600)
     payload = f"{username}|{exp}"
     assin = hmac.new(AUTH_TOKEN_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
     return base64.urlsafe_b64encode(f"{payload}|{assin}".encode()).decode()
@@ -880,6 +887,36 @@ async def auth_validar(
         # decisao maior, registrada no ADR-0062 como pendente.
         resposta["sid"] = gerar_token_sessao(username.strip(), ttl_horas=TTL_HORAS_SID_SSO)
     return resposta
+
+
+# ==============================================================================
+# LISTAGEM DE USUARIOS CADASTRADOS (integracao SGO Workforce, feature
+# "Equipe da jornada", 2026-08-12) -- usada pelo Workforce pra oferecer uma
+# selecao de matricula real (em vez de texto livre) de quem mais participou
+# da jornada. Protegida pela MESMA chave de /auth/validar
+# (WORKFORCE_API_KEY_SECRET) -- nao exige senha de ninguem, so a chave de
+# integracao.
+#
+# NOTA DE PRIVACIDADE: essa chave e' client-embedded (visivel no JS publico
+# do Workforce, mesmo padrao ja documentado em configSgo.js -- nao e'
+# segredo de verdade). Isso significa que qualquer pessoa que leia o
+# codigo-fonte do site do Workforce consegue listar nome+matricula de TODO
+# colaborador cadastrado no SGO. Por isso a resposta aqui e' deliberadamente
+# minima -- nunca perfil/escopo/governanca (que revelariam cargo/lotacao),
+# so o suficiente pra popular uma lista de selecao.
+# ==============================================================================
+@app_api.get("/usuarios")
+async def listar_usuarios(api_key: str = Security(validar_api_key_workforce)):
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT username, nome FROM usuarios ORDER BY nome")
+        linhas = cur.fetchall()
+        cur.close()
+    finally:
+        release_connection(conn)
+
+    return [{"username": username, "nome": nome} for username, nome in linhas]
 
 
 # ==============================================================================

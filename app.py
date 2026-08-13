@@ -328,7 +328,16 @@ def _auth_secret():
     return st.secrets.get("AUTH_TOKEN_SECRET", "TROQUE-ESTE-SEGREDO-NO-SECRETS")
 
 def gerar_token_sessao(username: str, ttl_horas: int = 12) -> str:
-    exp = int(time.time()) + ttl_horas * 3600
+    # int() em volta da soma inteira (nao so' time.time()) e' proposital -
+    # ttl_horas fracionario faz "int + float" virar float em Python, exp
+    # gravado como "...940.0" em vez de "...940", e int("...940.0") sempre
+    # falha (ValueError) do lado de validar_token_sessao - bug real
+    # encontrado em 2026-08-13 no uso de api.py (TTL_HORAS_SID_SSO = 5/60),
+    # corrigido aqui tambem pra manter as duas copias byte a byte identicas
+    # (o uso atual em app.py, ttl_horas=12 inteiro, nunca disparou o bug,
+    # mas a funcao precisa continuar segura pra qualquer TTL fracionario
+    # futuro).
+    exp = int(time.time() + ttl_horas * 3600)
     payload = f"{username}|{exp}"
     assin = hmac.new(_auth_secret().encode(), payload.encode(), hashlib.sha256).hexdigest()
     return base64.urlsafe_b64encode(f"{payload}|{assin}".encode()).decode()
@@ -2658,6 +2667,14 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     )
     api_key_fixa = st.secrets.get("OFFLINE_API_KEY", "")
 
+    # Link de retorno ao Workforce (ADR-0065, 2026-08-11) - mesmo secret/default
+    # do botao ja adicionado em _render_apontamento (versao online). Embutido
+    # aqui tambem porque o pacote offline e' um artefato HTML autocontido a
+    # parte, sem nenhum link de volta proprio ate agora - "target=_blank" abre
+    # o Workforce mesmo sem rede (PWA proprio, cacheado via service worker,
+    # ver interface_campo/service-worker.js), igual qualquer app instalado.
+    url_workforce_offline = st.secrets.get("URL_APP_WORKFORCE", "https://sgoworkforce.mrslogistica.workers.dev")
+
     # Trava de prioridade (Muito Alta bloqueia as demais) embutida no momento da publicação
     # do pacote — o HTML offline é um snapshot estático, então mudanças na configuração só
     # valem para pacotes republicados depois da alteração (mesma ressalva do fluxo de sync).
@@ -2769,7 +2786,10 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 <h1 class="title">⚡ Sistema de Gestão de Ordens de Serviço</h1>
                 <p class="subtitle">Modo Offline de Produção • Operador: <strong>{usuario}</strong></p>
             </div>
-            <div id="statusOnline" class="status-badge status-offline">📡 Offline</div>
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <a href="{url_workforce_offline}" target="_blank" rel="noopener" class="btn btn-secondary" style="display: inline-block; width: auto; text-decoration: none; text-align: center;">↩️ Voltar ao Workforce</a>
+                <div id="statusOnline" class="status-badge status-offline">📡 Offline</div>
+            </div>
         </div>
 
         <div class="grid">
