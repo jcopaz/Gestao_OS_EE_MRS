@@ -4225,7 +4225,12 @@ def tratar_df_os(df: pd.DataFrame):
     })
     return df_out
 
-@st.cache_data
+# ttl/max_entries adicionados em 21/08/2026 -- app caiu por estouro de memoria no
+# Streamlit Cloud (sgomrs.streamlit.app). Sem limite, cada combinacao nova de
+# escopo_usuario/etl_version/lista_os_filtro (ex.: cada exportacao SAP por periodo, que
+# varia a lista de OS) ficava para sempre na RAM do processo, sem nunca liberar a
+# entrada anterior -- e essa base inclui a coluna dados_completos (JSONB), a mais pesada.
+@st.cache_data(ttl=600, max_entries=16)
 def carregar_base_sem_overlay(escopo_usuario: str, etl_version: str, lista_os_filtro: tuple | None = None) -> pd.DataFrame:
     conn = get_connection()
     try:
@@ -4331,7 +4336,12 @@ def carregar_base_sem_overlay(escopo_usuario: str, etl_version: str, lista_os_fi
 
     return df_base_final
 
-@st.cache_data(show_spinner=False)
+# ttl/max_entries adicionados em 21/08/2026 (mesmo incidente de estouro de memoria da
+# funcao acima) -- baixas_mtime muda a cada baixa de OS registrada por qualquer usuario,
+# entao toda baixa criava uma copia inteira nova do DataFrame combinado na RAM, e a
+# anterior nunca era liberada. max_entries pequeno porque so importa o mtime mais recente
+# por escopo -- entradas antigas nunca mais sao reaproveitadas (o mtime nao repete).
+@st.cache_data(show_spinner=False, ttl=600, max_entries=8)
 def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, baixas_mtime: str) -> pd.DataFrame:
     df_base = df_base_bruto.copy()
     if df_base.empty: return df_base
