@@ -983,7 +983,11 @@ def classificar_turno(dt):
 #endregion
 
 #region 3.6: Auxiliares da Sidebar — Preparação e Filtros (Blindagem)
-@st.cache_data(show_spinner=False)
+# ttl/max_entries adicionados em 21/08/2026 (mesmo incidente de estouro de memoria de
+# carregar_base_sem_overlay/aplicar_overlay_baixas) -- df_base muda toda vez que uma
+# baixa e registrada em qualquer escopo, entao cada baixa deixava mais uma copia do
+# resultado presa na RAM pra sempre.
+@st.cache_data(show_spinner=False, ttl=600, max_entries=16)
 def preparar_df_visao(df_base: pd.DataFrame, filtro_visao: str) -> pd.DataFrame:
     df_visao = df_base.copy()
     _colunas_obrigatorias = ["Status da Operação", "Data/Hora Realizado", "Data inicial programada"]
@@ -1096,7 +1100,9 @@ def aplicar_filtros_sidebar(
 import calendar as pycal
 from datetime import date
 
-@st.cache_data(show_spinner=False)
+# ttl/max_entries: mesmo motivo de preparar_df_visao (df_base_cal muda a cada baixa
+# registrada, sem limite isso acumulava uma copia por baixa, pra sempre).
+@st.cache_data(show_spinner=False, ttl=600, max_entries=16)
 def _preparar_df_calendario(df_base_cal: pd.DataFrame) -> pd.DataFrame:
     if df_base_cal.empty: return pd.DataFrame()
     df = df_base_cal.copy()
@@ -1110,7 +1116,7 @@ def _preparar_df_calendario(df_base_cal: pd.DataFrame) -> pd.DataFrame:
     df["Nivel_Prioridade"] = pd.to_numeric(df["Nivel_Prioridade"], errors="coerce").fillna(999).astype(int)
     return df
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=600, max_entries=16)
 def montar_eventos_calendario_patios(df_base_cal: pd.DataFrame, ano: int, mes: int, max_patios_visiveis: int = 2) -> list[dict]:
     df = _preparar_df_calendario(df_base_cal)
     if df.empty: return []
@@ -1143,7 +1149,7 @@ def montar_eventos_calendario_patios(df_base_cal: pd.DataFrame, ano: int, mes: i
 
     return eventos
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=600, max_entries=16)
 def resumir_demanda_calendario(df_base_cal: pd.DataFrame, ano: int, mes: int, dia_ref: int | None = None) -> dict:
     df = _preparar_df_calendario(df_base_cal)
     primeiro_dia, ultimo_dia = date(int(ano), int(mes), 1), date(int(ano), int(mes), pycal.monthrange(int(ano), int(mes))[1])
@@ -1176,7 +1182,7 @@ def resumir_demanda_calendario(df_base_cal: pd.DataFrame, ano: int, mes: int, di
 
     return {"dia_ref": dia_atual_ref, "qtd_patios": int(qtd_patios), "total_os": int(total_os), "patio_prioritario": patio_prioritario_txt, "serie_total_os_mes": serie_total_os_mes, "labels_mes": labels_mes}
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=600, max_entries=16)
 #endregion
 
 #region 3.7.4: Resumo de Conclusões por Turno
@@ -4002,7 +4008,10 @@ def carregar_config_operacional(coordenacao: str) -> dict:
 #endregion 4.2
 
 #region 4.2b: Cálculo do Raio de Roteirização (Cacheado)
-@st.cache_data(show_spinner=False)
+# ttl/max_entries: mesmo motivo das demais (df_pendentes_f deriva de df_base, que muda
+# a cada baixa registrada -- sem limite, cada combinacao nova ficava presa na RAM pra
+# sempre).
+@st.cache_data(show_spinner=False, ttl=600, max_entries=16)
 def calcular_df_recomendado(df_pendentes_f: pd.DataFrame, lat_origem: float, lon_origem: float, raio_busca_km: int, escopo_usr: str) -> pd.DataFrame:
     # Extraído de dentro de "Ferramentas de Campo" (10.3.2) e cacheado: sem isso, essa conta
     # (mapear lat/lon por Pátio, Haversine, rank de Segurança da Operação, ordenação) rodava em
@@ -7727,7 +7736,12 @@ if tab2 is not None:
 #endregion 10.3.3
 
 #region 10.3.4: Mapa Interativo Otimizado (Cache da Malha)
-@st.cache_resource(show_spinner=False)
+# ttl/max_entries adicionados em 21/08/2026: sem eles esse era o cache mais pesado do
+# app -- cache_resource guarda o objeto folium.Map DE VERDADE (nao serializado) e a
+# chave inclui lat/lon de origem, que muda a cada busca de endereco/GPS de qualquer
+# usuario. Sem limite, cada busca deixava mais um mapa inteiro (com a malha ferroviaria
+# completa desenhada dentro) preso na RAM do processo, pra sempre.
+@st.cache_resource(show_spinner=False, ttl=600, max_entries=8)
 def _construir_mapa_navegacao(lat_centro, lon_centro, zoom_mapa, lat_origem, lon_origem, local_nome, origem_tipo, raio_busca_km, agg_map):
     # cache_resource (nao so extrair a funcao): antes, o mapa inteiro -- inclusive a malha
     # ferroviaria inteira, 1 objeto folium.GeoJson por trecho -- era reconstruido em TODO
