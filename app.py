@@ -1,3 +1,10 @@
+# ==============================================================================
+# SGO Eletroeletrônica — Gestão_OS (painel Streamlit)
+# Autor / Responsável pelo produto: Julio Copaz (julio.paz@mrs.com.br)
+# Todos os direitos reservados. Uso, cópia ou distribuição não autorizados
+# são proibidos.
+# ==============================================================================
+
 #region SESSÃO 1: Imports, Configurações e Funções de Base
 
 #region 1.1: Imports
@@ -4548,6 +4555,7 @@ st.markdown("""
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
 st.sidebar.caption("SGO Eletroeletrônica • v16.1.0")
+st.sidebar.caption("Desenvolvido por Julio Paz • julio.paz@mrs.com.br")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")

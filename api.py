@@ -1,3 +1,10 @@
+# ==============================================================================
+# SGO Eletroeletrônica — Gestão_OS (API de produção, FastAPI)
+# Autor / Responsável pelo produto: Julio Copaz (julio.paz@mrs.com.br)
+# Todos os direitos reservados. Uso, cópia ou distribuição não autorizados
+# são proibidos.
+# ==============================================================================
+
 import io
 import os
 import re
