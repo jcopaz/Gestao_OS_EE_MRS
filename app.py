@@ -4506,18 +4506,21 @@ st.markdown("""
     }
     [data-testid="stSidebar"] div[data-baseweb="select"] span, [data-testid="stSidebar"] div[data-baseweb="input"] input { color: white !important; }
 
-    /* 3b. CAMPO DE DATA (Período de Programação/Execução) -- o seletor generico acima
-    (data-baseweb="input"/"base-input") não estava cobrindo o range picker do
-    st.date_input: campo aparecia em branco (fundo e texto claros, sem contraste) até
-    o usuário clicar em cima. Reforço direto no data-testid do widget (mais estável
-    entre versões do Streamlit do que confiar só no atributo interno do BaseWeb),
-    cobrindo input, wrapper e o ícone de calendário.
+    /* 3b. CAMPO DE DATA (Período de Programação/Execução) -- tentativa anterior (fundo
+    escuro igual ao resto da sidebar) só pegou parte dos elementos internos do range
+    picker do st.date_input: sobrou uma pilula vermelha com texto branco (data ilegível)
+    num fundo claro. Em vez de brigar com o esquema de cor interno do BaseWeb, fundo
+    claro fixo + texto preto em TUDO dentro do widget (`*`, cobre a pilula/tag também) --
+    mais simples e não depende de acertar cada sub-elemento individualmente.
     */
+    [data-testid="stSidebar"] [data-testid="stDateInput"] * {
+        color: #0F172A !important;
+    }
     [data-testid="stSidebar"] [data-testid="stDateInput"] input,
     [data-testid="stSidebar"] [data-testid="stDateInput"] div[data-baseweb] {
-        background-color: #1E293B !important; color: #FFFFFF !important; border-color: #475569 !important;
+        background-color: #FFFFFF !important; border-color: #475569 !important;
     }
-    [data-testid="stSidebar"] [data-testid="stDateInput"] svg { fill: #FFFFFF !important; }
+    [data-testid="stSidebar"] [data-testid="stDateInput"] svg { fill: #0F172A !important; }
 
     /* 4. EXPANDERS (Painel Retrátil na Sidebar) */
     [data-testid="stSidebar"] [data-testid="stExpander"] details { border: 1px solid #FF4B4B !important; border-radius: 8px !important; overflow: hidden; }
