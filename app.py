@@ -4505,7 +4505,20 @@ st.markdown("""
         background-color: #1E293B !important; border-color: #475569 !important; border-radius: 6px !important; color: white !important;
     }
     [data-testid="stSidebar"] div[data-baseweb="select"] span, [data-testid="stSidebar"] div[data-baseweb="input"] input { color: white !important; }
-    
+
+    /* 3b. CAMPO DE DATA (Período de Programação/Execução) -- o seletor generico acima
+    (data-baseweb="input"/"base-input") não estava cobrindo o range picker do
+    st.date_input: campo aparecia em branco (fundo e texto claros, sem contraste) até
+    o usuário clicar em cima. Reforço direto no data-testid do widget (mais estável
+    entre versões do Streamlit do que confiar só no atributo interno do BaseWeb),
+    cobrindo input, wrapper e o ícone de calendário.
+    */
+    [data-testid="stSidebar"] [data-testid="stDateInput"] input,
+    [data-testid="stSidebar"] [data-testid="stDateInput"] div[data-baseweb] {
+        background-color: #1E293B !important; color: #FFFFFF !important; border-color: #475569 !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stDateInput"] svg { fill: #FFFFFF !important; }
+
     /* 4. EXPANDERS (Painel Retrátil na Sidebar) */
     [data-testid="stSidebar"] [data-testid="stExpander"] details { border: 1px solid #FF4B4B !important; border-radius: 8px !important; overflow: hidden; }
     [data-testid="stSidebar"] [data-testid="stExpander"] summary { background-color: #FF4B4B !important; }
@@ -4555,7 +4568,15 @@ st.markdown("""
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
 st.sidebar.caption("SGO Eletroeletrônica • v16.1.0")
-st.sidebar.caption("Desenvolvido por Julio Paz • julio.paz@mrs.com.br")
+st.sidebar.markdown(
+    """
+    <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">
+        <div style="font-size:0.68rem; color:#64748B; text-transform:uppercase; letter-spacing:0.05em;">Desenvolvimento</div>
+        <div style="font-size:0.82rem; color:#CBD5E1; padding-left:10px;">Julio Paz</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
