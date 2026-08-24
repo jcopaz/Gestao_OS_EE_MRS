@@ -277,6 +277,20 @@ Primeira execução real do `/limpar_evidencias_orfas` (endpoint criado nesta me
 
 ---
 
+## 24/08/2026 — App caiu de novo (agora por estouro do limite do plano Neon Free)
+
+**O que aconteceu:** `sgomrs.streamlit.app` caiu com `psycopg2.OperationalError` logo na inicialização (`init_connection_pool()`, que já tenta 10x com 4s de espera entre tentativas pensando em Neon "acordando" — esgotou as 10 tentativas mesmo assim, descartando cold-start simples como causa). Julio confirmou no painel do Neon: era estouro de limite do plano gratuito (rede/compute), não credencial nem projeto pausado.
+
+**Causa raiz:** o próprio `carregar_base_sem_overlay` já tinha uma nota de 22/07/2026 avisando que o *network transfer* do Neon Free estava perto do teto de 5GB/mês. O `ttl=600` aplicado no incidente de 21/08 (ver acima) resolveu a memória, mas tem um efeito colateral: força reconsulta da base inteira (com a coluna `dados_completos`, JSONB, a mais pesada) a cada 10 minutos **mesmo sem nenhuma baixa nova** — mais tráfego/compute no Neon do que o cache "pra sempre" de antes (que causava o vazamento de RAM, mas gerava menos consulta).
+
+**Correção:** `ttl` de `carregar_base_sem_overlay` subiu de 600 pra 1800s. É a única das 8 funções cacheadas no incidente anterior que de fato consulta o Neon direto — as outras 7 operam em cima de um DataFrame já carregado em memória, então o `ttl` delas não tem custo de rede, só de CPU (ficaram como estavam). `max_entries` continua sendo quem prende a memória (não depende do `ttl`), então subir o `ttl` só reduz consulta ao Neon, sem reabrir o risco do estouro de RAM original.
+
+**O que ficou pendente:** se o plano Neon Free estourar de novo mesmo com o `ttl` maior, a próxima alavanca é reduzir o que é puxado por request — hoje `carregar_base_sem_overlay` sempre traz `dados_completos` (JSONB) inteiro, mesmo pra telas que não usam esse campo (ex.: Painel/Calendário só precisam de status/data/pátio). Selecionar colunas por caso de uso, em vez de sempre a tabela inteira, é mudança estrutural maior — não foi feita aqui, só a mitigação de `ttl`.
+
+**Aprendizado:** `ttl` curto que resolve vazamento de memória pode **aumentar** consumo de rede/egress se a função cacheada consulta um serviço externo pago por uso (Neon, Supabase) — é uma troca (RAM local vs. custo/limite do serviço), não uma correção isenta de efeito colateral. Ao ajustar `ttl` de cache que fala com um serviço externo, sempre checar se aquela função específica *de fato* consulta a rede (ou só reprocessa um DataFrame já em memória) — só a primeira tem custo real de reduzir o `ttl`; nas demais, `ttl` curto é só CPU e pode ficar baixo sem problema.
+
+---
+
 ## Lições transversais (válidas pra qualquer mudança futura)
 
 - **Verificar causa raiz com dado real (SQL/log) antes de aplicar patch** — não assumir, não adivinhar. Vale tanto pra bug de dado quanto pra bug de infraestrutura.

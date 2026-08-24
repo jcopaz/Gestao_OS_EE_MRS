@@ -4246,7 +4246,13 @@ def tratar_df_os(df: pd.DataFrame):
 # escopo_usuario/etl_version/lista_os_filtro (ex.: cada exportacao SAP por periodo, que
 # varia a lista de OS) ficava para sempre na RAM do processo, sem nunca liberar a
 # entrada anterior -- e essa base inclui a coluna dados_completos (JSONB), a mais pesada.
-@st.cache_data(ttl=600, max_entries=16)
+# ttl elevado pra 1800s em 24/08/2026 -- app caiu de novo, agora por estouro do limite
+# do plano Neon Free (rede/compute). Essa e a unica funcao cacheada aqui que de fato
+# consulta o Neon (as demais operam em cima do DataFrame ja carregado); ttl curto forcava
+# reconsulta da base inteira (com o JSONB pesado) a cada 10min mesmo sem dado novo.
+# max_entries continua sendo quem prende a memoria (nao depende do ttl), entao subir o
+# ttl reduz consulta ao Neon sem voltar a arriscar o estouro de RAM original.
+@st.cache_data(ttl=1800, max_entries=16)
 def carregar_base_sem_overlay(escopo_usuario: str, etl_version: str, lista_os_filtro: tuple | None = None) -> pd.DataFrame:
     conn = get_connection()
     try:
