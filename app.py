@@ -1238,6 +1238,11 @@ def render_tela_admin():
     tem_upload_dados = "Upload de Dados" in gov_admin
     tem_ativos_gov = tem_upload_dados or "Mapeamento de Ativos" in gov_admin
     tem_iw47_gov = tem_upload_dados or "Importação IW47" in gov_admin
+    # Permissao propria (pedido do Julio em 24/08/2026, gerenciavel em "Gestao de
+    # Usuarios" -- ver opcoes_gov). Restrita ao username "admin" por enquanto, alem
+    # da permissao em si -- tirar essa segunda trava quando decidir liberar pra mais
+    # gente.
+    tem_napl_gov = ("Baixa Manual NAPL" in gov_admin) and (st.session_state.get("username") == "admin")
 
     # --- MANUAL DE PADRONIZAÇÃO DE DADOS (GOVERNANÇA) ---
     with st.expander("📖 MANUAL DE IMPORTAÇÃO (Padrão Exigido para Planilhas)", expanded=True):
@@ -2159,6 +2164,10 @@ def render_tela_admin():
     # aqui, mesmas 6 colunas, mesma regra de consolidação por OS (causa válida E001/E005
     # e horário mais recente vencem) e a mesma trava de segurança (nunca sobrescreve
     # baixa de campo real, com foto ou origem não administrativa).
+    # Permissao propria "Baixa Manual NAPL" + restrita ao username "admin" por
+    # enquanto (pedido do Julio em 24/08/2026) -- ver tem_napl_gov no topo da funcao.
+    if not tem_napl_gov:
+        return
     st.markdown("---")
     st.subheader("📥 Baixa Manual — NAPL")
 
@@ -2655,7 +2664,10 @@ def render_tela_gestao_usuarios():
         # "Importação IW47" e "Mapeamento de Ativos" (pedido 31/07/2026): permissões
         # granulares -- liberam só a respectiva seção de render_tela_admin() sem exigir
         # o "Upload de Dados" completo (que também inclui a Carga de OS Programadas).
-        opcoes_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Importação IW47", "Mapeamento de Ativos", "Gestão de Usuários", "Exportar SAP", "Governança", "Configurações Operacionais"]
+        # "Baixa Manual NAPL" adicionada em 24/08/2026 -- por enquanto so tem efeito
+        # real pro username "admin" (trava extra em tem_napl_gov, regiao 3.8.6),
+        # mesmo que outro usuario tambem marque essa opcao aqui.
+        opcoes_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Importação IW47", "Mapeamento de Ativos", "Gestão de Usuários", "Exportar SAP", "Governança", "Configurações Operacionais", "Baixa Manual NAPL"]
 
         #region 8.2.1: Criar Novo Usuário (Formulário)
         with st.form("form_novo_user", clear_on_submit=True):
