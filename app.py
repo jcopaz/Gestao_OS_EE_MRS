@@ -2153,6 +2153,215 @@ def render_tela_admin():
                 st.error(f"❌ Erro ao processar a planilha IW47: {e}")
     #endregion 3.8.5
 
+    #region 3.8.6: Baixa Manual — NAPL (Não se Aplica / Ativo Inativado, Falta de Material)
+    # Antes disso, baixa NAPL era um script SQL rodado manualmente contra o Neon
+    # (ver bases_os/napl_baixa_massa.sql, 30/07/2026, 141 OS) -- vira upload recorrente
+    # aqui, mesmas 6 colunas, mesma regra de consolidação por OS (causa válida E001/E005
+    # e horário mais recente vencem) e a mesma trava de segurança (nunca sobrescreve
+    # baixa de campo real, com foto ou origem não administrativa).
+    st.markdown("---")
+    st.subheader("📥 Baixa Manual — NAPL")
+
+    with st.expander("📋 Formato da planilha exigido (colunas + exemplo de linha)", expanded=False):
+        st.markdown(
+            "Só estas 6 colunas são lidas (nomes exatamente assim, acento incluído — "
+            "outras colunas da planilha, como `Linha selecionada` ou `Confirmação`, são ignoradas):"
+        )
+        st.dataframe(
+            pd.DataFrame([{
+                "Ordem": "22740501",
+                "Criado por": "99006413",
+                "Causa do desvio": "E001",
+                "Texto confirmação": "ativo desativado devido obra da remodela",
+                "Data de lançamento": "30/07/2026",
+                "Hora real do fim de execução": "10:31:20",
+            }]),
+            hide_index=True, width="stretch",
+        )
+        st.caption(
+            "Causa do desvio válida pra NAPL: E001 (Ativo Inativado) ou E005 (Falta de Material). "
+            "Se a mesma OS aparecer mais de uma vez na planilha, fica só 1 linha por OS: "
+            "prioriza causa válida (E001/E005) e, empatando, o horário mais recente."
+        )
+
+    coord_baixa_napl_fallback = st.selectbox(
+        "Coordenação (usada só quando a OS não é encontrada em Programação)",
+        ["Paranapiacaba", "Piaçaguera"],
+        key="coord_baixa_napl_fallback",
+    )
+
+    _CAUSAS_NAPL_VALIDAS = {"E001", "E005"}
+
+    arquivo_napl = st.file_uploader(
+        "Selecione a planilha de baixa NAPL", type=["xlsx", "csv"], key="upload_napl_baixa_massa"
+    )
+
+    if arquivo_napl is not None:
+        try:
+            df_napl = (
+                pd.read_csv(arquivo_napl) if arquivo_napl.name.lower().endswith(".csv")
+                else pd.read_excel(arquivo_napl)
+            )
+        except Exception as e:
+            st.error(f"❌ Não foi possível ler a planilha: {e}")
+            df_napl = None
+
+        if df_napl is not None:
+            col_ordem = _pick_coluna(df_napl, ["Ordem"])
+            col_matricula_napl = _pick_coluna(df_napl, ["Criado por"])
+            col_causa = _pick_coluna(df_napl, ["Causa do desvio"])
+            col_texto_napl = _pick_coluna(df_napl, ["Texto confirmação", "Texto confirmacao"])
+            col_data_napl = _pick_coluna(df_napl, ["Data de lançamento", "Data de lancamento"])
+            col_hora_napl = _pick_coluna(df_napl, ["Hora real do fim de execução", "Hora real do fim de execucao"])
+
+            _colunas_napl_faltando = [
+                nome for nome, col in [
+                    ("Ordem", col_ordem), ("Criado por", col_matricula_napl), ("Causa do desvio", col_causa),
+                    ("Texto confirmação", col_texto_napl), ("Data de lançamento", col_data_napl),
+                    ("Hora real do fim de execução", col_hora_napl),
+                ] if col is None
+            ]
+
+            if _colunas_napl_faltando:
+                st.error(f"❌ Coluna(s) não encontrada(s) na planilha: {', '.join(_colunas_napl_faltando)}.")
+            else:
+                registros_napl = []
+                alertas_napl = []
+
+                for idx, row in df_napl.iterrows():
+                    os_napl = _normalizar_os(row[col_ordem])
+                    matricula_napl = _normalizar_matricula(row[col_matricula_napl])
+                    causa_napl = _limpar_texto(row[col_causa]).upper()
+                    texto_napl = _limpar_texto(row[col_texto_napl])
+                    data_txt_napl = _formatar_data_iw47(row[col_data_napl])
+                    hora_txt_napl = _formatar_hora_iw47(row[col_hora_napl])
+
+                    if not os_napl:
+                        alertas_napl.append(f"Linha {idx + 2}: OS vazia/inválida. Registro ignorado.")
+                        continue
+                    if not matricula_napl:
+                        alertas_napl.append(f"Linha {idx + 2} (OS {os_napl}): sem matrícula válida. Registro ignorado.")
+                        continue
+                    if not data_txt_napl or not hora_txt_napl:
+                        alertas_napl.append(f"Linha {idx + 2} (OS {os_napl}): data/hora inválida. Registro ignorado.")
+                        continue
+
+                    dt_ordenacao_napl = _montar_datetime_iw47(row[col_data_napl], row[col_hora_napl])
+                    registros_napl.append({
+                        "os": os_napl, "matricula": matricula_napl, "causa": causa_napl, "texto": texto_napl,
+                        "data_txt": data_txt_napl, "hora_txt": hora_txt_napl,
+                        "dt_ordenacao": dt_ordenacao_napl if pd.notna(dt_ordenacao_napl) else pd.Timestamp.min,
+                        "causa_valida": causa_napl in _CAUSAS_NAPL_VALIDAS,
+                    })
+
+                # Consolida 1 linha por OS -- mesma regra do napl_baixa_massa.sql de 30/07/2026:
+                # prioriza causa valida (E001/E005) e, empatando, o horario mais recente.
+                consolidado_napl = {}
+                for r in registros_napl:
+                    atual = consolidado_napl.get(r["os"])
+                    if atual is None or (r["causa_valida"], r["dt_ordenacao"]) > (atual["causa_valida"], atual["dt_ordenacao"]):
+                        consolidado_napl[r["os"]] = r
+                lista_napl_final = list(consolidado_napl.values())
+
+                if alertas_napl:
+                    st.warning(f"⚠️ {len(alertas_napl)} linha(s) da planilha ignorada(s).")
+                    with st.expander("Ver alertas", expanded=False):
+                        for a in alertas_napl[:300]:
+                            st.write(f"- {a}")
+
+                if not lista_napl_final:
+                    st.info("Nenhum registro válido pra processar.")
+                else:
+                    st.caption(
+                        f"{len(lista_napl_final)} OS distinta(s) após consolidação "
+                        f"({len(registros_napl)} linha(s) válida(s) na planilha)."
+                    )
+                    st.dataframe(
+                        pd.DataFrame([
+                            {
+                                "OS": r["os"], "Matrícula": r["matricula"], "Causa": r["causa"],
+                                "Válida (E001/E005)": "Sim" if r["causa_valida"] else "Não",
+                                "Texto": r["texto"], "Data": r["data_txt"], "Hora": r["hora_txt"],
+                            }
+                            for r in lista_napl_final
+                        ]),
+                        hide_index=True, width="stretch",
+                    )
+
+                    if st.button("✅ Confirmar Baixa NAPL", key="confirmar_baixa_napl", type="primary"):
+                        conn = get_connection()
+                        try:
+                            cur = conn.cursor()
+
+                            cur.execute(
+                                "SELECT os, coordenacao FROM os_programadas WHERE os = ANY(%s)",
+                                ([r["os"] for r in lista_napl_final],),
+                            )
+                            mapa_coord_napl = {str(os_): coord for os_, coord in cur.fetchall()}
+
+                            agora_napl = datetime.now()
+                            lote_napl = []
+                            for r in lista_napl_final:
+                                coordenacao_napl = mapa_coord_napl.get(r["os"], coord_baixa_napl_fallback)
+                                realizado_em_napl = f'{r["data_txt"]} {r["hora_txt"][:5]}'
+                                lote_napl.append((
+                                    r["os"], "Realizado", realizado_em_napl, coordenacao_napl, r["matricula"],
+                                    "Baixa NAPL Manual", "Sozinho",
+                                    r["data_txt"], r["hora_txt"], r["data_txt"], r["hora_txt"],
+                                    r["causa"], r["texto"], agora_napl,
+                                ))
+
+                            execute_values(
+                                cur,
+                                """
+                                INSERT INTO baixas (
+                                    os, status, realizado_em, coordenacao, concluido_por,
+                                    geolocalizacao_baixa, equipe, data_inicio, hora_inicio,
+                                    data_fim, hora_fim, causa_nrav, texto_confirmacao, atualizado_em
+                                )
+                                VALUES %s
+                                ON CONFLICT (os) DO UPDATE SET
+                                    status = EXCLUDED.status,
+                                    realizado_em = EXCLUDED.realizado_em,
+                                    coordenacao = EXCLUDED.coordenacao,
+                                    concluido_por = EXCLUDED.concluido_por,
+                                    geolocalizacao_baixa = EXCLUDED.geolocalizacao_baixa,
+                                    equipe = EXCLUDED.equipe,
+                                    data_inicio = EXCLUDED.data_inicio,
+                                    hora_inicio = EXCLUDED.hora_inicio,
+                                    data_fim = EXCLUDED.data_fim,
+                                    hora_fim = EXCLUDED.hora_fim,
+                                    causa_nrav = EXCLUDED.causa_nrav,
+                                    texto_confirmacao = EXCLUDED.texto_confirmacao,
+                                    atualizado_em = EXCLUDED.atualizado_em
+                                WHERE
+                                    COALESCE(baixas.foto_evidencia, '') = ''
+                                    AND COALESCE(baixas.geolocalizacao_baixa, '') IN (
+                                        '', 'Baixa IW47', 'Importação IW47', 'Baixa Manual', 'Baixa NAPL Manual'
+                                    )
+                                    AND NOT EXISTS (
+                                        SELECT 1 FROM evidencias ev
+                                        WHERE TRIM(CAST(ev.os_referencia AS TEXT)) = TRIM(CAST(EXCLUDED.os AS TEXT))
+                                    );
+                                """,
+                                lote_napl,
+                                page_size=500,
+                            )
+
+                            conn.commit()
+                            cur.close()
+
+                        except Exception:
+                            conn.rollback()
+                            raise
+                        finally:
+                            release_connection(conn)
+
+                        st.success(f"✅ {len(lote_napl)} OS processada(s) como Baixa NAPL Manual.")
+                        st.cache_data.clear()
+                        st.rerun()
+    #endregion 3.8.6
+
 #endregion 3.8
 
 #region 3.8b: Configurações Operacionais (render_tela_config_operacional)
