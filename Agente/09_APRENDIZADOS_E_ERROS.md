@@ -315,6 +315,14 @@ Primeira execução real do `/limpar_evidencias_orfas` (endpoint criado nesta me
 
 ---
 
+## 26/08/2026 — Catálogo de causas do NAPL ampliado por engano, revertido no mesmo dia
+
+**O que aconteceu:** Julio passou uma lista de 61 códigos de causa (C0xx/E0xx/M0xx/P099) dizendo ser "a planilha de justificativa do NAPL". `_CAUSAS_NAPL_VALIDAS` foi ampliado de `{E001, E005}` pra essa lista inteira, commitado e pushed em `main`. Minutos depois, Julio confirmou o engano: os códigos `E0xx` eram na verdade do fluxo **NRAV**, e os `M0xx` são de **Via Permanente** — outra área/coordenação, sem relação com o NAPL da Eletroeletrônica. Revertido no mesmo dia (`{E001, E005}` de volta).
+
+**Aprendizado:** quando o responsável do produto passa uma lista/planilha "descoberta" de fora do código (não confirmada linha a linha com uma fonte já validada no sistema), vale perguntar explicitamente a origem/escopo antes de aplicar em lote — mesmo quando a mudança em si é de baixo risco técnico (aqui, `causa_valida` só afetava desempate, nunca bloqueava nada). O sinal de alerta que passou batido: o próprio código já tinha um catálogo **separado e documentado** pro NRAV (`_JUSTIFICATIVAS_NRAV`, citando o IT-ENG-3113) — quando um catálogo novo se sobrepõe fortemente a um catálogo já existente e documentado (mesmos códigos E0xx), é sinal de possível duplicação/confusão de escopo, vale confirmar antes de assumir que são coisas diferentes.
+
+---
+
 ## Lições transversais (válidas pra qualquer mudança futura)
 
 - **Verificar causa raiz com dado real (SQL/log) antes de aplicar patch** — não assumir, não adivinhar. Vale tanto pra bug de dado quanto pra bug de infraestrutura.
