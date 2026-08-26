@@ -294,11 +294,17 @@ def init_db():
             # mantendo a OS aparecendo como pendente na Roteirizacao mesmo ja baixada (13/07/2026).
             cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS atualizado_em TIMESTAMP DEFAULT NOW();")
             # Fluxo NRAV (Não Realizada Após Vistoria, IT-ENG-3113): causa_nrav guarda o codigo
-            # padrao (E002..E011) e texto_confirmacao a observacao livre (max 38 char, limite do
+            # padrao (E002..E011) e texto_confirmacao a observacao livre (max 40 char, limite do
             # campo "Txt. confirmação" do SAP) -- ficam NULL/vazio pra qualquer baixa que nao seja
             # NRAV (pedido 29/07/2026).
             cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS causa_nrav VARCHAR(10);")
             cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS texto_confirmacao VARCHAR(38);")
+            # Limite real corrigido de 38 para 40 caracteres (26/08/2026, confirmado pelo
+            # responsavel do produto) -- ADD COLUMN IF NOT EXISTS acima nao alarga coluna ja
+            # existente em producao, precisa de ALTER COLUMN TYPE explicito. Idempotente
+            # (rodar de novo com a coluna ja VARCHAR(40) e no-op), mesmo padrao dos ALTERs
+            # de coluna nova acima.
+            cur.execute("ALTER TABLE baixas ALTER COLUMN texto_confirmacao TYPE VARCHAR(40);")
         except Exception: conn.rollback()
         
         # Criar o admin mestre se não existir
@@ -2158,12 +2164,13 @@ def render_tela_admin():
                 st.error(f"❌ Erro ao processar a planilha IW47: {e}")
     #endregion 3.8.5
 
-    #region 3.8.6: Baixa Manual — NAPL (Não se Aplica / Ativo Inativado, Falta de Material)
+    #region 3.8.6: Baixa Manual — NAPL (Não se Aplica)
     # Antes disso, baixa NAPL era um script SQL rodado manualmente contra o Neon
     # (ver bases_os/napl_baixa_massa.sql, 30/07/2026, 141 OS) -- vira upload recorrente
-    # aqui, mesmas 6 colunas, mesma regra de consolidação por OS (causa válida E001/E005
-    # e horário mais recente vencem) e a mesma trava de segurança (nunca sobrescreve
-    # baixa de campo real, com foto ou origem não administrativa).
+    # aqui, mesmas 6 colunas, mesma regra de consolidação por OS (causa válida - catálogo
+    # completo confirmado em 26/08/2026, ver _CAUSAS_NAPL_VALIDAS - e horário mais recente
+    # vencem) e a mesma trava de segurança (nunca sobrescreve baixa de campo real, com
+    # foto ou origem não administrativa).
     # Permissao propria "Baixa Manual NAPL" + restrita ao username "admin" por
     # enquanto (pedido do Julio em 24/08/2026) -- ver tem_napl_gov no topo da funcao.
     if not tem_napl_gov:
@@ -2188,9 +2195,10 @@ def render_tela_admin():
             hide_index=True, width="stretch",
         )
         st.caption(
-            "Causa do desvio válida pra NAPL: E001 (Ativo Inativado) ou E005 (Falta de Material). "
+            "Causa do desvio válida pra NAPL: catálogo oficial de códigos (C0xx/E0xx/M0xx/P099, "
+            "atualizado em 26/08/2026 - ver _CAUSAS_NAPL_VALIDAS). "
             "Se a mesma OS aparecer mais de uma vez na planilha, fica só 1 linha por OS: "
-            "prioriza causa válida (E001/E005) e, empatando, o horário mais recente."
+            "prioriza causa válida (do catálogo) e, empatando, o horário mais recente."
         )
 
     coord_baixa_napl_fallback = st.selectbox(
@@ -2199,7 +2207,29 @@ def render_tela_admin():
         key="coord_baixa_napl_fallback",
     )
 
-    _CAUSAS_NAPL_VALIDAS = {"E001", "E005"}
+    # Catalogo oficial de causas de desvio validas pra NAPL (planilha de justificativa,
+    # confirmado pelo responsavel do produto em 26/08/2026 - antes so tinha E001/E005,
+    # que era so um subconjunto assumido, nao a lista real). So usado como criterio de
+    # desempate na consolidacao por OS (causa_valida acima) - uma causa fora desta lista
+    # NAO bloqueia a linha, so perde a prioridade de desempate pra outra linha da mesma OS
+    # que tenha uma causa valida.
+    #
+    # Catalogo DISTINTO de _JUSTIFICATIVAS_NRAV/CODIGOS_NRAV_VALIDOS (regiao 1.3 deste
+    # arquivo e api.py) - aquele e o subconjunto oficial do fluxo NRAV (IT-ENG-3113, so
+    # impedimento EXTERNO, E001/E008 ficam de fora de proposito). Nao confundir nem
+    # unificar os dois catalogos sem confirmar de novo - representam decisoes de negocio
+    # diferentes (Nao se Aplica x Nao Realizado Apos Vistoria).
+    _CAUSAS_NAPL_VALIDAS = {
+        "C038", "C039", "C055", "C058", "C059", "C060", "C065", "C310",
+        "E001", "E002", "E003", "E004", "E005", "E006", "E007", "E008", "E009", "E010",
+        "M011", "M012", "M021", "M022", "M031", "M032", "M033", "M034", "M035", "M036",
+        "M037", "M041", "M042", "M043", "M044", "M045", "M046", "M047", "M048",
+        "M051", "M052", "M053", "M054", "M056", "M057",
+        "M061", "M062", "M063", "M064",
+        "M071", "M072", "M073", "M074", "M075", "M076", "M077", "M078", "M079",
+        "M710", "M711", "M712", "M713",
+        "P099",
+    }
 
     arquivo_napl = st.file_uploader(
         "Selecione a planilha de baixa NAPL", type=["xlsx", "csv"], key="upload_napl_baixa_massa"
@@ -2255,20 +2285,21 @@ def render_tela_admin():
                         )
                         causa_napl = causa_napl[:10]
 
-                    # texto_confirmacao e VARCHAR(38) no banco (limite real do campo "Txt.
-                    # confirmação" do SAP, mesmo respeitado pelo max_chars=38 do fluxo NRAV
-                    # manual, online e offline) -- diferente do preenchimento manual (que
-                    # nunca deixa digitar alem disso), o texto aqui vem cru de planilha/SAP
-                    # e pode vir mais longo, o que quebrava o INSERT em lote com
-                    # StringDataRightTruncation. Trunca em vez de rejeitar a linha inteira -
-                    # mesmo espirito de "marcado, nao descartado" ja usado noutras partes do
-                    # app (nunca perde a OS inteira por causa de um campo secundario).
-                    if len(texto_napl) > 38:
+                    # texto_confirmacao e VARCHAR(40) no banco (limite real do campo "Txt.
+                    # confirmação" do SAP, corrigido de 38 para 40 em 26/08/2026, mesmo
+                    # respeitado pelo max_chars=40 do fluxo NRAV manual, online e offline) --
+                    # diferente do preenchimento manual (que nunca deixa digitar alem disso),
+                    # o texto aqui vem cru de planilha/SAP e pode vir mais longo, o que
+                    # quebrava o INSERT em lote com StringDataRightTruncation. Trunca em vez
+                    # de rejeitar a linha inteira - mesmo espirito de "marcado, nao
+                    # descartado" ja usado noutras partes do app (nunca perde a OS inteira
+                    # por causa de um campo secundario).
+                    if len(texto_napl) > 40:
                         alertas_napl.append(
                             f"Linha {idx + 2} (OS {os_napl}): texto de confirmação truncado "
-                            f"para 38 caracteres (limite do campo no SAP)."
+                            f"para 40 caracteres (limite do campo no SAP)."
                         )
-                        texto_napl = texto_napl[:38]
+                        texto_napl = texto_napl[:40]
 
                     if not os_napl:
                         alertas_napl.append(f"Linha {idx + 2}: OS vazia/inválida. Registro ignorado.")
@@ -3564,8 +3595,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                         <select id="causa_${{idx}}" ${{locked ? "disabled" : ""}}>${{opcoesJustificativaNravHtml}}</select>
                     </div>
                     <div class="field">
-                        <label for="obs_${{idx}}">Observações (máx. 38 caracteres)</label>
-                        <input id="obs_${{idx}}" type="text" maxlength="38" ${{locked ? "disabled" : ""}}>
+                        <label for="obs_${{idx}}">Observações (máx. 40 caracteres)</label>
+                        <input id="obs_${{idx}}" type="text" maxlength="40" ${{locked ? "disabled" : ""}}>
                     </div>
                 </div>
 
@@ -4822,7 +4853,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v17.0.1")
+st.sidebar.caption("SGO Eletroeletrônica • v18.0.0")
 st.sidebar.markdown(
     """
     <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">
@@ -7721,8 +7752,8 @@ def _render_apontamento_nrav(df_recomendado_ui: pd.DataFrame):
                 )
             with c2:
                 _obs = st.text_input(
-                    "Observações (máx. 38 caracteres)", key=f"observacao_nrav_{os_id}",
-                    max_chars=38
+                    "Observações (máx. 40 caracteres)", key=f"observacao_nrav_{os_id}",
+                    max_chars=40
                 )
             justificativas_nrav[os_id] = _sel
             observacoes_nrav[os_id] = _obs

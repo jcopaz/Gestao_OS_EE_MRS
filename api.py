@@ -451,10 +451,11 @@ async def sincronizar_baixa_offline(
     # 3.1) NRAV (Não Realizado Após Vistoria, IT-ENG-3113, pedido 29/07/2026): fluxo distinto
     # da Conclusão -- valida ANTES do upload da foto (falha rápido, sem gastar upload pro
     # Supabase à toa). Causa validada contra a lista server-side (não confia só no <select> do
-    # cliente) e Observações truncada em 38 chars (limite do campo "Txt. confirmação" do SAP).
+    # cliente) e Observações truncada em 40 chars (limite real do campo "Txt. confirmação" do
+    # SAP, corrigido de 38 para 40 em 26/08/2026).
     tipo_baixa_norm = (tipo_baixa or "CONCLUSAO").strip().upper()
     causa_nrav_norm = causa_nrav.strip().upper()
-    texto_confirmacao_norm = texto_confirmacao.strip()[:38]
+    texto_confirmacao_norm = texto_confirmacao.strip()[:40]
     if tipo_baixa_norm == "NRAV":
         if causa_nrav_norm not in CODIGOS_NRAV_VALIDOS:
             raise HTTPException(status_code=400, detail=f"Causa NRAV inválida ou não informada: '{causa_nrav}'.")
