@@ -2245,6 +2245,31 @@ def render_tela_admin():
                     data_txt_napl = _formatar_data_iw47(row[col_data_napl])
                     hora_txt_napl = _formatar_hora_iw47(row[col_hora_napl])
 
+                    # causa_nrav e VARCHAR(10) - codigo esperado e curto (E001/E005), mas
+                    # protege contra a mesma StringDataRightTruncation se a coluna "Causa do
+                    # desvio" da planilha vier com descricao longa em vez do codigo.
+                    if len(causa_napl) > 10:
+                        alertas_napl.append(
+                            f"Linha {idx + 2} (OS {os_napl}): causa do desvio truncada para "
+                            f"10 caracteres - confira se a coluna tem o código (ex.: E001), não a descrição."
+                        )
+                        causa_napl = causa_napl[:10]
+
+                    # texto_confirmacao e VARCHAR(38) no banco (limite real do campo "Txt.
+                    # confirmação" do SAP, mesmo respeitado pelo max_chars=38 do fluxo NRAV
+                    # manual, online e offline) -- diferente do preenchimento manual (que
+                    # nunca deixa digitar alem disso), o texto aqui vem cru de planilha/SAP
+                    # e pode vir mais longo, o que quebrava o INSERT em lote com
+                    # StringDataRightTruncation. Trunca em vez de rejeitar a linha inteira -
+                    # mesmo espirito de "marcado, nao descartado" ja usado noutras partes do
+                    # app (nunca perde a OS inteira por causa de um campo secundario).
+                    if len(texto_napl) > 38:
+                        alertas_napl.append(
+                            f"Linha {idx + 2} (OS {os_napl}): texto de confirmação truncado "
+                            f"para 38 caracteres (limite do campo no SAP)."
+                        )
+                        texto_napl = texto_napl[:38]
+
                     if not os_napl:
                         alertas_napl.append(f"Linha {idx + 2}: OS vazia/inválida. Registro ignorado.")
                         continue
@@ -4797,7 +4822,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v17.0.0")
+st.sidebar.caption("SGO Eletroeletrônica • v17.0.1")
 st.sidebar.markdown(
     """
     <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">
