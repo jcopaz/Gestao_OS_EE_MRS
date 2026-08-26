@@ -303,6 +303,18 @@ Primeira execução real do `/limpar_evidencias_orfas` (endpoint criado nesta me
 
 ---
 
+## 26/08/2026 — StringDataRightTruncation no primeiro uso real do upload de Baixa Manual NAPL
+
+**O que aconteceu:** primeira tentativa real de upload da planilha de Baixa Manual NAPL (feature nova, commit `1662a40` de 25/08/2026) quebrou com `psycopg2.errors.StringDataRightTruncation` no `execute_values` do INSERT em `baixas`.
+
+**Causa raiz:** `texto_confirmacao` é `VARCHAR(38)` no banco — limite real do campo "Txt. confirmação" do SAP, já respeitado em todo o resto do app via `max_chars=38` no fluxo NRAV manual (online e offline). O upload em lote de NAPL era o único caminho que gravava esse campo direto da planilha, sem truncar — e a própria planilha de exemplo mostrada na tela já tinha um texto com 41 caracteres, acima do limite. Feature nova nunca tinha sido testada com um arquivo real até este momento.
+
+**Correção:** trunca (não descarta a linha) `texto_confirmacao` em 38 e `causa_nrav` (`VARCHAR(10)`, mesmo risco) em 10 caracteres antes do INSERT, com alerta visível de quantas linhas foram truncadas — mesmo espírito de "marcado, não descartado" já usado no resto do app.
+
+**Aprendizado:** ao espelhar um campo já existente noutro fluxo (aqui, `texto_confirmacao`/`causa_nrav` do fluxo NRAV manual), replicar também as validações/limites que protegem esse campo nos outros pontos de entrada — não só o nome da coluna. Todo caminho de escrita novo pra uma coluna com limite de tamanho (`VARCHAR(N)`) precisa validar/truncar antes do INSERT, mesmo que outro caminho já trate isso — a validação não é automática só porque a coluna já existe. E: a planilha de exemplo/mock mostrada na própria tela de upload é um bom canário — se ela já estoura o limite, dado real vai estourar também.
+
+---
+
 ## Lições transversais (válidas pra qualquer mudança futura)
 
 - **Verificar causa raiz com dado real (SQL/log) antes de aplicar patch** — não assumir, não adivinhar. Vale tanto pra bug de dado quanto pra bug de infraestrutura.
