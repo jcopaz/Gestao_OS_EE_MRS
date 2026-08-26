@@ -291,6 +291,18 @@ Primeira execução real do `/limpar_evidencias_orfas` (endpoint criado nesta me
 
 ---
 
+## 26/08/2026 — Pátios novos (IPN, IQC) sem coordenada cadastrada + repetição do incidente de 15/07
+
+**O que aconteceu:** Julio pediu o cadastro de 2 pátios novos da coordenação de Piaçaguera (IPN - Prainha, e um segundo que ele digitou como "IQC" — depois confirmado com um líder de campo que o código certo do "Pátio Casqueiro" é **ICQ**, e que "IQC" na verdade é outro local real, "Extensão Cubatão 1"). Nenhum dos dois existia em `COORDENADAS_FIXAS`. Separadamente, o líder também reportou 16 OS reais com os ativos `S-ICQ005E1`/`S-ICQ005D1` ("Sinaleiro PN") aparecendo classificados no pátio **IPG** em vez de **ICQ**.
+
+**Causa raiz (dupla, dois problemas diferentes disfarçados de um só):** (1) `IPN`/`IQC` simplesmente não existiam em `COORDENADAS_FIXAS` — pátio novo sem coordenada cadastrada não aparece com erro, só cai silenciosamente em "N/D" (`_resolver_patio`) ou usa o fallback de outro pátio; (2) a classificação errada IPG/ICQ dos ativos `S-ICQ005E1`/`S-ICQ005D1` **não era bug de `_resolver_patio`** — é match exato contra a tabela `mapeamento_patios`, que já estava gravada com `patio='IPG'` pra esses `ativo_chave`, herdado da planilha original importada em "Mapeamento de Ativos → Pátios". Corrigido direto no Neon: `UPDATE mapeamento_patios SET patio='ICQ' WHERE ativo_chave IN ('S-ICQ005E1','S-ICQ005D1') AND patio='IPG'`.
+
+**Correção:** `IPN` e `IQC` adicionados a `COORDENADAS_FIXAS` em `app.py` **e** `api.py` (duplicação já é o padrão deste dicionário — nunca editar um só). Coordenada de `ICQ` também atualizada nos dois arquivos (era `-23.926493, -46.402720`, mesma classe de imprecisão do incidente de 15/07/2026 abaixo — o ponto salvo estava a ~2,1 km do local real informado por Julio, `-23.91531, -46.41890`).
+
+**Aprendizado:** o incidente de 15/07/2026 ("dado de geolocalização fixo no código é fácil de esquecer que precisa de manutenção") **se repetiu** — `ICQ` já tinha coordenada desalinhada de novo, sem que ninguém tivesse notado até esse pedido específico. Além disso, um segundo padrão de bug: **pátio novo sem entrada em `COORDENADAS_FIXAS` falha silenciosamente** (vira "N/D" ou pátio errado), nunca um erro visível — o mesmo cuidado de "canal claro pra equipe reportar imprecisão" do aprendizado de 15/07 vale igualmente para "pátio que nunca foi cadastrado". E: nem todo "ativo no pátio errado" é bug de lógica — a tabela `mapeamento_patios` (dado importado de planilha) pode estar simplesmente errada desde a origem; sempre conferir os dois lugares (lógica de resolução E dado já persistido) antes de concluir qual dos dois é a causa.
+
+---
+
 ## Lições transversais (válidas pra qualquer mudança futura)
 
 - **Verificar causa raiz com dado real (SQL/log) antes de aplicar patch** — não assumir, não adivinhar. Vale tanto pra bug de dado quanto pra bug de infraestrutura.
