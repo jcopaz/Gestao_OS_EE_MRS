@@ -4829,7 +4829,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v18.0.1")
+st.sidebar.caption("SGO Eletroeletrônica • v18.0.2")
 st.sidebar.markdown(
     """
     <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">
@@ -8045,7 +8045,12 @@ def _construir_mapa_navegacao(lat_centro, lon_centro, zoom_mapa, lat_origem, lon
     mapa = folium.Map(
         location=[lat_centro, lon_centro], zoom_start=zoom_mapa, max_bounds=True,
         min_lat=-25.50, max_lat=-19.50, min_lon=-53.50, max_lon=-44.00,
-        control_scale=True, tiles="CartoDB positron", prefer_canvas=True,
+        # "CartoDB positron" (26/08/2026): a Carto passou a exigir API key nos tiles
+        # de basemap - sem ela, o tile server devolve um aviso "API KEY REQUIRED"
+        # cobrindo o mapa inteiro em vez do mapa de verdade. OpenStreetMap e o preset
+        # nativo do Folium, gratuito e sem autenticacao - troca 1:1, sem precisar
+        # cadastrar chave nenhuma.
+        control_scale=True, tiles="OpenStreetMap", prefer_canvas=True,
     )
 
     # FIX: USO DO KML CACHEADO DA MEMÓRIA -- 1 GeoJson so (FeatureCollection da malha inteira)
