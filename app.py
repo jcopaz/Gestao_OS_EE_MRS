@@ -4829,7 +4829,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v18.1.0")
+st.sidebar.caption("SGO Eletroeletrônica • v18.2.0")
 st.sidebar.markdown(
     """
     <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">
@@ -8089,17 +8089,52 @@ def _construir_mapa_navegacao(lat_centro, lon_centro, zoom_mapa, lat_origem, lon
         location=[lat_origem, lon_origem], tooltip=f"Origem: {local_nome}",
         icon=folium.Icon(color="red", icon="home" if origem_tipo != "GPS" else "map-marker", prefix="fa"),
     ).add_to(mapa)
+    # Verde (26/08/2026, pedido do Julio) -- antes era o mesmo azul da malha ferroviaria
+    # e dos pinos de patio, dificultando diferenciar visualmente o que era raio de
+    # busca do que era ferrovia/patio.
     folium.Circle(
-        radius=raio_busca_km * 1000, location=[lat_origem, lon_origem], color="#3B82F6",
-        fill=True, fill_opacity=0.08, weight=2, tooltip=f"Raio: {raio_busca_km} km",
+        radius=raio_busca_km * 1000, location=[lat_origem, lon_origem], color="#16A34A",
+        fill=True, fill_color="#16A34A", fill_opacity=0.08, weight=2,
+        tooltip=f"Raio: {raio_busca_km} km",
     ).add_to(mapa)
 
     if agg_map is not None and not agg_map.empty:
         for _, row in agg_map.iterrows():
+            # Cor por volume de OS de Segurança pendente no patio (26/08/2026, pedido do
+            # Julio) -- escala qualitativa em 5 faixas (nao um gradiente continuo por
+            # min/max do conjunto atual, que mudaria de significado dependendo de quantos
+            # patios aparecem no mapa naquele momento). Azul = nenhuma Seguranca pendente
+            # (mesmo visual de antes); demais faixas ficam mais escuras/vermelhas conforme
+            # o volume sobe. Limiares sao um ponto de partida - ajustar se nao bater com o
+            # volume real observado.
+            _seg_pend = int(row["seg_total"])
+            if _seg_pend == 0:
+                _cor_borda, _cor_fill = "#1D4ED8", "#3B82F6"  # azul - sem OS de Seguranca pendente
+            elif _seg_pend <= 2:
+                _cor_borda, _cor_fill = "#F87171", "#FCA5A5"  # vermelho claro
+            elif _seg_pend <= 5:
+                _cor_borda, _cor_fill = "#EF4444", "#F87171"  # vermelho medio
+            elif _seg_pend <= 10:
+                _cor_borda, _cor_fill = "#B91C1C", "#EF4444"  # vermelho
+            else:
+                _cor_borda, _cor_fill = "#7F1D1D", "#991B1B"  # vermelho escuro
+
+            _popup_html = (
+                f"<b>Pátio: {row['Patio']}</b><br>"
+                f"Distância: {row['menor_dist']:.1f} km<br>"
+                f"<br><b>OS Pendentes: {int(row['qtd_os'])}</b><br>"
+                f"Segurança ({int(row['seg_total'])})<br>"
+                f"&nbsp;&nbsp;CI: {int(row['seg_ci'])}<br>"
+                f"&nbsp;&nbsp;SI: {int(row['seg_si'])}<br>"
+                f"<br>Confiabilidade ({int(row['conf_total'])})<br>"
+                f"&nbsp;&nbsp;CI: {int(row['conf_ci'])}<br>"
+                f"&nbsp;&nbsp;SI: {int(row['conf_si'])}"
+            )
             folium.CircleMarker(
-                location=[row["lat_patio"], row["lon_patio"]], radius=6, color="#1D4ED8", weight=1.5,
-                fill=True, fill_color="#3B82F6", fill_opacity=0.95,
-                tooltip=f"Pátio: {row['Patio']}<br>OS: {row['qtd_os']}<br>Distância: {row['menor_dist']:.1f} km",
+                location=[row["lat_patio"], row["lon_patio"]], radius=6, color=_cor_borda, weight=1.5,
+                fill=True, fill_color=_cor_fill, fill_opacity=0.95,
+                tooltip=f"Pátio: {row['Patio']} - clique para detalhes",
+                popup=folium.Popup(_popup_html, max_width=250),
             ).add_to(mapa)
 
     return mapa
@@ -8112,7 +8147,36 @@ if tab2 is not None:
 
     agg_map = None
     if not df_recomendado.empty:
-        agg_map = df_recomendado.groupby("Patio", as_index=False).agg(lat_patio=("lat_patio", "first"), lon_patio=("lon_patio", "first"), qtd_os=("Ordem servico", "count"), menor_dist=("Distancia_km", "min"))
+        # Segurança/Confiabilidade x Com/Sem Intervalo por patio (26/08/2026, pedido do
+        # Julio - popup detalhado + cor do pino por volume de Seguranca pendente).
+        # df_recomendado ja e' só OS pendentes (Status_norm em _status_aberto, ver
+        # df_pendentes_f) - não precisa filtrar concluida de novo aqui. Mesmo criterio
+        # de normalizacao de Tipo_Intervalo ja usado noutras abas (região 10.2.2/10.4):
+        # coluna pode nao existir em planilhas antigas, vira "N/D" em vez de quebrar.
+        _classif_map = df_recomendado.get(
+            "Classificacao", pd.Series("Confiabilidade", index=df_recomendado.index)
+        ).astype(str)
+        if "Tipo_Intervalo" in df_recomendado.columns:
+            _tipo_int_map = df_recomendado["Tipo_Intervalo"].fillna("N/D").astype(str).str.strip()
+        else:
+            _tipo_int_map = pd.Series("N/D", index=df_recomendado.index)
+        # Variavel local separada (nunca reatribui df_recomendado) - evita qualquer
+        # efeito colateral em outro trecho que use df_recomendado mais abaixo no
+        # mesmo escopo (ex.: Cronograma de Execução, mesmo fragment).
+        _df_map_calc = df_recomendado.assign(
+            _seg_ci=((_classif_map == "Segurança") & (_tipo_int_map == "Com Intervalo")).astype(int),
+            _seg_si=((_classif_map == "Segurança") & (_tipo_int_map == "Sem Intervalo")).astype(int),
+            _conf_ci=((_classif_map == "Confiabilidade") & (_tipo_int_map == "Com Intervalo")).astype(int),
+            _conf_si=((_classif_map == "Confiabilidade") & (_tipo_int_map == "Sem Intervalo")).astype(int),
+        )
+        agg_map = _df_map_calc.groupby("Patio", as_index=False).agg(
+            lat_patio=("lat_patio", "first"), lon_patio=("lon_patio", "first"),
+            qtd_os=("Ordem servico", "count"), menor_dist=("Distancia_km", "min"),
+            seg_ci=("_seg_ci", "sum"), seg_si=("_seg_si", "sum"),
+            conf_ci=("_conf_ci", "sum"), conf_si=("_conf_si", "sum"),
+        )
+        agg_map["seg_total"] = agg_map["seg_ci"] + agg_map["seg_si"]
+        agg_map["conf_total"] = agg_map["conf_ci"] + agg_map["conf_si"]
 
     mapa = _construir_mapa_navegacao(
         lat_centro, lon_centro, zoom_mapa, lat_origem, lon_origem,
