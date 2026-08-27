@@ -4829,7 +4829,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v18.0.2")
+st.sidebar.caption("SGO Eletroeletrônica • v18.0.3")
 st.sidebar.markdown(
     """
     <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">
@@ -8047,10 +8047,17 @@ def _construir_mapa_navegacao(lat_centro, lon_centro, zoom_mapa, lat_origem, lon
         min_lat=-25.50, max_lat=-19.50, min_lon=-53.50, max_lon=-44.00,
         # "CartoDB positron" (26/08/2026): a Carto passou a exigir API key nos tiles
         # de basemap - sem ela, o tile server devolve um aviso "API KEY REQUIRED"
-        # cobrindo o mapa inteiro em vez do mapa de verdade. OpenStreetMap e o preset
-        # nativo do Folium, gratuito e sem autenticacao - troca 1:1, sem precisar
-        # cadastrar chave nenhuma.
-        control_scale=True, tiles="OpenStreetMap", prefer_canvas=True,
+        # cobrindo o mapa inteiro em vez do mapa de verdade. Trocado primeiro pro
+        # OpenStreetMap (preset nativo do Folium), mas o visual e muito mais poluido
+        # (ruas/POIs/cores fortes) do que o fundo claro que a malha ferroviaria
+        # precisa pra se destacar por cima - Julio pediu de volta o fundo
+        # branco/cinza claro, quase sem detalhe, so o tracado. Esri "World Light
+        # Gray Base" e o equivalente gratuito mais proximo do visual antigo do
+        # CartoDB positron, sem exigir chave/cadastro nenhum (URL publica da
+        # ArcGIS Online, mesmo padrao usado por qualquer app com Folium/Leaflet).
+        control_scale=True, prefer_canvas=True,
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+        attr="Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ",
     )
 
     # FIX: USO DO KML CACHEADO DA MEMÓRIA -- 1 GeoJson so (FeatureCollection da malha inteira)
