@@ -4829,7 +4829,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v18.0.3")
+st.sidebar.caption("SGO Eletroeletrônica • v18.1.0")
 st.sidebar.markdown(
     """
     <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">
@@ -8059,6 +8059,18 @@ def _construir_mapa_navegacao(lat_centro, lon_centro, zoom_mapa, lat_origem, lon
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}",
         attr="Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ",
     )
+
+    # Camada de referencia do Esri (26/08/2026, pedido do Julio): rotulos de
+    # cidade/municipio + limites administrativos, transparente, feita pra encaixar
+    # por cima do "World Light Gray Base" acima sem trazer ruas/POIs (mesmo motivo
+    # que fez trocar o CartoDB positron). control=False (sempre visivel, sem
+    # entrada no LayerControl - nao ha LayerControl nesse mapa ainda).
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}",
+        attr="Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ",
+        name="Cidades e limites",
+        overlay=True, control=False,
+    ).add_to(mapa)
 
     # FIX: USO DO KML CACHEADO DA MEMÓRIA -- 1 GeoJson so (FeatureCollection da malha inteira)
     # em vez de 1 objeto por trecho: eram centenas de objetos Folium individuais, o principal
