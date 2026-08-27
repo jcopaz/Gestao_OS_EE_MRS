@@ -323,6 +323,18 @@ Primeira execução real do `/limpar_evidencias_orfas` (endpoint criado nesta me
 
 ---
 
+## 26/08/2026 — Basemap do Mapa de Campo quebrado por mudança externa da Carto
+
+**O que aconteceu:** Julio reportou o mapa da aba "Mapa de Campo" coberto por um aviso "API KEY REQUIRED carto.com/basemaps/apikey" em vez das ruas/malha ferroviária de verdade.
+
+**Causa raiz:** dependência externa, não bug de código — a Carto (dona do estilo de basemap "CartoDB positron" usado no `folium.Map`) mudou a política e passou a exigir cadastro de API key pros tiles de basemap. O preset do Folium continuava apontando pro endpoint antigo, que agora devolve um tile-aviso em vez do mapa real.
+
+**Correção:** trocado `tiles="CartoDB positron"` por `tiles="OpenStreetMap"` (preset nativo do Folium, gratuito, sem autenticação) — troca 1:1 de estilo visual, sem precisar cadastrar chave nenhuma.
+
+**Aprendizado:** serviços de tile/mapa gratuitos de terceiros (Carto, Stamen, etc.) mudam política de acesso sem aviso prévio no seu código — um mapa que "sempre funcionou" pode quebrar sem nenhum push seu, só porque o provedor externo mudou algo do lado dele. Se isso acontecer de novo com qualquer basemap, o teste rápido é abrir a URL do tile diretamente no navegador pra confirmar se é o provedor (não o código) que mudou.
+
+---
+
 ## Lições transversais (válidas pra qualquer mudança futura)
 
 - **Verificar causa raiz com dado real (SQL/log) antes de aplicar patch** — não assumir, não adivinhar. Vale tanto pra bug de dado quanto pra bug de infraestrutura.
