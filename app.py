@@ -4716,10 +4716,29 @@ def fragmento_filtros_sidebar_seguro():
         # Datas
         start_padrao = st.session_state.get("filtro_start_date", min_date)
         end_padrao = st.session_state.get("filtro_end_date", max_date)
+        def _sanear_intervalo_datas(start, end):
+            try:
+                start = pd.Timestamp(start).date()
+            except (TypeError, ValueError):
+                start = min_date
+            try:
+                end = pd.Timestamp(end).date()
+            except (TypeError, ValueError):
+                end = max_date
+            start = max(min_date, min(start, max_date))
+            end = max(min_date, min(end, max_date))
+            return (min_date, max_date) if start > end else (start, end)
+
+        start_padrao, end_padrao = _sanear_intervalo_datas(start_padrao, end_padrao)
+        st.session_state["filtro_start_date"] = start_padrao
+        st.session_state["filtro_end_date"] = end_padrao
         data_selecionada = st.date_input("Período de Programação", value=(start_padrao, end_padrao), min_value=min_date, max_value=max_date, format="DD/MM/YYYY")
 
         exec_start_padrao = st.session_state.get("filtro_exec_start_date", min_date)
         exec_end_padrao = st.session_state.get("filtro_exec_end_date", max_date)
+        exec_start_padrao, exec_end_padrao = _sanear_intervalo_datas(exec_start_padrao, exec_end_padrao)
+        st.session_state["filtro_exec_start_date"] = exec_start_padrao
+        st.session_state["filtro_exec_end_date"] = exec_end_padrao
         data_exec_selecionada = st.date_input("Período de Execução", value=(exec_start_padrao, exec_end_padrao), min_value=min_date, max_value=max_date, format="DD/MM/YYYY")
 
         
