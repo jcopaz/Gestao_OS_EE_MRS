@@ -554,33 +554,30 @@ def calcular_nivel_prioridade(classificacao: str, criticidade_rank: int) -> int:
     return base * 10 + int(criticidade_rank)
 #endregion 3.1.2
 
-# ==========================================
-# BLINDAGEM CONTRA DATAS INVÁLIDAS
-# ==========================================
+#region 3.1.3: Funções de Data/Hora e Status de Execução
+def parse_data_programada(valor):
+    if pd.isna(valor): return pd.NaT
+    s = str(valor).strip()
+    try:
+        if re.match(r'^\d{4}-\d{2}-\d{2}', s):          # já ISO -> não inverter
+            return pd.to_datetime(s, errors="coerce")
+        return pd.to_datetime(s, dayfirst=True, errors="coerce")   # DD/MM/AAAA
+    except Exception:
+        return pd.NaT
 
-start_padrao = st.session_state.get(
-    "filtro_start_date",
-    min_date
-)
+def agora_dt():
+    return datetime.now(timezone(timedelta(hours=-3)))
 
-end_padrao = st.session_state.get(
-    "filtro_end_date",
-    max_date
-)
+def formatar_dt_br(dt: datetime) -> str:
+    return dt.strftime("%d/%m/%Y %H:%M")
 
-# Garantir datas dentro do range
-
-start_padrao = max(start_padrao, min_date)
-start_padrao = min(start_padrao, max_date)
-
-end_padrao = max(end_padrao, min_date)
-end_padrao = min(end_padrao, max_date)
-
-# Garantir ordem correta
-
-if start_padrao > end_padrao:
-    start_padrao = min_date
-    end_padrao = max_date
+def determinar_status_execucao(data_programada: pd.Timestamp, realizado_em: datetime) -> str:
+    if pd.isna(data_programada): return "Realizado"
+    data_prog_dia = pd.to_datetime(data_programada).date()
+    data_real_dia = realizado_em.date()
+    if data_real_dia <= data_prog_dia: return "Realizado"
+    return "Realizado Fora da Data de Programação"
+#endregion 3.1.3
 
 #region 3.1.4: Cálculo de Distância Geográfica (Haversine)
 def haversine_vectorized(lat1, lon1, lat2_series, lon2_series):
@@ -987,175 +984,51 @@ def classificar_turno(dt):
 
 #region 3.6: Auxiliares da Sidebar — Preparação e Filtros (Blindagem)
 @st.cache_data(show_spinner=False)
-def preparar_df_visao(
-    df_base: pd.DataFrame,
-    filtro_visao: str
-) -> pd.DataFrame:
-
+def preparar_df_visao(df_base: pd.DataFrame, filtro_visao: str) -> pd.DataFrame:
     df_visao = df_base.copy()
-
-    _colunas_obrigatorias = [
-        "Status da Operação",
-        "Data/Hora Realizado",
-        "Data inicial programada"
-    ]
-
-    if (
-        df_visao.empty
-        or not all(
-            col in df_visao.columns
-            for col in _colunas_obrigatorias
-        )
-    ):
+    _colunas_obrigatorias = ["Status da Operação", "Data/Hora Realizado", "Data inicial programada"]
+    if df_visao.empty or not all(col in df_visao.columns for col in _colunas_obrigatorias):
         return pd.DataFrame()
 
-    # ==================================================
-    # COORDENAÇÃO
-    # ==================================================
-
+    # Normalização Defensiva da Coluna de Coordenação
     col_coord = None
-
-    for candidata in [
-        "Coordenacao",
-        "coordenacao",
-        "COORDENACAO"
-    ]:
+    for candidata in ["Coordenacao", "coordenacao", "COORDENACAO"]:
         if candidata in df_visao.columns:
-            col_coord = candidata
-            break
+            col_coord = candidata; break
 
-    if col_coord is None:
-
-        df_visao["Coordenacao"] = "N/D"
-
-    elif col_coord != "Coordenacao":
-
-        df_visao = df_visao.rename(
-            columns={
-                col_coord: "Coordenacao"
-            }
-        )
+    if col_coord is None: df_visao["Coordenacao"] = "N/D"
+    elif col_coord != "Coordenacao": df_visao = df_visao.rename(columns={col_coord: "Coordenacao"})
 
     _mapa_norm_coord = {
-        "PARANAPIACABA": "Paranapiacaba",
-        "PIAÇAGUERA": "Piaçaguera",
-        "PIACAGUERA": "Piaçaguera",
-        "IPG": "Piaçaguera",
-        "IPA": "Paranapiacaba",
-        "E.SP.IPG": "Piaçaguera",
-        "E.SP.IPA": "Paranapiacaba"
+        "PARANAPIACABA": "Paranapiacaba", "PIAÇAGUERA": "Piaçaguera", "PIACAGUERA": "Piaçaguera",
+        "IPG": "Piaçaguera", "IPA": "Paranapiacaba", "E.SP.IPG": "Piaçaguera", "E.SP.IPA": "Paranapiacaba",
     }
 
+    # FIX: Limpeza de quebras de linha e espaços duplos escondidos
     def _normalizar_coord(val):
+        if pd.isna(val) or str(val).strip() == "": return "N/D"
+        v = re.sub(r'\s+', ' ', str(val)).strip().upper()
+        return _mapa_norm_coord.get(v, str(val).strip())
 
-        if (
-            pd.isna(val)
-            or str(val).strip() == ""
-        ):
-            return "N/D"
+    df_visao["Coordenacao"] = df_visao["Coordenacao"].apply(_normalizar_coord)
 
-        v = (
-            re.sub(
-                r"\s+",
-                " ",
-                str(val)
-            )
-            .strip()
-            .upper()
-        )
-
-        return _mapa_norm_coord.get(
-            v,
-            str(val).strip()
-        )
-
-    df_visao["Coordenacao"] = (
-        df_visao["Coordenacao"]
-        .apply(_normalizar_coord)
-    )
-
-    # ==================================================
-    # FILTRO VISÃO
-    # ==================================================
-
+    # Filtro Exato após a limpeza pesada
     if filtro_visao != "Todas":
+        filtro_norm = _normalizar_coord(filtro_visao)
+        df_visao = df_visao[df_visao["Coordenacao"] == filtro_norm].copy()
 
-        filtro_norm = _normalizar_coord(
-            filtro_visao
-        )
+    df_visao["Status_norm"] = df_visao["Status da Operação"].astype(str).str.strip().str.upper()
+    df_visao["dt_realizado"] = df_visao["Data/Hora Realizado"].apply(parse_datahora_realizado)  # pyright: ignore[reportCallIssue, reportArgumentType]
+    df_visao["Turno"] = df_visao["dt_realizado"].apply(classificar_turno)
+    df_visao["dia_realizado"] = pd.to_datetime(df_visao["dt_realizado"], errors="coerce").dt.normalize()
+    df_visao["dt_prog_filtro"] = pd.to_datetime(df_visao["Data inicial programada"], errors="coerce")
+    df_visao["Turno_Filtro"] = df_visao["Turno"].fillna("Pendente (Sem Turno)")
 
-        df_visao = df_visao[
-            df_visao["Coordenacao"]
-            == filtro_norm
-        ].copy()
-
-    # ==================================================
-    # STATUS
-    # ==================================================
-
-    df_visao["Status_norm"] = (
-        df_visao["Status da Operação"]
-        .astype(str)
-        .str.strip()
-        .str.upper()
-    )
-
-    # ==================================================
-    # EXECUÇÃO
-    # ==================================================
-
-    df_visao["dt_realizado"] = (
-        df_visao["Data/Hora Realizado"]
-        .apply(parse_datahora_realizado)
-    )
-
-    df_visao["Turno"] = (
-        df_visao["dt_realizado"]
-        .apply(classificar_turno)
-    )
-
-    df_visao["dia_realizado"] = (
-        pd.to_datetime(
-            df_visao["dt_realizado"],
-            errors="coerce"
-        )
-        .dt.normalize()
-    )
-
-    # ==================================================
-    # DATA PROGRAMAÇÃO
-    # CORRIGE SERIAL EXCEL
-    # ==================================================
-
-    df_visao["dt_prog_filtro"] = (
-        df_visao["Data inicial programada"]
-        .apply(parse_data_programada)
-    )
-
-    # ==================================================
-    # TURNO FILTRO
-    # ==================================================
-
-    df_visao["Turno_Filtro"] = (
-        df_visao["Turno"]
-        .fillna("Pendente (Sem Turno)")
-    )
-
-    # ==================================================
-    # INTERVALO
-    # ==================================================
-
-    if (
-        "TIPO_INTERVALO_CAN" in df_visao.columns
-        and "Tipo_Intervalo"
-        not in df_visao.columns
-    ):
-
-        df_visao["Tipo_Intervalo"] = (
-            df_visao["TIPO_INTERVALO_CAN"]
-        )
+    if "TIPO_INTERVALO_CAN" in df_visao.columns and "Tipo_Intervalo" not in df_visao.columns:
+        df_visao["Tipo_Intervalo"] = df_visao["TIPO_INTERVALO_CAN"]
 
     return df_visao
+
 
 def aplicar_filtros_sidebar(
     df_visao: pd.DataFrame, patios_selecionados: list, classif_selecionadas: list,
@@ -4732,670 +4605,168 @@ if df_visao.empty or "dt_prog_filtro" not in df_visao.columns:
 #endregion 7.2
 
 #region 7.3: Filtros da Sidebar
+valid_dates = df_visao["dt_prog_filtro"].dropna()
+# Calendário restrito ao ano vigente (pedido 24/07/2026): prioriza min/max só das OS
+# programadas no ano corrente -- evita navegar pelo histórico inteiro (ex.: 2023-2026).
+# Sem dado no ano vigente (base de teste, por exemplo), cai pro min/max de toda a base.
+valid_dates_ano_vigente = valid_dates[valid_dates.dt.year == datetime.now().year]
+if not valid_dates_ano_vigente.empty: min_date, max_date = valid_dates_ano_vigente.min().date(), valid_dates_ano_vigente.max().date()
+elif not valid_dates.empty: min_date, max_date = valid_dates.min().date(), valid_dates.max().date()
+else: min_date, max_date = datetime.now().date() - pd.Timedelta(days=30), datetime.now().date()
 
-# ==================================================
-# LIMITES DE DATA DISPONÍVEIS
-# ==================================================
-
-valid_dates = pd.to_datetime(
-    df_visao["dt_prog_filtro"],
-    errors="coerce"
-).dropna()
-
-# Calendário restrito ao ano vigente (pedido 24/07/2026):
-# prioriza min/max apenas das OS programadas no ano corrente.
-# Sem dados no ano vigente, utiliza o intervalo completo da base.
-valid_dates_ano_vigente = valid_dates[
-    valid_dates.dt.year == datetime.now().year
-]
-
-if not valid_dates_ano_vigente.empty:
-    min_date = valid_dates_ano_vigente.min().date()
-    max_date = valid_dates_ano_vigente.max().date()
-
-elif not valid_dates.empty:
-    min_date = valid_dates.min().date()
-    max_date = valid_dates.max().date()
-
-else:
-    hoje = datetime.now().date()
-    min_date = hoje - timedelta(days=30)
-    max_date = hoje
-
-
-# ==================================================
-# BLINDAGEM DOS LIMITES GERAIS
-# ==================================================
-
-if isinstance(min_date, pd.Timestamp):
-    min_date = min_date.date()
-
-if isinstance(max_date, pd.Timestamp):
-    max_date = max_date.date()
-
-if isinstance(min_date, datetime):
-    min_date = min_date.date()
-
-if isinstance(max_date, datetime):
-    max_date = max_date.date()
-
-if min_date > max_date:
-    min_date, max_date = max_date, min_date
-
-
-# ==================================================
-# LISTAS DISPONÍVEIS PARA OS FILTROS
-# ==================================================
-
-lista_patios = sorted(
-    df_visao["Patio"]
-    .dropna()
-    .astype(str)
-    .unique()
-    .tolist()
-)
-
+lista_patios = sorted(df_visao["Patio"].dropna().astype(str).unique().tolist())
 lista_grupos_ativo = (
-    sorted(
-        df_visao["Grupo_Ativo"]
-        .dropna()
-        .astype(str)
-        .unique()
-        .tolist()
-    )
-    if "Grupo_Ativo" in df_visao.columns
-    else []
+    sorted(df_visao["Grupo_Ativo"].dropna().astype(str).unique().tolist())
+    if "Grupo_Ativo" in df_visao.columns else []
 )
-
-# Cascata (pedido de 22/07/2026):
-# se algum Grupo de Ativo estiver selecionado, a lista de Ativos
-# mostra somente os ativos pertencentes aos grupos selecionados.
-#
-# Se um reset estiver pendente, ignora a seleção antiga para que
-# a lista de ativos seja reconstruída com todo o universo disponível.
+# Cascata (pedido de 22/07/2026): se algum(s) Grupo(s) de Ativo já estiver(em) selecionado(s)
+# (do último "Aplicar Filtros"), a lista de Ativo mostra só os ativos daqueles grupos --
+# evita o gestor ter que procurar o ativo específico numa lista com todos os grupos juntos.
+# Se um reset ("Limpar Filtros") estiver pendente, ignora a seleção antiga (senão o próprio
+# "Limpar" herdaria a lista de Ativo já estreitada pelo Grupo de Ativo anterior).
 _grupos_ativo_sel_atual = (
     list(lista_grupos_ativo)
     if st.session_state.get("_solicitar_reset_filtros", False)
-    else st.session_state.get(
-        "filtro_grupos_ativo",
-        list(lista_grupos_ativo)
-    )
+    else st.session_state.get("filtro_grupos_ativo", list(lista_grupos_ativo))
 )
-
-if (
-    _grupos_ativo_sel_atual
-    and "Grupo_Ativo" in df_visao.columns
-):
-    _df_para_lista_ativos = df_visao[
-        df_visao["Grupo_Ativo"].isin(
-            _grupos_ativo_sel_atual
-        )
-    ]
+if _grupos_ativo_sel_atual and "Grupo_Ativo" in df_visao.columns:
+    _df_para_lista_ativos = df_visao[df_visao["Grupo_Ativo"].isin(_grupos_ativo_sel_atual)]
 else:
     _df_para_lista_ativos = df_visao
-
 lista_ativos = (
-    sorted(
-        _df_para_lista_ativos["Ativo"]
-        .dropna()
-        .astype(str)
-        .unique()
-        .tolist()
-    )
-    if "Ativo" in df_visao.columns
-    else []
+    sorted(_df_para_lista_ativos["Ativo"].dropna().astype(str).unique().tolist())
+    if "Ativo" in df_visao.columns else []
 )
-
 lista_planos_mes = (
-    sorted(
-        df_visao["Plano_Mes_Referencia"]
-        .dropna()
-        .astype(str)
-        .str.strip()
-        .replace("", pd.NA)
-        .dropna()
-        .unique()
-        .tolist()
-    )
-    if "Plano_Mes_Referencia" in df_visao.columns
-    else []
+    sorted(df_visao["Plano_Mes_Referencia"].dropna().astype(str).str.strip().replace("", pd.NA).dropna().unique().tolist())
+    if "Plano_Mes_Referencia" in df_visao.columns else []
 )
+lista_classificacoes = ["Segurança", "Confiabilidade"]
+lista_criticidades = ["Muito Alta", "Alta", "Média", "Baixa"]
+lista_turnos = ["Turno Dia (07h-19h)", "Administrativo (08h-17h30)", "Turno Noite (19h-07h)", "Pendente (Sem Turno)"]
+status_opcoes = ["Todos", "Todas Concluídas", "Concluídas no Prazo", "Concluídas com Atraso", "Pendentes", "Atrasado", "NRAV", "NAPL"]
+baixa_evidencia_opcoes = ["Todas", "Com Evidências Online", "Com Evidência Offline", "Sem Evidências", "Manual IW47"]
 
-lista_classificacoes = [
-    "Segurança",
-    "Confiabilidade"
-]
-
-lista_criticidades = [
-    "Muito Alta",
-    "Alta",
-    "Média",
-    "Baixa"
-]
-
-lista_turnos = [
-    "Turno Dia (07h-19h)",
-    "Administrativo (08h-17h30)",
-    "Turno Noite (19h-07h)",
-    "Pendente (Sem Turno)"
-]
-
-status_opcoes = [
-    "Todos",
-    "Todas Concluídas",
-    "Concluídas no Prazo",
-    "Concluídas com Atraso",
-    "Pendentes",
-    "Atrasado",
-    "NRAV",
-    "NAPL"
-]
-
-baixa_evidencia_opcoes = [
-    "Todas",
-    "Com Evidências Online",
-    "Com Evidência Offline",
-    "Sem Evidências",
-    "Manual IW47"
-]
-
-
-# ==================================================
-# FUNÇÕES AUXILIARES DOS FILTROS
-# ==================================================
-
-def _sanear_lista_filtro(
-    chave: str,
-    opcoes: list[str],
-    padrao: list[str]
-) -> list[str]:
-    """
-    Mantém no session_state somente itens que ainda existem
-    nas opções disponíveis do filtro.
-
-    Se a lista ficar vazia, ela permanece vazia. No sistema,
-    isso representa ausência de restrição por aquele filtro.
-    """
-
-    atuais = st.session_state.get(
-        chave,
-        list(padrao)
-    )
-
-    if not isinstance(atuais, (list, tuple, set)):
-        atuais = list(padrao)
-
-    atuais = [
-        item
-        for item in atuais
-        if item in opcoes
-    ]
-
+def _sanear_lista_filtro(chave: str, opcoes: list[str], padrao: list[str]):
+    # Pega o que o usuário selecionou no st.multiselect
+    atuais = st.session_state.get(chave, list(padrao))
+    
+    # Validação: mantém apenas itens que realmente existem nas opções disponíveis
+    atuais = [item for item in atuais if item in opcoes]
+    
+    # A MUDANÇA: Se a lista ficar vazia, não vamos forçar o retorno ao padrão.
+    # Vamos deixar retornar vazia, o que para o seu sistema significa "sem filtros aplicados".
     st.session_state[chave] = atuais
-
     return atuais
 
-
-def _normalizar_data_filtro(
-    valor,
-    valor_padrao
-):
-    """
-    Converte valores de data armazenados no session_state para
-    datetime.date.
-
-    Aceita:
-    - datetime.date
-    - datetime.datetime
-    - pandas.Timestamp
-    - texto reconhecido pelo Pandas
-    """
-
-    if valor is None:
-        return valor_padrao
-
-    if isinstance(valor, pd.Timestamp):
-        return valor.date()
-
-    if isinstance(valor, datetime):
-        return valor.date()
-
-    if hasattr(valor, "year") and hasattr(valor, "month") and hasattr(valor, "day"):
-        return valor
-
-    try:
-        valor_convertido = pd.to_datetime(
-            valor,
-            errors="coerce"
-        )
-
-        if pd.notna(valor_convertido):
-            return valor_convertido.date()
-
-    except Exception:
-        pass
-
-    return valor_padrao
-
-
-def _sanear_intervalo_datas(
-    data_inicio,
-    data_fim,
-    limite_minimo,
-    limite_maximo
-):
-    """
-    Garante que o intervalo enviado ao st.date_input seja válido.
-
-    Regras:
-    - converte valores para datetime.date;
-    - limita as datas ao intervalo existente na base;
-    - impede data inicial maior que a data final;
-    - retorna o período completo caso o intervalo seja inválido.
-    """
-
-    inicio = _normalizar_data_filtro(
-        data_inicio,
-        limite_minimo
-    )
-
-    fim = _normalizar_data_filtro(
-        data_fim,
-        limite_maximo
-    )
-
-    inicio = max(
-        limite_minimo,
-        min(inicio, limite_maximo)
-    )
-
-    fim = max(
-        limite_minimo,
-        min(fim, limite_maximo)
-    )
-
-    if inicio > fim:
-        inicio = limite_minimo
-        fim = limite_maximo
-
-    return inicio, fim
-
-
-# ==================================================
-# FUNÇÃO DE RENDERIZAÇÃO DOS FILTROS
-# ==================================================
-
+#region 7.3: Função de Renderização dos Filtros na Sidebar
 @st.fragment
 def fragmento_filtros_sidebar_seguro():
-
-    # Oculta completamente os filtros para o perfil Técnico.
+    # --- OCULTA TUDO PARA O TÉCNICO (Inclusive o título e o botão) ---
     if st.session_state.get("perfil") == "Técnico":
-        return
+        return # Interrompe a função aqui, não desenha nada na sidebar!
 
-    # Detecta troca de escopo.
-    _escopo_mudou = (
-        st.session_state.get("escopo")
-        != st.session_state.get("_escopo_dos_filtros")
-    )
-
-    # O reset precisa ser executado antes da criação dos widgets.
-    # O Streamlit não permite alterar a chave de um widget depois
-    # que ele já foi instanciado no mesmo ciclo de execução.
-    _reset_solicitado = st.session_state.pop(
-        "_solicitar_reset_filtros",
-        False
-    )
-
-    if _reset_solicitado or _escopo_mudou:
+    # Aplica o reset ANTES de qualquer widget desta função ser instanciado nesta execução --
+    # o Streamlit proíbe escrever em st.session_state[key] depois que o widget dono dessa
+    # key já foi criado no mesmo rerun (StreamlitAPIException). O botão "Limpar Filtros"
+    # (mais abaixo) só marca esse pedido e chama st.rerun(); quem de fato reseta é este
+    # bloco, que roda primeiro na execução seguinte.
+    #
+    # Reset AUTOMÁTICO ao trocar de escopo (pedido 24/07/2026): _sanear_lista_filtro
+    # (abaixo) só remove da seleção o que não existe mais nas opções atuais -- pensada
+    # pra opção sumir aos poucos, não pro universo inteiro trocar de uma vez. Ao mudar
+    # de escopo (Piaçaguera/Paranapiacaba/Gerência), a seleção antiga vira uma
+    # interseção residual e por acaso com a lista nova (ex.: "só 2 pátios"), em vez de
+    # continuar representando "tudo selecionado". Detectar a troca de escopo e disparar
+    # o mesmo reset do botão "Limpar Filtros" resolve isso sem exigir clique manual.
+    _escopo_mudou = st.session_state.get("escopo") != st.session_state.get("_escopo_dos_filtros")
+    if st.session_state.pop("_solicitar_reset_filtros", False) or _escopo_mudou:
         st.session_state["filtro_mes_referencia"] = "Todos"
-
         st.session_state["filtro_start_date"] = min_date
         st.session_state["filtro_end_date"] = max_date
-
         st.session_state["filtro_exec_start_date"] = min_date
         st.session_state["filtro_exec_end_date"] = max_date
-
         st.session_state["filtro_patios"] = list(lista_patios)
-        st.session_state["filtro_classificacoes"] = list(
-            lista_classificacoes
-        )
-        st.session_state["filtro_grupos_ativo"] = list(
-            lista_grupos_ativo
-        )
+        st.session_state["filtro_classificacoes"] = list(lista_classificacoes)
+        st.session_state["filtro_grupos_ativo"] = list(lista_grupos_ativo)
         st.session_state["filtro_ativos"] = list(lista_ativos)
-        st.session_state["filtro_criticidades"] = list(
-            lista_criticidades
-        )
+        st.session_state["filtro_criticidades"] = list(lista_criticidades)
         st.session_state["filtro_turnos"] = list(lista_turnos)
-
         st.session_state["filtro_intervalo_sel"] = "Todas"
         st.session_state["filtro_status_sel"] = "Todos"
         st.session_state["filtro_baixa_evidencia_sel"] = "Todas"
-
-    st.session_state["_escopo_dos_filtros"] = (
-        st.session_state.get("escopo")
-    )
+    st.session_state["_escopo_dos_filtros"] = st.session_state.get("escopo")
 
     if _escopo_mudou:
-        # A lista de ativos é calculada antes desta função.
-        # O rerun garante que ela seja reconstruída com os Grupos
-        # de Ativo do novo escopo.
+        # lista_ativos (fora desta função, calculada mais acima) segue a cascata de
+        # Grupo de Ativo -- ela já rodou neste script ANTES do reset acima acontecer,
+        # então ainda reflete a seleção antiga por um render. Um st.rerun() aqui força
+        # essa lista a ser recalculada já com filtro_grupos_ativo resetado (mesmo
+        # comportamento que o botão "Limpar Filtros" já tem, só que automático).
         st.rerun()
-
-    # ==================================================
-    # SANEAMENTO DO PLANO SELECIONADO
-    # ==================================================
-
-    opcoes_planos = ["Todos"] + lista_planos_mes
-
-    plano_atual = st.session_state.get(
-        "filtro_mes_referencia",
-        "Todos"
-    )
-
-    if plano_atual not in opcoes_planos:
-        st.session_state["filtro_mes_referencia"] = "Todos"
-
-    # ==================================================
-    # SANEAMENTO DOS SELECTBOXES
-    # ==================================================
-
-    if (
-        st.session_state.get("filtro_intervalo_sel", "Todas")
-        not in ["Todas", "Com Intervalo", "Sem Intervalo"]
-    ):
-        st.session_state["filtro_intervalo_sel"] = "Todas"
-
-    if (
-        st.session_state.get("filtro_status_sel", "Todos")
-        not in status_opcoes
-    ):
-        st.session_state["filtro_status_sel"] = "Todos"
-
-    if (
-        st.session_state.get(
-            "filtro_baixa_evidencia_sel",
-            "Todas"
-        )
-        not in baixa_evidencia_opcoes
-    ):
-        st.session_state["filtro_baixa_evidencia_sel"] = "Todas"
-
-    # ==================================================
-    # SANEAMENTO DOS PERÍODOS
-    # ==================================================
-
-    start_padrao, end_padrao = _sanear_intervalo_datas(
-        st.session_state.get(
-            "filtro_start_date",
-            min_date
-        ),
-        st.session_state.get(
-            "filtro_end_date",
-            max_date
-        ),
-        min_date,
-        max_date
-    )
-
-    exec_start_padrao, exec_end_padrao = _sanear_intervalo_datas(
-        st.session_state.get(
-            "filtro_exec_start_date",
-            min_date
-        ),
-        st.session_state.get(
-            "filtro_exec_end_date",
-            max_date
-        ),
-        min_date,
-        max_date
-    )
-
-    # Mantém os valores internos já saneados antes da criação
-    # dos widgets. Os date_inputs abaixo não possuem key própria.
-    st.session_state["filtro_start_date"] = start_padrao
-    st.session_state["filtro_end_date"] = end_padrao
-
-    st.session_state["filtro_exec_start_date"] = (
-        exec_start_padrao
-    )
-    st.session_state["filtro_exec_end_date"] = (
-        exec_end_padrao
-    )
 
     st.markdown("### 📊 Filtros")
-
-    # ==================================================
-    # FORMULÁRIO
-    # ==================================================
-
+    
     with st.form("form_filtros"):
+        # Plano (Mês de Referência): filtra pela planilha de OS Programadas importada (ex.: "Julho/2026"),
+        # independente do período de data escolhido abaixo — usado para isolar os cards/gráficos
+        # gerenciais apenas às OS daquele ciclo específico.
+        st.selectbox("📋 Plano (Mês de Referência)", ["Todos"] + lista_planos_mes, key="filtro_mes_referencia")
 
-        # Plano por mês de referência da carga.
-        st.selectbox(
-            "📋 Plano (Mês de Referência)",
-            opcoes_planos,
-            key="filtro_mes_referencia"
-        )
+        # Datas
+        start_padrao = st.session_state.get("filtro_start_date", min_date)
+        end_padrao = st.session_state.get("filtro_end_date", max_date)
+        data_selecionada = st.date_input("Período de Programação", value=(start_padrao, end_padrao), min_value=min_date, max_value=max_date, format="DD/MM/YYYY")
 
-        # ==================================================
-        # PERÍODO DE PROGRAMAÇÃO
-        # ==================================================
+        exec_start_padrao = st.session_state.get("filtro_exec_start_date", min_date)
+        exec_end_padrao = st.session_state.get("filtro_exec_end_date", max_date)
+        data_exec_selecionada = st.date_input("Período de Execução", value=(exec_start_padrao, exec_end_padrao), min_value=min_date, max_value=max_date, format="DD/MM/YYYY")
 
-        data_selecionada = st.date_input(
-            "Período de Programação",
-            value=(
-                start_padrao,
-                end_padrao
-            ),
-            min_value=min_date,
-            max_value=max_date,
-            format="DD/MM/YYYY"
-        )
+        
+        # Pátios, Classificação, Turno
+        patios_default = _sanear_lista_filtro("filtro_patios", lista_patios, lista_patios)
+        st.multiselect("Pátio", lista_patios, default=patios_default, key="filtro_patios")
+        
+        classif_default = _sanear_lista_filtro("filtro_classificacoes", lista_classificacoes, lista_classificacoes)
+        st.multiselect("Classificação", lista_classificacoes, default=classif_default, key="filtro_classificacoes")
 
-        # ==================================================
-        # PERÍODO DE EXECUÇÃO
-        # ==================================================
+        crit_default = _sanear_lista_filtro("filtro_criticidades", lista_criticidades, lista_criticidades)
+        st.multiselect("Criticidade", lista_criticidades, default=crit_default, key="filtro_criticidades")
 
-        data_exec_selecionada = st.date_input(
-            "Período de Execução",
-            value=(
-                exec_start_padrao,
-                exec_end_padrao
-            ),
-            min_value=min_date,
-            max_value=max_date,
-            format="DD/MM/YYYY"
-        )
+        # Grupo de Ativo e Ativo (pedido de 22/07/2026): dá visão pro gestor filtrar por
+        # tipo de equipamento (Grupo de Ativo, extraído da Atividade Ativo) ou por um
+        # Ativo específico, sem depender de Pátio/Classificação.
+        grupo_ativo_default = _sanear_lista_filtro("filtro_grupos_ativo", lista_grupos_ativo, lista_grupos_ativo)
+        st.multiselect("Grupo de Ativo", lista_grupos_ativo, default=grupo_ativo_default, key="filtro_grupos_ativo")
 
-        # ==================================================
-        # PÁTIO
-        # ==================================================
+        ativos_default = _sanear_lista_filtro("filtro_ativos", lista_ativos, lista_ativos)
+        st.multiselect("Ativo", lista_ativos, default=ativos_default, key="filtro_ativos")
 
-        patios_default = _sanear_lista_filtro(
-            "filtro_patios",
-            lista_patios,
-            lista_patios
-        )
+        turnos_default = _sanear_lista_filtro("filtro_turnos", lista_turnos, lista_turnos)
+        st.multiselect("Turno", lista_turnos, default=turnos_default, key="filtro_turnos")
 
-        st.multiselect(
-            "Pátio",
-            lista_patios,
-            default=patios_default,
-            key="filtro_patios"
-        )
-
-        # ==================================================
-        # CLASSIFICAÇÃO
-        # ==================================================
-
-        classif_default = _sanear_lista_filtro(
-            "filtro_classificacoes",
-            lista_classificacoes,
-            lista_classificacoes
-        )
-
-        st.multiselect(
-            "Classificação",
-            lista_classificacoes,
-            default=classif_default,
-            key="filtro_classificacoes"
-        )
-
-        # ==================================================
-        # CRITICIDADE
-        # ==================================================
-
-        crit_default = _sanear_lista_filtro(
-            "filtro_criticidades",
-            lista_criticidades,
-            lista_criticidades
-        )
-
-        st.multiselect(
-            "Criticidade",
-            lista_criticidades,
-            default=crit_default,
-            key="filtro_criticidades"
-        )
-
-        # ==================================================
-        # GRUPO DE ATIVO
-        # ==================================================
-
-        grupo_ativo_default = _sanear_lista_filtro(
-            "filtro_grupos_ativo",
-            lista_grupos_ativo,
-            lista_grupos_ativo
-        )
-
-        st.multiselect(
-            "Grupo de Ativo",
-            lista_grupos_ativo,
-            default=grupo_ativo_default,
-            key="filtro_grupos_ativo"
-        )
-
-        # ==================================================
-        # ATIVO
-        # ==================================================
-
-        ativos_default = _sanear_lista_filtro(
-            "filtro_ativos",
-            lista_ativos,
-            lista_ativos
-        )
-
-        st.multiselect(
-            "Ativo",
-            lista_ativos,
-            default=ativos_default,
-            key="filtro_ativos"
-        )
-
-        # ==================================================
-        # TURNO
-        # ==================================================
-
-        turnos_default = _sanear_lista_filtro(
-            "filtro_turnos",
-            lista_turnos,
-            lista_turnos
-        )
-
-        st.multiselect(
-            "Turno",
-            lista_turnos,
-            default=turnos_default,
-            key="filtro_turnos"
-        )
-
-        # ==================================================
-        # INTERVALO, STATUS E TIPO DE BAIXA
-        # ==================================================
-
-        st.selectbox(
-            "Tipo de Intervalo",
-            [
-                "Todas",
-                "Com Intervalo",
-                "Sem Intervalo"
-            ],
-            key="filtro_intervalo_sel"
-        )
-
-        st.selectbox(
-            "Status da OS",
-            status_opcoes,
-            key="filtro_status_sel"
-        )
-
-        st.selectbox(
-            "Baixa de OS",
-            baixa_evidencia_opcoes,
-            key="filtro_baixa_evidencia_sel"
-        )
-
-        submit_filtros = st.form_submit_button(
-            "✅ Aplicar Filtros",
-            use_container_width=True,
-            type="primary"
-        )
-
-    # ==================================================
-    # APLICAÇÃO DOS PERÍODOS
-    # ==================================================
+        # Intervalo e Status
+        st.selectbox("Tipo de Intervalo", ["Todas", "Com Intervalo", "Sem Intervalo"], key="filtro_intervalo_sel")
+        st.selectbox("Status da OS", status_opcoes, key="filtro_status_sel")
+        st.selectbox("Baixa de OS", baixa_evidencia_opcoes, key="filtro_baixa_evidencia_sel")
+    
+        # O botão fica DENTRO do form e SÓ para quem não é técnico
+        submit_filtros = st.form_submit_button("✅ Aplicar Filtros", use_container_width=True, type="primary")
 
     if submit_filtros:
-
-        if (
-            isinstance(data_selecionada, (tuple, list))
-            and len(data_selecionada) == 2
-        ):
-            novo_start, novo_end = _sanear_intervalo_datas(
-                data_selecionada[0],
-                data_selecionada[1],
-                min_date,
-                max_date
-            )
-
-            st.session_state["filtro_start_date"] = novo_start
-            st.session_state["filtro_end_date"] = novo_end
-
-        if (
-            isinstance(data_exec_selecionada, (tuple, list))
-            and len(data_exec_selecionada) == 2
-        ):
-            novo_exec_start, novo_exec_end = (
-                _sanear_intervalo_datas(
-                    data_exec_selecionada[0],
-                    data_exec_selecionada[1],
-                    min_date,
-                    max_date
-                )
-            )
-
-            st.session_state[
-                "filtro_exec_start_date"
-            ] = novo_exec_start
-
-            st.session_state[
-                "filtro_exec_end_date"
-            ] = novo_exec_end
-
+        if isinstance(data_selecionada, tuple) and len(data_selecionada) == 2:
+            st.session_state["filtro_start_date"], st.session_state["filtro_end_date"] = data_selecionada
+        if isinstance(data_exec_selecionada, tuple) and len(data_exec_selecionada) == 2:
+            st.session_state["filtro_exec_start_date"], st.session_state["filtro_exec_end_date"] = data_exec_selecionada
         st.rerun()
 
-    # ==================================================
-    # LIMPEZA DOS FILTROS
-    # ==================================================
-
-    # O botão apenas registra a solicitação.
-    # O reset efetivo ocorre no início da próxima execução,
-    # antes da criação dos widgets.
-    if st.button(
-        "🧹 Limpar Filtros",
-        use_container_width=True
-    ):
+    # Fora do form (senão precisaria de outro clique em "Aplicar Filtros" pra valer) --
+    # volta todos os filtros pro padrão "tudo selecionado / período inteiro", exatamente
+    # como no primeiro carregamento. Pedido de 22/07/2026. Só marca o pedido e reinicia --
+    # quem de fato reseta é o bloco no topo da função (ver comentário lá) para não violar
+    # a regra do Streamlit de não escrever em st.session_state[key] após o widget dono
+    # dessa key já ter sido instanciado neste rerun.
+    if st.button("🧹 Limpar Filtros", use_container_width=True):
         st.session_state["_solicitar_reset_filtros"] = True
         st.rerun()
 #endregion 7.3
