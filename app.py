@@ -1039,14 +1039,19 @@ def aplicar_filtros_sidebar(
 ) -> pd.DataFrame:
     df = df_visao.copy()
     if "dt_prog_filtro" in df.columns:
-        mask_data = ((df["dt_prog_filtro"].dt.date >= start_date) & (df["dt_prog_filtro"].dt.date <= end_date)) | df["dt_prog_filtro"].isna()
+        _dt_prog = pd.to_datetime(df["dt_prog_filtro"], errors="coerce")
+        _start = pd.Timestamp(start_date)
+        _end = pd.Timestamp(end_date)
+        mask_data = ((_dt_prog >= _start) & (_dt_prog <= _end + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1))) | _dt_prog.isna()
         df = df[mask_data]
     if exec_start_date is not None and exec_end_date is not None and "dt_realizado" in df.columns:
         _exec = pd.to_datetime(df["dt_realizado"], errors="coerce")
         # Filtro de Execução: mantém OS realizadas dentro do período OU ainda pendentes (dt_realizado NaT).
         # Sem o OR de isna(), OS planejadas mas ainda não executadas eram excluídas quando o filtro de
         # Execução era combinado com o de Programação, zerando o Backlog e inflando a Taxa de Conclusão para 100%.
-        mask_exec = ((_exec.dt.date >= exec_start_date) & (_exec.dt.date <= exec_end_date)) | _exec.isna()
+        _exec_start = pd.Timestamp(exec_start_date)
+        _exec_end = pd.Timestamp(exec_end_date)
+        mask_exec = ((_exec >= _exec_start) & (_exec <= _exec_end + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1))) | _exec.isna()
         df = df[mask_exec]
     if crit_selecionadas and "Criticidade" in df.columns:
         df = df[df["Criticidade"].isin(crit_selecionadas)]
