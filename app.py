@@ -4159,6 +4159,15 @@ def obter_base_padrao_usuario():
 #region SESSÃO 5: ETL (Carregamento e Tratamento)
 ETL_VERSION = "v9_grupo_ativo"
 
+# --- Feature flags de UI ---------------------------------------------------------
+# EXIBIR_AGENDA_CALENDARIO: liga/desliga a "Agenda Mensal de Demanda por Pátio"
+# (calendário FullCalendar + cards Pátios do Dia / Pátio Prioritário / Turno) na
+# aba "Roteirização e Mapa de Campo". Desligada em 02/09/2026 a pedido do Julio --
+# a equipe de campo não estava usando. O código do calendário continua todo na
+# região 10.3.1, só deixa de ser montado/renderizado. Para reativar: pôr True aqui.
+EXIBIR_AGENDA_CALENDARIO = False
+# ------------------------------------------------------------------------------
+
 #region 5.1: Tratamento Principal (tratar_df_os + _resolver_patio)
 def tratar_df_os(df: pd.DataFrame):
     df = normalize_cols(df)
@@ -4578,7 +4587,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v16.0.2")
+st.sidebar.caption("SGO Eletroeletrônica • v16.0.3")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -6530,8 +6539,13 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
         with tab2:
             df_recomendado = pd.DataFrame()
             
-#region 10.3.1: CSS + Calendário Mensal + Cards + Turno
-            st.markdown("### 📅 Agenda Mensal de Demanda por Pátio")
+#region 10.3.1: [Agenda Mensal — feature flag EXIBIR_AGENDA_CALENDARIO] + Tipo de OS + Cards/Turno
+            # Agenda Mensal de Demanda (calendário FullCalendar + cards Pátios do Dia /
+            # Pátio Prioritário / Turno): DESATIVADA em 02/09/2026 a pedido do Julio -- a
+            # equipe de campo não estava usando. Todo o código continua aqui; só é montado
+            # e renderizado quando EXIBIR_AGENDA_CALENDARIO = True (definida na SESSÃO 5).
+            if EXIBIR_AGENDA_CALENDARIO:
+                st.markdown("### 📅 Agenda Mensal de Demanda por Pátio")
             st.markdown("""
                 <style>
                 .kpi-wrapper { font-family: "Source Sans Pro", sans-serif; }
@@ -6551,38 +6565,39 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                 </style>
             """, unsafe_allow_html=True)
 
-            hoje_ref = datetime.now()
-            if "cal_ref_mes" not in st.session_state: st.session_state["cal_ref_mes"] = int(hoje_ref.month)
-            if "cal_ref_ano" not in st.session_state: st.session_state["cal_ref_ano"] = int(hoje_ref.year)
-            col_cal_ctrl_1, col_cal_ctrl_2, _ = st.columns([1, 1, 4])
-            is_tecnico = st.session_state.get("perfil") == "Técnico"
+            if EXIBIR_AGENDA_CALENDARIO:
+                hoje_ref = datetime.now()
+                if "cal_ref_mes" not in st.session_state: st.session_state["cal_ref_mes"] = int(hoje_ref.month)
+                if "cal_ref_ano" not in st.session_state: st.session_state["cal_ref_ano"] = int(hoje_ref.year)
+                col_cal_ctrl_1, col_cal_ctrl_2, _ = st.columns([1, 1, 4])
+                is_tecnico = st.session_state.get("perfil") == "Técnico"
 
-            if is_tecnico:
-                st.session_state["cal_ref_mes"], st.session_state["cal_ref_ano"] = int(hoje_ref.month), int(hoje_ref.year)
-                with col_cal_ctrl_1: st.info(f"Mês: {hoje_ref.strftime('%m')}")
-                with col_cal_ctrl_2: st.info(f"Ano: {hoje_ref.year}")
-                st.caption(f"📌 **Visão Operacional:** Calendário fixado ({hoje_ref.strftime('%m/%Y')})")
-            else:
-                with col_cal_ctrl_1: mes_opcao = st.selectbox("Mês", list(range(1, 13)), index=int(st.session_state["cal_ref_mes"]) - 1, format_func=lambda x: f"{x:02d}", key="cal_mes_ref_select")
-                with col_cal_ctrl_2: ano_opcao = st.number_input("Ano", min_value=hoje_ref.year - 2, max_value=hoje_ref.year + 2, value=int(st.session_state["cal_ref_ano"]), step=1, key="cal_ano_ref_input")
-                st.session_state["cal_ref_mes"], st.session_state["cal_ref_ano"] = int(mes_opcao), int(ano_opcao)
+                if is_tecnico:
+                    st.session_state["cal_ref_mes"], st.session_state["cal_ref_ano"] = int(hoje_ref.month), int(hoje_ref.year)
+                    with col_cal_ctrl_1: st.info(f"Mês: {hoje_ref.strftime('%m')}")
+                    with col_cal_ctrl_2: st.info(f"Ano: {hoje_ref.year}")
+                    st.caption(f"📌 **Visão Operacional:** Calendário fixado ({hoje_ref.strftime('%m/%Y')})")
+                else:
+                    with col_cal_ctrl_1: mes_opcao = st.selectbox("Mês", list(range(1, 13)), index=int(st.session_state["cal_ref_mes"]) - 1, format_func=lambda x: f"{x:02d}", key="cal_mes_ref_select")
+                    with col_cal_ctrl_2: ano_opcao = st.number_input("Ano", min_value=hoje_ref.year - 2, max_value=hoje_ref.year + 2, value=int(st.session_state["cal_ref_ano"]), step=1, key="cal_ano_ref_input")
+                    st.session_state["cal_ref_mes"], st.session_state["cal_ref_ano"] = int(mes_opcao), int(ano_opcao)
 
-            df_calendario = df_visao.copy()
-            if "patios_selecionados" in locals() and "classif_selecionadas" in locals(): df_calendario = df_calendario[(df_calendario["Patio"].isin(patios_selecionados)) & (df_calendario["Classificacao"].isin(classif_selecionadas))].copy()
+                df_calendario = df_visao.copy()
+                if "patios_selecionados" in locals() and "classif_selecionadas" in locals(): df_calendario = df_calendario[(df_calendario["Patio"].isin(patios_selecionados)) & (df_calendario["Classificacao"].isin(classif_selecionadas))].copy()
 
-            hoje_real = datetime.now().date()
-            if (int(st.session_state["cal_ref_ano"]) == hoje_real.year and int(st.session_state["cal_ref_mes"]) == hoje_real.month): dia_ref_default = hoje_real
-            else: dia_ref_default = datetime(int(st.session_state["cal_ref_ano"]), int(st.session_state["cal_ref_mes"]), 1).date()
+                hoje_real = datetime.now().date()
+                if (int(st.session_state["cal_ref_ano"]) == hoje_real.year and int(st.session_state["cal_ref_mes"]) == hoje_real.month): dia_ref_default = hoje_real
+                else: dia_ref_default = datetime(int(st.session_state["cal_ref_ano"]), int(st.session_state["cal_ref_mes"]), 1).date()
 
-            user_limpo = str(st.session_state.get('username', 'usr')).replace(" ", "_").lower()
-            cal_key = f"cal_fixo_tecnico_{user_limpo}" if is_tecnico else f"cal_dinamico_{user_limpo}"
-            cal_state = st.session_state.get(cal_key)
-            data_ref_card = dia_ref_default
-            
-            if cal_state and isinstance(cal_state, dict):
-                if cal_state.get("callback") == "dateClick": data_ref_card = pd.to_datetime(cal_state["dateClick"]["date"]).date()
-                elif cal_state.get("callback") == "eventClick": data_ref_card = pd.to_datetime(cal_state["eventClick"]["event"]["start"]).date()
-            if data_ref_card.year != int(st.session_state["cal_ref_ano"]) or data_ref_card.month != int(st.session_state["cal_ref_mes"]): data_ref_card = dia_ref_default
+                user_limpo = str(st.session_state.get('username', 'usr')).replace(" ", "_").lower()
+                cal_key = f"cal_fixo_tecnico_{user_limpo}" if is_tecnico else f"cal_dinamico_{user_limpo}"
+                cal_state = st.session_state.get(cal_key)
+                data_ref_card = dia_ref_default
+
+                if cal_state and isinstance(cal_state, dict):
+                    if cal_state.get("callback") == "dateClick": data_ref_card = pd.to_datetime(cal_state["dateClick"]["date"]).date()
+                    elif cal_state.get("callback") == "eventClick": data_ref_card = pd.to_datetime(cal_state["eventClick"]["event"]["start"]).date()
+                if data_ref_card.year != int(st.session_state["cal_ref_ano"]) or data_ref_card.month != int(st.session_state["cal_ref_mes"]): data_ref_card = dia_ref_default
 
             st.markdown("#### 🔧 Tipo de OS")
             if "filtro_intervalo_campo" not in st.session_state: st.session_state["filtro_intervalo_campo"] = "Todas"
@@ -6601,11 +6616,13 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
             if _filtro_int_campo != "Todas" and "Tipo_Intervalo" in base_rota.columns:
                 base_rota = base_rota[base_rota["Tipo_Intervalo"] == _filtro_int_campo].copy()
 
-            df_calendario = base_rota.copy()
+            if EXIBIR_AGENDA_CALENDARIO:
+                df_calendario = base_rota.copy()
             if "df_filtrado" in locals():
                 df_filtrado = base_rota.copy()
 
-            mostrar_calendario = st.toggle("📅 Mostrar Agenda Mensal de Demanda", value=False)
+            # Toggle da agenda só aparece com EXIBIR_AGENDA_CALENDARIO = True (desativada 02/09/2026).
+            mostrar_calendario = EXIBIR_AGENDA_CALENDARIO and st.toggle("📅 Mostrar Agenda Mensal de Demanda", value=False)
             
             if mostrar_calendario:
                 if not df_calendario.empty:
@@ -6648,7 +6665,8 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                             dados_formatados_turno = [{"value": val, "itemStyle": { "color": _cor_turno_aba2.get(lbl, "#3B82F6"), "borderRadius": [0, 6, 6, 0] }} for lbl, val in zip(resumo_turno["labels"], resumo_turno["valores"])]
                 else:
                     st.info("ℹ️ Nenhuma OS encontrada para os filtros selecionados (Data, Pátio ou Tipo de Intervalo). Modifique os filtros para exibir a agenda.")
-            st.markdown("---")
+            if EXIBIR_AGENDA_CALENDARIO:
+                st.markdown("---")
             #endregion 10.3.1
 
 #region 10.3.2: Navegação Geográfica Operacional (GPS + Raio)
