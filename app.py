@@ -1072,6 +1072,43 @@ def preparar_df_visao(df_base: pd.DataFrame, filtro_visao: str) -> pd.DataFrame:
     return df_visao
 
 
+def _intervalo_datas_seguro(inicio, fim, piso, teto):
+    """Devolve SEMPRE um par (date, date) dentro de [piso, teto] e com inicio <= fim.
+
+    Qualquer valor nao conversivel (None, NaT, tupla, texto invalido, data de outra
+    base/ciclo salva no session_state) cai no piso/teto. E a blindagem central para
+    nunca passar valor fora de faixa ou de tipo errado para o st.date_input nem para
+    a comparacao de datas dos filtros -- incidente de 02/09/2026, ver
+    Agente/09_APRENDIZADOS_E_ERROS.md.
+    """
+    def _para_date(valor, padrao):
+        try:
+            ts = pd.Timestamp(valor)
+        except Exception:
+            return padrao
+        return padrao if pd.isna(ts) else ts.date()
+
+    ini = _para_date(inicio, piso)
+    f = _para_date(fim, teto)
+    ini = min(max(ini, piso), teto)
+    f = min(max(f, piso), teto)
+    return (piso, teto) if ini > f else (ini, f)
+
+
+def _para_timestamp_filtro(valor):
+    """Converte um limite de data de filtro em Timestamp normalizado (00:00) ou None.
+
+    Retorna None quando o valor nao e conversivel -> o chamador simplesmente ignora
+    aquele filtro em vez de derrubar a tela (incidente 02/09/2026: uma tupla/None
+    chegava na comparacao e o 'Invalid comparison' do pandas quebrava o app inteiro).
+    """
+    try:
+        ts = pd.Timestamp(valor)
+    except Exception:
+        return None
+    return None if pd.isna(ts) else ts.normalize()
+
+
 def aplicar_filtros_sidebar(
     df_visao: pd.DataFrame, patios_selecionados: list, classif_selecionadas: list,
     turnos_selecionados: list, start_date, end_date, status_sel: str = "Todos", intervalo_sel: str = "Todas",
@@ -1081,20 +1118,32 @@ def aplicar_filtros_sidebar(
 ) -> pd.DataFrame:
     df = df_visao.copy()
     if "dt_prog_filtro" in df.columns:
-        _dt_prog = pd.to_datetime(df["dt_prog_filtro"], errors="coerce")
-        _start = pd.Timestamp(start_date)
-        _end = pd.Timestamp(end_date)
-        mask_data = ((_dt_prog >= _start) & (_dt_prog <= _end + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1))) | _dt_prog.isna()
-        df = df[mask_data]
-    if exec_start_date is not None and exec_end_date is not None and "dt_realizado" in df.columns:
-        _exec = pd.to_datetime(df["dt_realizado"], errors="coerce")
-        # Filtro de Execução: mantém OS realizadas dentro do período OU ainda pendentes (dt_realizado NaT).
-        # Sem o OR de isna(), OS planejadas mas ainda não executadas eram excluídas quando o filtro de
-        # Execução era combinado com o de Programação, zerando o Backlog e inflando a Taxa de Conclusão para 100%.
-        _exec_start = pd.Timestamp(exec_start_date)
-        _exec_end = pd.Timestamp(exec_end_date)
-        mask_exec = ((_exec >= _exec_start) & (_exec <= _exec_end + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1))) | _exec.isna()
-        df = df[mask_exec]
+        # _para_timestamp_filtro devolve None quando start/end nao sao data valida
+        # (tupla, None, NaT vindo do session_state) -> ignora o filtro em vez de quebrar.
+        _start = _para_timestamp_filtro(start_date)
+        _end = _para_timestamp_filtro(end_date)
+        if _start is not None and _end is not None:
+            if _start > _end:
+                _start, _end = _end, _start
+            _dt_prog = pd.to_datetime(df["dt_prog_filtro"], errors="coerce")
+            _fim_dia = _end + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
+            mask_data = ((_dt_prog >= _start) & (_dt_prog <= _fim_dia)) | _dt_prog.isna()
+            df = df[mask_data]
+    if "dt_realizado" in df.columns:
+        # None em qualquer um dos dois (caso "usuario nao estreitou o range", setado
+        # fora desta funcao) => filtro de Execucao inteiro e pulado, mesmo comportamento de antes.
+        _exec_start = _para_timestamp_filtro(exec_start_date)
+        _exec_end = _para_timestamp_filtro(exec_end_date)
+        if _exec_start is not None and _exec_end is not None:
+            if _exec_start > _exec_end:
+                _exec_start, _exec_end = _exec_end, _exec_start
+            _exec = pd.to_datetime(df["dt_realizado"], errors="coerce")
+            # Filtro de Execução: mantém OS realizadas dentro do período OU ainda pendentes (dt_realizado NaT).
+            # Sem o OR de isna(), OS planejadas mas ainda não executadas eram excluídas quando o filtro de
+            # Execução era combinado com o de Programação, zerando o Backlog e inflando a Taxa de Conclusão para 100%.
+            _fim_exec = _exec_end + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
+            mask_exec = ((_exec >= _exec_start) & (_exec <= _fim_exec)) | _exec.isna()
+            df = df[mask_exec]
     if crit_selecionadas and "Criticidade" in df.columns:
         df = df[df["Criticidade"].isin(crit_selecionadas)]
     if patios_selecionados: 
@@ -5096,18 +5145,11 @@ def fragmento_filtros_sidebar_seguro():
         # Datas
         start_padrao = st.session_state.get("filtro_start_date", min_date)
         end_padrao = st.session_state.get("filtro_end_date", max_date)
+        # Blindagem centralizada em _intervalo_datas_seguro (topo do arquivo): garante um
+        # par (date, date) dentro de [min_date, max_date] ANTES de qualquer st.date_input --
+        # data salva de outra base/ciclo no session_state derrubava a tela (02/09/2026).
         def _sanear_intervalo_datas(start, end):
-            try:
-                start = pd.Timestamp(start).date()
-            except (TypeError, ValueError):
-                start = min_date
-            try:
-                end = pd.Timestamp(end).date()
-            except (TypeError, ValueError):
-                end = max_date
-            start = max(min_date, min(start, max_date))
-            end = max(min_date, min(end, max_date))
-            return (min_date, max_date) if start > end else (start, end)
+            return _intervalo_datas_seguro(start, end, min_date, max_date)
 
         start_padrao, end_padrao = _sanear_intervalo_datas(start_padrao, end_padrao)
         st.session_state["filtro_start_date"] = start_padrao
@@ -5175,11 +5217,15 @@ with st.sidebar: fragmento_filtros_sidebar_seguro()
 crit_selecionadas = st.session_state.get("filtro_criticidades", list(lista_criticidades))
 exec_start_date = st.session_state.get("filtro_exec_start_date", min_date)
 exec_end_date = st.session_state.get("filtro_exec_end_date", max_date)
+# Blindagem: saneia o par lido do session_state ANTES de qualquer comparação/uso --
+# uma data de outra base salva aqui já derrubou o painel inteiro (incidente 02/09/2026).
+exec_start_date, exec_end_date = _intervalo_datas_seguro(exec_start_date, exec_end_date, min_date, max_date)
 # Só aplica o filtro de Execução (restringe pelas realizadas, mantendo as pendentes/NaT) quando o usuário estreita o range padrão.
 if not ((exec_start_date > min_date) or (exec_end_date < max_date)):
     exec_start_date = exec_end_date = None
 start_date = st.session_state.get("filtro_start_date", min_date)
 end_date = st.session_state.get("filtro_end_date", max_date)
+start_date, end_date = _intervalo_datas_seguro(start_date, end_date, min_date, max_date)
 patios_selecionados = st.session_state.get("filtro_patios", list(lista_patios))
 classif_selecionadas = st.session_state.get("filtro_classificacoes", list(lista_classificacoes))
 grupos_ativo_selecionados = st.session_state.get("filtro_grupos_ativo", list(lista_grupos_ativo))
