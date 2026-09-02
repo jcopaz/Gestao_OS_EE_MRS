@@ -335,6 +335,27 @@ Primeira execução real do `/limpar_evidencias_orfas` (endpoint criado nesta me
 
 ---
 
+## 02/09/2026 — Filtro de datas da sidebar derrubou o painel 2x (data velha no session_state)
+
+**O que aconteceu:** o painel caiu duas vezes seguidas em produção, ambas no filtro de período da sidebar. (1) `StreamlitAPIException` no `st.date_input("Período de Programação")` — `value=(start, end)` fora do intervalo `[min_value, max_value]`. (2) `TypeError: Invalid comparison between dtype=datetime64 and ...` em `aplicar_filtros_sidebar`, na máscara `df["dt_prog_filtro"].dt.date >= start_date`. Corrigido na hora com apoio do Copilot (commits `ebf2b94` e `b90abd8`); esta sessão fez a blindagem pra não repetir a **classe** de erro.
+
+**Causa raiz (uma só, dois sintomas):** `filtro_start_date` / `filtro_end_date` são gravados no `st.session_state` a partir do retorno do `st.date_input` e relidos no rerun seguinte. Quando a base muda (novo upload, virada de mês, recorte por "ano vigente" que redefine `min_date`/`max_date`, linha ~4618), a data salva de um ciclo anterior fica **fora da faixa nova** — e o `st.date_input` recusa `value` fora de `[min,max]` (sintoma 1). O mesmo valor, quando não era uma data limpa (tupla de range meio-selecionado, `NaT`, tipo inesperado), quebrava a comparação de pandas na máscara do filtro (sintoma 2). O `st.date_input` em range **retorna tupla de 1 elemento** enquanto o usuário escolheu só a data inicial — mais uma fonte de valor "meio pronto" indo pro `session_state`.
+
+**Correção (blindagem):**
+1. `_intervalo_datas_seguro(ini, fim, piso, teto)` (novo, topo do `app.py`) — devolve **sempre** um par `(date, date)` dentro da faixa e com `ini <= fim`; qualquer valor não conversível (`None`, `NaT`, tupla, texto, data de outra base) cai no piso/teto. Usado no fragmento dos filtros **e** no ponto onde as datas são relidas do `session_state` antes de chamar `aplicar_filtros_sidebar` (antes esse segundo ponto não tinha nenhum saneamento).
+2. `_para_timestamp_filtro(valor)` (novo) — converte limite de filtro em `Timestamp` normalizado **ou `None`**. Em `aplicar_filtros_sidebar`, se `start`/`end` (ou os de execução) não resolverem, o filtro daquele bloco é **ignorado** (mostra tudo) em vez de derrubar a tela. `except Exception` de propósito: filtro de exibição é fail-open (≠ regra de segurança, que é fail-closed).
+3. CSS: campo de data da sidebar forçado pra **fundo branco + letras pretas** — as regras genéricas de `div[data-baseweb="input"]` deixavam o texto branco sobre `#1E293B` (ilegível quando o pedido era "letras pretas").
+
+**Validação:** `py_compile` + suíte isolada (`scratchpad/teste_blindagem_datas.py`) cobrindo data fora de faixa dos dois lados, `None`, `()`, `(date,)`, `NaT`, texto lixo, intervalo invertido e a máscara rodando num DataFrame falso com `NaT` — nenhum caso lança exceção. Render do CSS **não** foi validado em navegador (sem ambiente gráfico) — conferir no celular.
+
+**Aprendizado:**
+1. **Todo valor lido do `st.session_state` que veio de um widget numa execução anterior é "dado externo"** — a base/faixa pode ter mudado no meio. Widget com `min_value`/`max_value` dinâmico (data, slider, number_input) precisa **sanear o default contra os limites atuais** antes de instanciar, sempre, não só quando "parece" que pode divergir.
+2. `st.date_input` em modo range **retorna tupla de tamanho variável** (0, 1 ou 2) durante a seleção — nunca assumir 2; só gravar no `session_state`/comparar quando `len == 2`.
+3. Quando o mesmo valor podre causa erro em **dois lugares diferentes** (aqui: na criação do widget e na comparação de pandas), corrigir os dois pontos não basta — vale extrair **um saneador único** e aplicá-lo em toda fronteira onde aquele valor entra (fragmento + releitura pro filtro), senão o terceiro ponto que ninguém lembrou volta a quebrar.
+4. Filtro/exibição que não consegue resolver um parâmetro deve **degradar pra "mostra tudo"** (fail-open) — o oposto de regra de segurança/antifraude. Mas cuidado com o meio-termo silencioso: parâmetro que vira `NaT` sem exceção pode **zerar o resultado** sem erro nenhum (pior que crashar) — checar `pd.isna` explicitamente, não confiar só no `try/except`.
+
+---
+
 ## Lições transversais (válidas pra qualquer mudança futura)
 
 - **Verificar causa raiz com dado real (SQL/log) antes de aplicar patch** — não assumir, não adivinhar. Vale tanto pra bug de dado quanto pra bug de infraestrutura.
@@ -351,3 +372,4 @@ Primeira execução real do `/limpar_evidencias_orfas` (endpoint criado nesta me
 - **Todo `@st.cache_data`/`@st.cache_resource` precisa de `ttl`/`max_entries` sempre que a chave inclui algo que muda com o uso normal do app** (DataFrame, mtime, versão de ETL, coordenada de usuário) — sem limite, cada mudança é uma cópia nova presa na RAM pra sempre, até estourar o processo compartilhado do Streamlit Cloud. `cache_resource` é o caso mais perigoso porque guarda o objeto vivo (ex.: `folium.Map` inteiro), não uma cópia serializada mais leve.
 - **Repositório público ou segredo único embutido no cliente (PWA/JS) anulam qualquer proteção de código-fonte contra cópia da aplicação** — não é sobre ofuscar/assinar o código, é sobre onde o código e as credenciais realmente ficam acessíveis. Rotação/segregação de chave (uma por finalidade, nunca uma mestra compartilhada entre painel, automação e cliente offline) é decisão de infraestrutura, não só de código.
 - **`app.py` e `api.py` são deploys separados sem código compartilhado** — uma lógica corrigida/reforçada num dos dois (ex.: resolução de pátio, fail-closed) não garante que o outro lado tenha a mesma robustez. "Parar de aceitar dado errado" e "conseguir resolver o dado certo" são correções diferentes — sempre checar os dois lados de qualquer regra que existe duplicada.
+- **Default de widget lido do `st.session_state` (data, slider, number_input) tem que ser saneado contra os `min`/`max` atuais antes de instanciar** — o valor foi gravado num rerun anterior, com base/faixa possivelmente diferentes; `st.date_input` ainda por cima retorna tupla de tamanho variável (0/1/2) durante a seleção. Extrair **um saneador único** e chamá-lo em toda fronteira onde o valor entra (fragmento do widget **e** releitura pro filtro/consulta), não só onde estourou.
