@@ -568,12 +568,37 @@ def calcular_nivel_prioridade(classificacao: str, criticidade_rank: int) -> int:
 #endregion 3.1.2
 
 #region 3.1.3: Funções de Data/Hora e Status de Execução
+# Abreviações de mês em PT-BR: Excel em locale PT-BR às vezes regrava uma data digitada
+# como "15/09/2026" para o formato "15-set" / "15-set-26" ao salvar/reabrir a planilha do
+# plano -- to_datetime(dayfirst=True) não reconhece "set" e vira NaT (OS some sem data,
+# ver incidente Plano de Setembro/Paranapiacaba, 03/09/2026).
+_MESES_PT_ABREV = {
+    "jan": "01", "fev": "02", "mar": "03", "abr": "04", "mai": "05", "jun": "06",
+    "jul": "07", "ago": "08", "set": "09", "out": "10", "nov": "11", "dez": "12",
+}
+
 def parse_data_programada(valor):
     if pd.isna(valor): return pd.NaT
     s = str(valor).strip()
+    if not s: return pd.NaT
     try:
         if re.match(r'^\d{4}-\d{2}-\d{2}', s):          # já ISO -> não inverter
             return pd.to_datetime(s, errors="coerce")
+
+        m = re.match(r'^(\d{1,2})[-/ ]([A-Za-zçÇ]{3,})[-/ .]*(\d{2,4})?$', s)
+        if m:
+            dia, mes_abrev, ano = m.group(1), m.group(2).strip(".").lower()[:3], m.group(3)
+            mes_num = _MESES_PT_ABREV.get(mes_abrev)
+            if mes_num:
+                if not ano: ano = str(datetime.now().year)
+                if len(ano) == 2: ano = "20" + ano
+                return pd.to_datetime(f"{dia}/{mes_num}/{ano}", dayfirst=True, errors="coerce")
+
+        # Número puro = provável serial de data do Excel (planilha reexportada/colada como
+        # CSV perde a formatação de data e sobra só o inteiro de dias desde 30/12/1899).
+        if re.match(r'^\d{4,6}$', s):
+            return pd.Timestamp("1899-12-30") + pd.to_timedelta(int(s), unit="D")
+
         return pd.to_datetime(s, dayfirst=True, errors="coerce")   # DD/MM/AAAA
     except Exception:
         return pd.NaT
@@ -1240,6 +1265,7 @@ def render_tela_admin():
         if st.button("⬅️ Voltar ao Painel", use_container_width=True): st.session_state["tela_atual"] = "dashboard"; st.rerun()
 
     if "msg_upload_os" in st.session_state: st.success(st.session_state["msg_upload_os"]); del st.session_state["msg_upload_os"]
+    if "msg_upload_os_aviso_data" in st.session_state: st.warning(st.session_state["msg_upload_os_aviso_data"]); del st.session_state["msg_upload_os_aviso_data"]
     if "msg_upload_mapa" in st.session_state: st.success(st.session_state["msg_upload_mapa"]); del st.session_state["msg_upload_mapa"]
 
     # Governanca granular (pedido 31/07/2026): "Importação IW47" e "Mapeamento de
@@ -1300,6 +1326,26 @@ def render_tela_admin():
                             st.error("❌ Coluna 'Ordem servico' não encontrada."); return
                     
                         df = df.fillna("")
+
+                        # Validação defensiva (03/09/2026, incidente Plano de Setembro/Paranapiacaba):
+                        # confere agora, no upload, se a "Data inicial programada" foi reconhecida em
+                        # todas as linhas -- sem isso, uma linha com formato de data que o parser não
+                        # entende só é percebida semanas depois, quando a OS aparece sem data e no fim
+                        # da lista pros usuários de campo (Ordem_Prazo em calcular_df_recomendado).
+                        _col_data_prog_raw = next(
+                            (c for c in df.columns if str(c).strip().upper() in ("DATA INICIAL PROGRAMADA", "DATA PROGRAMADA")),
+                            None,
+                        )
+                        if _col_data_prog_raw:
+                            _qtd_invalida = int(df[_col_data_prog_raw].apply(parse_data_programada).isna().sum())
+                            if _qtd_invalida > 0:
+                                st.session_state["msg_upload_os_aviso_data"] = (
+                                    f"⚠️ {_qtd_invalida} de {len(df)} linha(s) ficaram com **Data Inicial "
+                                    f"Programada** não reconhecida (coluna '{_col_data_prog_raw}'). Essas OS vão "
+                                    f"aparecer sem data e no fim da lista para os usuários darem baixa. Confira o "
+                                    f"formato na planilha (esperado DD/MM/AAAA) e reimporte se necessário."
+                                )
+
                         col_depto = next((c for c in df.columns if str(c).strip().upper().replace(" ", "") in ("CODIGODEPARTAMENTO", "CÓDIGODEPARTAMENTO", "CODIGO_DEPARTAMENTO")), None)
                         if not col_depto: col_depto = next((c for c in df.columns if str(c).strip().upper() == "CONCATENAR"), None)
 
