@@ -4106,7 +4106,11 @@ def carregar_config_operacional(coordenacao: str) -> dict:
 #endregion 4.2
 
 #region 4.2b: Cálculo do Raio de Roteirização (Cacheado)
-@st.cache_data(show_spinner=False)
+# ttl/max_entries: mesmo motivo das demais (df_pendentes_f deriva de df_base, que muda
+# a cada baixa registrada -- sem limite, cada combinacao nova ficava presa na RAM pra
+# sempre). Reposto 04/09/2026 -- tinha sido apagado no rollback de app.py de 02/09,
+# reabrindo o vazamento de memória do incidente de 21/08 (ver 09_APRENDIZADOS_E_ERROS.md).
+@st.cache_data(show_spinner=False, ttl=600, max_entries=16)
 def calcular_df_recomendado(df_pendentes_f: pd.DataFrame, lat_origem: float, lon_origem: float, raio_busca_km: int, escopo_usr: str) -> pd.DataFrame:
     # Extraído de dentro de "Ferramentas de Campo" (10.3.2) e cacheado: sem isso, essa conta
     # (mapear lat/lon por Pátio, Haversine, rank de Segurança da Operação, ordenação) rodava em
@@ -4656,7 +4660,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v16.0.4")
+st.sidebar.caption("SGO Eletroeletrônica • v16.0.5")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -7883,8 +7887,23 @@ def _construir_mapa_navegacao(lat_centro, lon_centro, zoom_mapa, lat_origem, lon
     mapa = folium.Map(
         location=[lat_centro, lon_centro], zoom_start=zoom_mapa, max_bounds=True,
         min_lat=-25.50, max_lat=-19.50, min_lon=-53.50, max_lon=-44.00,
-        control_scale=True, tiles="CartoDB positron", prefer_canvas=True,
+        # "CartoDB positron" (26/08/2026): a Carto passou a exigir API key nos tiles de
+        # basemap -- sem ela o tile server devolve "API KEY REQUIRED" cobrindo o mapa.
+        # Esri "World Light Gray Base" é o equivalente gratuito mais próximo, URL pública
+        # da ArcGIS Online, sem chave. Reposto 04/09/2026 (perdido no rollback de 02/09).
+        control_scale=True, prefer_canvas=True,
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+        attr="Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ",
     )
+
+    # Camada de referência do Esri (rótulos de cidade/município + limites administrativos),
+    # transparente, encaixa por cima do "World Light Gray Base" sem trazer ruas/POIs.
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}",
+        attr="Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ",
+        name="Cidades e limites",
+        overlay=True, control=False,
+    ).add_to(mapa)
 
     # FIX: USO DO KML CACHEADO DA MEMÓRIA -- 1 GeoJson so (FeatureCollection da malha inteira)
     # em vez de 1 objeto por trecho: eram centenas de objetos Folium individuais, o principal
