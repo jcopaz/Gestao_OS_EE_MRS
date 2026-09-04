@@ -2375,16 +2375,29 @@ Ordem padrão do sistema: `Segurança da Operação → Criticidade → Atraso �
         )
 
         st.markdown("---")
-        st.markdown("**Vigência** (obrigatória — fora dessa janela, volta ao padrão automaticamente)")
-        col_vd1, col_vd2, col_vf1, col_vf2 = st.columns(4)
-        with col_vd1:
-            vigencia_desde_data = st.date_input("Início — data", value=datetime.now().date(), key="config_op_desde_data")
-        with col_vd2:
-            vigencia_desde_hora = st.time_input("Início — hora", value=datetime.now().time().replace(microsecond=0), key="config_op_desde_hora")
-        with col_vf1:
-            vigencia_ate_data = st.date_input("Fim — data", value=datetime.now().date() + pd.Timedelta(days=7), key="config_op_ate_data")
-        with col_vf2:
-            vigencia_ate_hora = st.time_input("Fim — hora", value=datetime.now().time().replace(microsecond=0), key="config_op_ate_hora")
+        st.markdown("**Vigência**")
+        # Toggle "sem data de expiração" = adotar como NOVO PADRÃO da coordenação (grava
+        # vigente_ate = NULL). Reposto em 04/09/2026 -- existia desde a v16.1.0 (commit
+        # 9928cd2) e se perdeu no upload de app.py de 02/09 que reverteu o arquivo pra
+        # ~v16.0.1. api.py já trata vigente_ate NULL como "sem prazo final".
+        sem_expiracao = st.toggle(
+            "🔒 Sem data de expiração (vira o novo padrão para esta coordenação, até que alguém mude de novo)",
+            value=False, key="config_op_sem_expiracao"
+        )
+        if sem_expiracao:
+            st.caption("Vale a partir de agora, sem data de fim — para reverter, use \"Resetar Padrões\" ou desmarque esta opção e salve uma janela temporária.")
+            vigencia_desde_data = vigencia_desde_hora = vigencia_ate_data = vigencia_ate_hora = None
+        else:
+            st.caption("Janela obrigatória — fora dela, volta ao padrão automaticamente.")
+            col_vd1, col_vd2, col_vf1, col_vf2 = st.columns(4)
+            with col_vd1:
+                vigencia_desde_data = st.date_input("Início — data", value=datetime.now().date(), key="config_op_desde_data")
+            with col_vd2:
+                vigencia_desde_hora = st.time_input("Início — hora", value=datetime.now().time().replace(microsecond=0), key="config_op_desde_hora")
+            with col_vf1:
+                vigencia_ate_data = st.date_input("Fim — data", value=datetime.now().date() + pd.Timedelta(days=7), key="config_op_ate_data")
+            with col_vf2:
+                vigencia_ate_hora = st.time_input("Fim — hora", value=datetime.now().time().replace(microsecond=0), key="config_op_ate_hora")
 
         st.caption(
             "📶 **Importante:** pacotes offline já publicados (PWA) não leem a configuração nova sozinhos — "
@@ -2450,10 +2463,14 @@ Ordem padrão do sistema: `Segurança da Operação → Criticidade → Atraso �
                 "todos" if escopo_dados_label == "Todas as OS Pendentes"
                 else escopo_dados_label.replace("Plano de ", "", 1)
             )
-            vigente_desde_dt = datetime.combine(vigencia_desde_data, vigencia_desde_hora)
-            vigente_ate_dt = datetime.combine(vigencia_ate_data, vigencia_ate_hora)
+            if sem_expiracao:
+                vigente_desde_dt = datetime.now()
+                vigente_ate_dt = None
+            else:
+                vigente_desde_dt = datetime.combine(vigencia_desde_data, vigencia_desde_hora)
+                vigente_ate_dt = datetime.combine(vigencia_ate_data, vigencia_ate_hora)
 
-            if vigente_ate_dt <= vigente_desde_dt:
+            if vigente_ate_dt is not None and vigente_ate_dt <= vigente_desde_dt:
                 st.error("⛔ A data/hora de Fim precisa ser depois da data/hora de Início.")
             else:
                 conn = get_connection()
@@ -2479,10 +2496,16 @@ Ordem padrão do sistema: `Segurança da Operação → Criticidade → Atraso �
                     release_connection(conn)
 
                 st.cache_data.clear()
-                st.session_state["msg_sucesso_config_op"] = (
-                    f"Configuração de {coord_sel} salva — vigente de "
-                    f"{vigente_desde_dt.strftime('%d/%m/%Y %H:%M')} até {vigente_ate_dt.strftime('%d/%m/%Y %H:%M')}."
-                )
+                if vigente_ate_dt is None:
+                    st.session_state["msg_sucesso_config_op"] = (
+                        f"Configuração de {coord_sel} salva como novo padrão — vigente desde "
+                        f"{vigente_desde_dt.strftime('%d/%m/%Y %H:%M')}, sem data de expiração."
+                    )
+                else:
+                    st.session_state["msg_sucesso_config_op"] = (
+                        f"Configuração de {coord_sel} salva — vigente de "
+                        f"{vigente_desde_dt.strftime('%d/%m/%Y %H:%M')} até {vigente_ate_dt.strftime('%d/%m/%Y %H:%M')}."
+                    )
                 st.rerun()
 #endregion 3.8b
 
@@ -4570,20 +4593,20 @@ st.markdown("""
     }
     [data-testid="stSidebar"] div[data-baseweb="select"] span, [data-testid="stSidebar"] div[data-baseweb="input"] input { color: white !important; }
 
-    /* 3b. CAMPO DE DATA (sidebar): fundo claro + letras PRETAS.
-       As regras de input logo acima deixam o texto branco sobre #1E293B; "letras pretas"
-       (pedido 02/09/2026) só fica legível com o fundo do campo claro. Seletor de propósito
-       mais específico que o de cima, pra ganhar a cascata sem !important extra em tudo. */
-    [data-testid="stSidebar"] [data-testid="stDateInput"] div[data-baseweb="input"],
-    [data-testid="stSidebar"] [data-testid="stDateInput"] div[data-baseweb="input"] > div,
-    [data-testid="stSidebar"] .stDateInput div[data-baseweb="input"],
-    [data-testid="stSidebar"] .stDateInput div[data-baseweb="input"] > div {
-        background-color: #FFFFFF !important; border-color: #94A3B8 !important;
+    /* 3b. CAMPO DE DATA (Período de Programação/Execução) -- fundo claro fixo + texto
+       preto em TUDO dentro do widget (`*`, cobre a pílula/tag VERMELHA do range picker do
+       BaseWeb, que é o que fica com "letras brancas em fundo vermelho"). Não brigar
+       sub-elemento por sub-elemento. Este bloco JÁ EXISTIA na v18.2.0 e se perdeu no
+       upload de app.py de 02/09/2026 que reverteu o arquivo pra ~v16.0.1 -- reposto
+       04/09/2026 (ver Agente/09_APRENDIZADOS_E_ERROS.md, incidente do rollback). */
+    [data-testid="stSidebar"] [data-testid="stDateInput"] * {
+        color: #0F172A !important;
     }
-    [data-testid="stSidebar"] [data-testid="stDateInput"] div[data-baseweb="input"] input,
-    [data-testid="stSidebar"] .stDateInput div[data-baseweb="input"] input {
-        color: #000000 !important; -webkit-text-fill-color: #000000 !important;
+    [data-testid="stSidebar"] [data-testid="stDateInput"] input,
+    [data-testid="stSidebar"] [data-testid="stDateInput"] div[data-baseweb] {
+        background-color: #FFFFFF !important; border-color: #475569 !important;
     }
+    [data-testid="stSidebar"] [data-testid="stDateInput"] svg { fill: #0F172A !important; }
 
     /* 4. EXPANDERS (Painel Retrátil na Sidebar) */
     [data-testid="stSidebar"] [data-testid="stExpander"] details { border: 1px solid #FF4B4B !important; border-radius: 8px !important; overflow: hidden; }
@@ -4633,7 +4656,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v16.0.3")
+st.sidebar.caption("SGO Eletroeletrônica • v16.0.4")
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")

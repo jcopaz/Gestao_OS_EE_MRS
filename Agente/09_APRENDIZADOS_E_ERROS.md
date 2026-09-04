@@ -356,6 +356,45 @@ Primeira execução real do `/limpar_evidencias_orfas` (endpoint criado nesta me
 
 ---
 
+## 03/09/2026 — OS do Plano de Setembro (Paranapiacaba) "sumindo": parser de data não entendia mês abreviado PT-BR
+
+**O que aconteceu:** a Coordenação de Paranapiacaba relatou que OS do Plano de Setembro não apareciam. Na verdade **não sumiam** — ficavam sem "Data inicial programada" (NaT) e por isso caíam pro fim da lista de roteirização (`Ordem_Prazo = 3` em `calcular_df_recomendado`), o que pro usuário de campo é praticamente "não existir". Corrigido remotamente pelo Julio em 03/09/2026 (commit `9debaa7`).
+
+**Causa raiz:** `parse_data_programada()` só reconhecia ISO (`AAAA-MM-DD`) e `DD/MM/AAAA`. O Excel em **locale PT-BR** regrava uma data digitada como `15/09/2026` no formato `15-set` / `15-set-26` ao salvar/reabrir a planilha; e planilha reexportada/colada como CSV perde a formatação de data e sobra só o **número serial** do Excel (inteiro de dias desde 30/12/1899). Nos dois casos `pd.to_datetime(dayfirst=True)` devolvia `NaT` — sem erro, sem aviso.
+
+**Correção:**
+1. `parse_data_programada()` passou a reconhecer também: abreviação de mês PT-BR (`jan…dez`, regex `^(\d{1,2})[-/ ]([A-Za-zçÇ]{3,})[-/ .]*(\d{2,4})?$`, ano assumido = ano corrente quando ausente, `20` + `AA` quando 2 dígitos) e serial de data do Excel (`^\d{4,6}$` → `Timestamp("1899-12-30") + to_timedelta(int(s), "D")`).
+2. A tela de **Upload de OS Programadas** agora conta, na hora do upload, quantas linhas ficaram com "Data inicial programada" não reconhecida e mostra `st.warning` pro administrador — em vez de o problema só aparecer semanas depois pro pessoal de campo.
+
+**Aprendizado:**
+1. **Dado que "some" pra um usuário nem sempre é registro faltando — pode ser um campo-chave virando NaT/nulo silenciosamente** e o item caindo pro fim de uma ordenação. Ao investigar "não aparece", checar se o registro existe mas com o campo de ordenação/filtro vazio, antes de suspeitar de escopo/permissão/cache.
+2. **Parser de data que só cobre 1-2 formatos é frágil com planilha real** — Excel em locale PT-BR e round-trip por CSV produzem `15-set`, `15-set-26` e serial numérico como coisas normais, não exóticas. Todo ponto de entrada de data vindo de planilha precisa cobrir esses três, no mínimo.
+3. **Validação no momento do upload > erro semanas depois no campo.** Quando um parser pode falhar em silêncio (`errors="coerce"`), a tela que recebe o arquivo deve contar e avisar quantas linhas ficaram inválidas na hora — o custo é ~3 linhas de código e evita um incidente de campo inteiro.
+
+---
+
+## 02–04/09/2026 — Upload de `app.py` inteiro pelo GitHub reverteu ~2 meses de trabalho (v16.1 → v18.2)
+
+**O que aconteceu:** em 02/09/2026 dois commits **"Add files via upload"** (`1f8d9df`, `8b87f33`, feitos pela UI web do GitHub) substituíram o `app.py` inteiro por uma cópia local antiga (era ~v16.0.1). Isso **reverteu silenciosamente** tudo que tinha sido commitado direto no GitHub/Streamlit Cloud entre a v16.1.0 e a v18.2.0. Os patches de correção dos crashes de data (02/09) e o parser (03/09) foram aplicados **em cima da base já revertida**, então o rollback ficou escondido. Descoberto em 04/09 investigando 2 "regressões" que o Julio reportou como "voltou / sumiu".
+
+**O que se perdeu no rollback (confirmado por `git diff f1d5fe8 HEAD -- app.py`, ~505 linhas líquidas a menos):**
+- **Config Operacional:** toggle "🔒 Sem data de expiração (vira o novo padrão da coordenação)" — grava `vigente_ate = NULL` (commit `9928cd2`, v16.1.0). *(reposto 04/09)*
+- **CSS do campo de data** da sidebar: o bloco `[data-testid="stDateInput"] * { color: #0F172A }` + fundo branco, que matava a **pílula vermelha com texto branco** do range picker do BaseWeb (v18.2.0). *(reposto 04/09)*
+- **`calcular_df_recomendado` perdeu `@st.cache_data(ttl=600, max_entries=16)`** → reabre o **vazamento de memória do incidente de 21/08/2026** que derrubou o app no Streamlit Cloud. ⚠️ *ainda pendente*
+- **Basemap do Mapa de Campo** voltou pra `tiles="CartoDB positron"` → reabre o **incidente de 26/08/2026** (Carto passou a exigir API key; tile vira aviso "API KEY REQUIRED"). Deveria ser `Esri World Light Gray` (v18.0.3). ⚠️ *ainda pendente*
+- Rótulos de cidade/município no Mapa de Campo (v18.1.0) e melhorias do mapa da v18.2.0 (raio verde, pino colorido por Segurança pendente, popup detalhado). ⚠️ *ainda pendente*
+- ~245 linhas removidas de `render_tela_admin()` (a confirmar o quê — provável fluxo de Baixa Manual NAPL, v17/v18) e outros trechos no delta de 505 linhas. ⚠️ *a auditar*
+
+**Correção:** ver acima os 2 itens repostos em 04/09. O resto exige **reconciliação da base v18.2.0 (`f1d5fe8`) com os 4 commits bons feitos depois** (`ebf2b94`, `b90abd8` correção de comparação de datas; `b0a5df6` blindagem + CSS; `695b885` flag do calendário; `9debaa7` parser) — operação maior, a fazer com aprovação e teste, não em cima do rollback.
+
+**Aprendizado:**
+1. **Nunca subir `app.py` inteiro pela UI "Add files via upload" do GitHub a partir de uma cópia local.** O repositório recebe commits diretos (GitHub web / Copilot / Streamlit Cloud) — qualquer cópia local fica desatualizada em dias. Alteração é sempre `git pull` → editar → `git commit`/`push`, ou patch cirúrgico direto na web sobre a versão atual. Um "upload" é um `git checkout` mascarado de commit: reverte tudo que a cópia local não tinha, sem conflito, sem aviso.
+2. **Commit "Add files via upload" com centenas de linhas removidas é bandeira vermelha** — sempre abrir o diff (`git show <sha> --stat` + hunks) antes de confiar. `835 insertions, 628 deletions` num arquivo de 8,9 mil linhas não é "corrigi um bug", é "troquei o arquivo".
+3. **Regressão reportada como "isso já estava corrigido / voltou / sumiu" = suspeitar de rollback de versão antes de re-corrigir o item.** Rastrear `git log --all -S"<trecho da feature>" -- app.py` acha o commit que tirou; comparar contra a última tag/commit bom conhecido (`git diff <bom> HEAD -- app.py`) mostra o estrago inteiro de uma vez, em vez de descobrir item por item.
+4. **Manter uma tag/ponto de referência de "última versão boa conhecida"** (como o `estavel-2026-07-17` no topo deste doc) e comparar contra ela ao primeiro sinal de regressão em massa.
+
+---
+
 ## Lições transversais (válidas pra qualquer mudança futura)
 
 - **Verificar causa raiz com dado real (SQL/log) antes de aplicar patch** — não assumir, não adivinhar. Vale tanto pra bug de dado quanto pra bug de infraestrutura.
@@ -373,3 +412,4 @@ Primeira execução real do `/limpar_evidencias_orfas` (endpoint criado nesta me
 - **Repositório público ou segredo único embutido no cliente (PWA/JS) anulam qualquer proteção de código-fonte contra cópia da aplicação** — não é sobre ofuscar/assinar o código, é sobre onde o código e as credenciais realmente ficam acessíveis. Rotação/segregação de chave (uma por finalidade, nunca uma mestra compartilhada entre painel, automação e cliente offline) é decisão de infraestrutura, não só de código.
 - **`app.py` e `api.py` são deploys separados sem código compartilhado** — uma lógica corrigida/reforçada num dos dois (ex.: resolução de pátio, fail-closed) não garante que o outro lado tenha a mesma robustez. "Parar de aceitar dado errado" e "conseguir resolver o dado certo" são correções diferentes — sempre checar os dois lados de qualquer regra que existe duplicada.
 - **Default de widget lido do `st.session_state` (data, slider, number_input) tem que ser saneado contra os `min`/`max` atuais antes de instanciar** — o valor foi gravado num rerun anterior, com base/faixa possivelmente diferentes; `st.date_input` ainda por cima retorna tupla de tamanho variável (0/1/2) durante a seleção. Extrair **um saneador único** e chamá-lo em toda fronteira onde o valor entra (fragmento do widget **e** releitura pro filtro/consulta), não só onde estourou.
+- **Nunca subir `app.py`/`api.py` inteiro pela UI "Add files via upload" do GitHub a partir de cópia local** — o repo recebe commits diretos (web/Copilot/Cloud) e a cópia local desatualiza em dias; um "upload" é `git checkout` mascarado que reverte tudo que a cópia não tinha, sem conflito nem aviso. Fluxo: `git pull` → editar → `commit`/`push`, ou patch cirúrgico na web sobre a versão atual. Commit "upload" com centenas de linhas removidas = abrir o diff antes de confiar. Regressão do tipo "isso já estava corrigido / voltou / sumiu" → suspeitar de rollback de versão e comparar contra a última tag boa (`git diff <bom> HEAD -- app.py`) antes de re-corrigir item por item.
