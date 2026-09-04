@@ -380,12 +380,15 @@ Primeira execução real do `/limpar_evidencias_orfas` (endpoint criado nesta me
 **O que se perdeu no rollback (confirmado por `git diff f1d5fe8 HEAD -- app.py`, ~505 linhas líquidas a menos):**
 - **Config Operacional:** toggle "🔒 Sem data de expiração (vira o novo padrão da coordenação)" — grava `vigente_ate = NULL` (commit `9928cd2`, v16.1.0). *(reposto 04/09)*
 - **CSS do campo de data** da sidebar: o bloco `[data-testid="stDateInput"] * { color: #0F172A }` + fundo branco, que matava a **pílula vermelha com texto branco** do range picker do BaseWeb (v18.2.0). *(reposto 04/09)*
-- **`calcular_df_recomendado` perdeu `@st.cache_data(ttl=600, max_entries=16)`** → reabre o **vazamento de memória do incidente de 21/08/2026** que derrubou o app no Streamlit Cloud. ⚠️ *ainda pendente*
-- **Basemap do Mapa de Campo** voltou pra `tiles="CartoDB positron"` → reabre o **incidente de 26/08/2026** (Carto passou a exigir API key; tile vira aviso "API KEY REQUIRED"). Deveria ser `Esri World Light Gray` (v18.0.3). ⚠️ *ainda pendente*
-- Rótulos de cidade/município no Mapa de Campo (v18.1.0) e melhorias do mapa da v18.2.0 (raio verde, pino colorido por Segurança pendente, popup detalhado). ⚠️ *ainda pendente*
-- ~245 linhas removidas de `render_tela_admin()` (a confirmar o quê — provável fluxo de Baixa Manual NAPL, v17/v18) e outros trechos no delta de 505 linhas. ⚠️ *a auditar*
+- **`calcular_df_recomendado` perdeu `@st.cache_data(ttl=600, max_entries=16)`** → reabre o **vazamento de memória do incidente de 21/08/2026** que derrubou o app no Streamlit Cloud. ✅ *reposto em v16.0.5 (`63ccff0`, 04/09)*
+- **Basemap do Mapa de Campo** voltou pra `tiles="CartoDB positron"` → reabre o **incidente de 26/08/2026** (Carto passou a exigir API key; tile vira aviso "API KEY REQUIRED"). Deveria ser `Esri World Light Gray` (v18.0.3). ✅ *reposto em v16.0.5 — base + camada de rótulos de cidade juntas*
+- Melhorias do mapa da v18.2.0 (raio verde, pino colorido por Segurança pendente, popup detalhado). ⚠️ *pendente (reconciliação)*
+- ~245 linhas removidas de `render_tela_admin()` (a confirmar o quê — provável fluxo de Baixa Manual NAPL, v17/v18) e outros trechos no delta de 505 linhas. ⚠️ *a auditar (reconciliação)*
 
-**Correção:** ver acima os 2 itens repostos em 04/09. O resto exige **reconciliação da base v18.2.0 (`f1d5fe8`) com os 4 commits bons feitos depois** (`ebf2b94`, `b90abd8` correção de comparação de datas; `b0a5df6` blindagem + CSS; `695b885` flag do calendário; `9debaa7` parser) — operação maior, a fazer com aprovação e teste, não em cima do rollback.
+**Correção:**
+- 04/09 v16.0.4 (`8d7f51b`): toggle "novo padrão" da Config Op + bloco CSS do campo de data.
+- 04/09 v16.0.5 (`63ccff0`): cache de `calcular_df_recomendado` + basemap Esri (base + rótulos de cidade).
+- **Ainda falta** a reconciliação da base v18.2.0 (`f1d5fe8`) com o que foi commitado de bom depois — `ebf2b94` + `b90abd8` (comparação de datas), a lógica de blindagem de `b0a5df6` (helpers `_intervalo_datas_seguro`/`_para_timestamp_filtro`; a parte de CSS de `b0a5df6` é redundante — `f1d5fe8` já tem melhor), a flag `EXIBIR_AGENDA_CALENDARIO` de `695b885`, e `9debaa7` (parser). Operação a fazer no branch `dev`, com teste em navegador, antes de `main` — não em cima do rollback.
 
 **Aprendizado:**
 1. **Nunca subir `app.py` inteiro pela UI "Add files via upload" do GitHub a partir de uma cópia local.** O repositório recebe commits diretos (GitHub web / Copilot / Streamlit Cloud) — qualquer cópia local fica desatualizada em dias. Alteração é sempre `git pull` → editar → `git commit`/`push`, ou patch cirúrgico direto na web sobre a versão atual. Um "upload" é um `git checkout` mascarado de commit: reverte tudo que a cópia local não tinha, sem conflito, sem aviso.
