@@ -20,6 +20,14 @@
 
 ---
 
+## 💤 Desativado (código mantido, reativável por flag)
+
+| Feature | Flag | Desde | Motivo |
+|---|---|---|---|
+| Agenda Mensal de Demanda por Pátio (calendário FullCalendar + cards Pátios do Dia / Pátio Prioritário / Turno, aba Roteirização) | `EXIBIR_AGENDA_CALENDARIO` (SESSÃO 5 do `app.py`) | 02/09/2026 | Equipe de campo não estava usando. Código todo preservado na região 10.3.1 + helpers da região 3.7. Para reativar: `EXIBIR_AGENDA_CALENDARIO = True`. |
+
+---
+
 ## 🔜 Curto prazo
 
 | Item | Descrição |
