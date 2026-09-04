@@ -1,3 +1,10 @@
+# ==============================================================================
+# SGO Eletroeletrônica — Gestão_OS (painel Streamlit)
+# Autor / Responsável pelo produto: Julio Copaz (julio.paz@mrs.com.br)
+# Todos os direitos reservados. Uso, cópia ou distribuição não autorizados
+# são proibidos.
+# ==============================================================================
+
 #region SESSÃO 1: Imports, Configurações e Funções de Base
 
 #region 1.1: Imports
@@ -287,11 +294,17 @@ def init_db():
             # mantendo a OS aparecendo como pendente na Roteirizacao mesmo ja baixada (13/07/2026).
             cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS atualizado_em TIMESTAMP DEFAULT NOW();")
             # Fluxo NRAV (Não Realizada Após Vistoria, IT-ENG-3113): causa_nrav guarda o codigo
-            # padrao (E002..E011) e texto_confirmacao a observacao livre (max 38 char, limite do
+            # padrao (E002..E011) e texto_confirmacao a observacao livre (max 40 char, limite do
             # campo "Txt. confirmação" do SAP) -- ficam NULL/vazio pra qualquer baixa que nao seja
             # NRAV (pedido 29/07/2026).
             cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS causa_nrav VARCHAR(10);")
             cur.execute("ALTER TABLE baixas ADD COLUMN IF NOT EXISTS texto_confirmacao VARCHAR(38);")
+            # Limite real corrigido de 38 para 40 caracteres (26/08/2026, confirmado pelo
+            # responsavel do produto) -- ADD COLUMN IF NOT EXISTS acima nao alarga coluna ja
+            # existente em producao, precisa de ALTER COLUMN TYPE explicito. Idempotente
+            # (rodar de novo com a coluna ja VARCHAR(40) e no-op), mesmo padrao dos ALTERs
+            # de coluna nova acima.
+            cur.execute("ALTER TABLE baixas ALTER COLUMN texto_confirmacao TYPE VARCHAR(40);")
         except Exception: conn.rollback()
         
         # Criar o admin mestre se não existir
@@ -1008,7 +1021,11 @@ def classificar_turno(dt):
 #endregion
 
 #region 3.6: Auxiliares da Sidebar — Preparação e Filtros (Blindagem)
-@st.cache_data(show_spinner=False)
+# ttl/max_entries adicionados em 21/08/2026 (mesmo incidente de estouro de memoria de
+# carregar_base_sem_overlay/aplicar_overlay_baixas) -- df_base muda toda vez que uma
+# baixa e registrada em qualquer escopo, entao cada baixa deixava mais uma copia do
+# resultado presa na RAM pra sempre.
+@st.cache_data(show_spinner=False, ttl=600, max_entries=16)
 def preparar_df_visao(df_base: pd.DataFrame, filtro_visao: str) -> pd.DataFrame:
     df_visao = df_base.copy()
     _colunas_obrigatorias = ["Status da Operação", "Data/Hora Realizado", "Data inicial programada"]
@@ -1175,7 +1192,9 @@ def aplicar_filtros_sidebar(
 import calendar as pycal
 from datetime import date
 
-@st.cache_data(show_spinner=False)
+# ttl/max_entries: mesmo motivo de preparar_df_visao (df_base_cal muda a cada baixa
+# registrada, sem limite isso acumulava uma copia por baixa, pra sempre).
+@st.cache_data(show_spinner=False, ttl=600, max_entries=16)
 def _preparar_df_calendario(df_base_cal: pd.DataFrame) -> pd.DataFrame:
     if df_base_cal.empty: return pd.DataFrame()
     df = df_base_cal.copy()
@@ -1189,7 +1208,7 @@ def _preparar_df_calendario(df_base_cal: pd.DataFrame) -> pd.DataFrame:
     df["Nivel_Prioridade"] = pd.to_numeric(df["Nivel_Prioridade"], errors="coerce").fillna(999).astype(int)
     return df
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=600, max_entries=16)
 def montar_eventos_calendario_patios(df_base_cal: pd.DataFrame, ano: int, mes: int, max_patios_visiveis: int = 2) -> list[dict]:
     df = _preparar_df_calendario(df_base_cal)
     if df.empty: return []
@@ -1222,7 +1241,7 @@ def montar_eventos_calendario_patios(df_base_cal: pd.DataFrame, ano: int, mes: i
 
     return eventos
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=600, max_entries=16)
 def resumir_demanda_calendario(df_base_cal: pd.DataFrame, ano: int, mes: int, dia_ref: int | None = None) -> dict:
     df = _preparar_df_calendario(df_base_cal)
     primeiro_dia, ultimo_dia = date(int(ano), int(mes), 1), date(int(ano), int(mes), pycal.monthrange(int(ano), int(mes))[1])
@@ -1255,7 +1274,7 @@ def resumir_demanda_calendario(df_base_cal: pd.DataFrame, ano: int, mes: int, di
 
     return {"dia_ref": dia_atual_ref, "qtd_patios": int(qtd_patios), "total_os": int(total_os), "patio_prioritario": patio_prioritario_txt, "serie_total_os_mes": serie_total_os_mes, "labels_mes": labels_mes}
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=600, max_entries=16)
 #endregion
 
 #region 3.7.4: Resumo de Conclusões por Turno
@@ -1305,6 +1324,11 @@ def render_tela_admin():
     tem_upload_dados = "Upload de Dados" in gov_admin
     tem_ativos_gov = tem_upload_dados or "Mapeamento de Ativos" in gov_admin
     tem_iw47_gov = tem_upload_dados or "Importação IW47" in gov_admin
+    # Permissao propria (pedido do Julio em 24/08/2026, gerenciavel em "Gestao de
+    # Usuarios" -- ver opcoes_gov). Restrita ao username "admin" por enquanto, alem
+    # da permissao em si -- tirar essa segunda trava quando decidir liberar pra mais
+    # gente.
+    tem_napl_gov = ("Baixa Manual NAPL" in gov_admin) and (st.session_state.get("username") == "admin")
 
     # --- MANUAL DE PADRONIZAÇÃO DE DADOS (GOVERNANÇA) ---
     with st.expander("📖 MANUAL DE IMPORTAÇÃO (Padrão Exigido para Planilhas)", expanded=True):
@@ -2240,6 +2264,245 @@ def render_tela_admin():
                 st.error(f"❌ Erro ao processar a planilha IW47: {e}")
     #endregion 3.8.5
 
+    #region 3.8.6: Baixa Manual — NAPL (Não se Aplica / Ativo Inativado, Falta de Material)
+    # Antes disso, baixa NAPL era um script SQL rodado manualmente contra o Neon
+    # (ver bases_os/napl_baixa_massa.sql, 30/07/2026, 141 OS) -- vira upload recorrente
+    # aqui, mesmas 6 colunas, mesma regra de consolidação por OS (causa válida E001/E005
+    # e horário mais recente vencem) e a mesma trava de segurança (nunca sobrescreve
+    # baixa de campo real, com foto ou origem não administrativa).
+    # Permissao propria "Baixa Manual NAPL" + restrita ao username "admin" por
+    # enquanto (pedido do Julio em 24/08/2026) -- ver tem_napl_gov no topo da funcao.
+    if not tem_napl_gov:
+        return
+    st.markdown("---")
+    st.subheader("📥 Baixa Manual — NAPL")
+
+    with st.expander("📋 Formato da planilha exigido (colunas + exemplo de linha)", expanded=False):
+        st.markdown(
+            "Só estas 6 colunas são lidas (nomes exatamente assim, acento incluído — "
+            "outras colunas da planilha, como `Linha selecionada` ou `Confirmação`, são ignoradas):"
+        )
+        st.dataframe(
+            pd.DataFrame([{
+                "Ordem": "22740501",
+                "Criado por": "99006413",
+                "Causa do desvio": "E001",
+                "Texto confirmação": "ativo desativado devido obra da remodela",
+                "Data de lançamento": "30/07/2026",
+                "Hora real do fim de execução": "10:31:20",
+            }]),
+            hide_index=True, width="stretch",
+        )
+        st.caption(
+            "Causa do desvio válida pra NAPL: E001 (Ativo Inativado) ou E005 (Falta de Material). "
+            "Se a mesma OS aparecer mais de uma vez na planilha, fica só 1 linha por OS: "
+            "prioriza causa válida (E001/E005) e, empatando, o horário mais recente."
+        )
+
+    coord_baixa_napl_fallback = st.selectbox(
+        "Coordenação (usada só quando a OS não é encontrada em Programação)",
+        ["Paranapiacaba", "Piaçaguera"],
+        key="coord_baixa_napl_fallback",
+    )
+
+    _CAUSAS_NAPL_VALIDAS = {"E001", "E005"}
+
+    arquivo_napl = st.file_uploader(
+        "Selecione a planilha de baixa NAPL", type=["xlsx", "csv"], key="upload_napl_baixa_massa"
+    )
+
+    if arquivo_napl is not None:
+        try:
+            df_napl = (
+                pd.read_csv(arquivo_napl) if arquivo_napl.name.lower().endswith(".csv")
+                else pd.read_excel(arquivo_napl)
+            )
+        except Exception as e:
+            st.error(f"❌ Não foi possível ler a planilha: {e}")
+            df_napl = None
+
+        if df_napl is not None:
+            col_ordem = _pick_coluna(df_napl, ["Ordem"])
+            col_matricula_napl = _pick_coluna(df_napl, ["Criado por"])
+            col_causa = _pick_coluna(df_napl, ["Causa do desvio"])
+            col_texto_napl = _pick_coluna(df_napl, ["Texto confirmação", "Texto confirmacao"])
+            col_data_napl = _pick_coluna(df_napl, ["Data de lançamento", "Data de lancamento"])
+            col_hora_napl = _pick_coluna(df_napl, ["Hora real do fim de execução", "Hora real do fim de execucao"])
+
+            _colunas_napl_faltando = [
+                nome for nome, col in [
+                    ("Ordem", col_ordem), ("Criado por", col_matricula_napl), ("Causa do desvio", col_causa),
+                    ("Texto confirmação", col_texto_napl), ("Data de lançamento", col_data_napl),
+                    ("Hora real do fim de execução", col_hora_napl),
+                ] if col is None
+            ]
+
+            if _colunas_napl_faltando:
+                st.error(f"❌ Coluna(s) não encontrada(s) na planilha: {', '.join(_colunas_napl_faltando)}.")
+            else:
+                registros_napl = []
+                alertas_napl = []
+
+                for idx, row in df_napl.iterrows():
+                    os_napl = _normalizar_os(row[col_ordem])
+                    matricula_napl = _normalizar_matricula(row[col_matricula_napl])
+                    causa_napl = _limpar_texto(row[col_causa]).upper()
+                    texto_napl = _limpar_texto(row[col_texto_napl])
+                    data_txt_napl = _formatar_data_iw47(row[col_data_napl])
+                    hora_txt_napl = _formatar_hora_iw47(row[col_hora_napl])
+
+                    # causa_nrav e VARCHAR(10) - codigo esperado e curto (E001/E005), mas
+                    # protege contra a mesma StringDataRightTruncation se a coluna "Causa do
+                    # desvio" da planilha vier com descricao longa em vez do codigo.
+                    if len(causa_napl) > 10:
+                        alertas_napl.append(
+                            f"Linha {idx + 2} (OS {os_napl}): causa do desvio truncada para "
+                            f"10 caracteres - confira se a coluna tem o código (ex.: E001), não a descrição."
+                        )
+                        causa_napl = causa_napl[:10]
+
+                    # texto_confirmacao e VARCHAR(40) no banco (limite real do campo "Txt.
+                    # confirmação" do SAP, corrigido de 38 para 40 em 26/08/2026, mesmo
+                    # respeitado pelo max_chars=40 do fluxo NRAV manual, online e offline) --
+                    # diferente do preenchimento manual (que nunca deixa digitar alem disso),
+                    # o texto aqui vem cru de planilha/SAP e pode vir mais longo, o que
+                    # quebrava o INSERT em lote com StringDataRightTruncation. Trunca em vez
+                    # de rejeitar a linha inteira - mesmo espirito de "marcado, nao
+                    # descartado" ja usado noutras partes do app (nunca perde a OS inteira
+                    # por causa de um campo secundario).
+                    if len(texto_napl) > 40:
+                        alertas_napl.append(
+                            f"Linha {idx + 2} (OS {os_napl}): texto de confirmação truncado "
+                            f"para 40 caracteres (limite do campo no SAP)."
+                        )
+                        texto_napl = texto_napl[:40]
+
+                    if not os_napl:
+                        alertas_napl.append(f"Linha {idx + 2}: OS vazia/inválida. Registro ignorado.")
+                        continue
+                    if not matricula_napl:
+                        alertas_napl.append(f"Linha {idx + 2} (OS {os_napl}): sem matrícula válida. Registro ignorado.")
+                        continue
+                    if not data_txt_napl or not hora_txt_napl:
+                        alertas_napl.append(f"Linha {idx + 2} (OS {os_napl}): data/hora inválida. Registro ignorado.")
+                        continue
+
+                    dt_ordenacao_napl = _montar_datetime_iw47(row[col_data_napl], row[col_hora_napl])
+                    registros_napl.append({
+                        "os": os_napl, "matricula": matricula_napl, "causa": causa_napl, "texto": texto_napl,
+                        "data_txt": data_txt_napl, "hora_txt": hora_txt_napl,
+                        "dt_ordenacao": dt_ordenacao_napl if pd.notna(dt_ordenacao_napl) else pd.Timestamp.min,
+                        "causa_valida": causa_napl in _CAUSAS_NAPL_VALIDAS,
+                    })
+
+                # Consolida 1 linha por OS -- mesma regra do napl_baixa_massa.sql de 30/07/2026:
+                # prioriza causa valida (E001/E005) e, empatando, o horario mais recente.
+                consolidado_napl = {}
+                for r in registros_napl:
+                    atual = consolidado_napl.get(r["os"])
+                    if atual is None or (r["causa_valida"], r["dt_ordenacao"]) > (atual["causa_valida"], atual["dt_ordenacao"]):
+                        consolidado_napl[r["os"]] = r
+                lista_napl_final = list(consolidado_napl.values())
+
+                if alertas_napl:
+                    st.warning(f"⚠️ {len(alertas_napl)} linha(s) da planilha ignorada(s).")
+                    with st.expander("Ver alertas", expanded=False):
+                        for a in alertas_napl[:300]:
+                            st.write(f"- {a}")
+
+                if not lista_napl_final:
+                    st.info("Nenhum registro válido pra processar.")
+                else:
+                    st.caption(
+                        f"{len(lista_napl_final)} OS distinta(s) após consolidação "
+                        f"({len(registros_napl)} linha(s) válida(s) na planilha)."
+                    )
+                    st.dataframe(
+                        pd.DataFrame([
+                            {
+                                "OS": r["os"], "Matrícula": r["matricula"], "Causa": r["causa"],
+                                "Válida (E001/E005)": "Sim" if r["causa_valida"] else "Não",
+                                "Texto": r["texto"], "Data": r["data_txt"], "Hora": r["hora_txt"],
+                            }
+                            for r in lista_napl_final
+                        ]),
+                        hide_index=True, width="stretch",
+                    )
+
+                    if st.button("✅ Confirmar Baixa NAPL", key="confirmar_baixa_napl", type="primary"):
+                        conn = get_connection()
+                        try:
+                            cur = conn.cursor()
+
+                            cur.execute(
+                                "SELECT os, coordenacao FROM os_programadas WHERE os = ANY(%s)",
+                                ([r["os"] for r in lista_napl_final],),
+                            )
+                            mapa_coord_napl = {str(os_): coord for os_, coord in cur.fetchall()}
+
+                            agora_napl = datetime.now()
+                            lote_napl = []
+                            for r in lista_napl_final:
+                                coordenacao_napl = mapa_coord_napl.get(r["os"], coord_baixa_napl_fallback)
+                                realizado_em_napl = f'{r["data_txt"]} {r["hora_txt"][:5]}'
+                                lote_napl.append((
+                                    r["os"], "Realizado", realizado_em_napl, coordenacao_napl, r["matricula"],
+                                    "Baixa NAPL Manual", "Sozinho",
+                                    r["data_txt"], r["hora_txt"], r["data_txt"], r["hora_txt"],
+                                    r["causa"], r["texto"], agora_napl,
+                                ))
+
+                            execute_values(
+                                cur,
+                                """
+                                INSERT INTO baixas (
+                                    os, status, realizado_em, coordenacao, concluido_por,
+                                    geolocalizacao_baixa, equipe, data_inicio, hora_inicio,
+                                    data_fim, hora_fim, causa_nrav, texto_confirmacao, atualizado_em
+                                )
+                                VALUES %s
+                                ON CONFLICT (os) DO UPDATE SET
+                                    status = EXCLUDED.status,
+                                    realizado_em = EXCLUDED.realizado_em,
+                                    coordenacao = EXCLUDED.coordenacao,
+                                    concluido_por = EXCLUDED.concluido_por,
+                                    geolocalizacao_baixa = EXCLUDED.geolocalizacao_baixa,
+                                    equipe = EXCLUDED.equipe,
+                                    data_inicio = EXCLUDED.data_inicio,
+                                    hora_inicio = EXCLUDED.hora_inicio,
+                                    data_fim = EXCLUDED.data_fim,
+                                    hora_fim = EXCLUDED.hora_fim,
+                                    causa_nrav = EXCLUDED.causa_nrav,
+                                    texto_confirmacao = EXCLUDED.texto_confirmacao,
+                                    atualizado_em = EXCLUDED.atualizado_em
+                                WHERE
+                                    COALESCE(baixas.foto_evidencia, '') = ''
+                                    AND COALESCE(baixas.geolocalizacao_baixa, '') IN (
+                                        '', 'Baixa IW47', 'Importação IW47', 'Baixa Manual', 'Baixa NAPL Manual'
+                                    )
+                                    AND NOT EXISTS (
+                                        SELECT 1 FROM evidencias ev
+                                        WHERE TRIM(CAST(ev.os_referencia AS TEXT)) = TRIM(CAST(EXCLUDED.os AS TEXT))
+                                    );
+                                """,
+                                lote_napl,
+                                page_size=500,
+                            )
+
+                            conn.commit()
+                            cur.close()
+
+                        except Exception:
+                            conn.rollback()
+                            raise
+                        finally:
+                            release_connection(conn)
+
+                        st.success(f"✅ {len(lote_napl)} OS processada(s) como Baixa NAPL Manual.")
+                        st.cache_data.clear()
+                        st.rerun()
+    #endregion 3.8.6
+
 #endregion 3.8
 
 #region 3.8b: Configurações Operacionais (render_tela_config_operacional)
@@ -2376,10 +2639,6 @@ Ordem padrão do sistema: `Segurança da Operação → Criticidade → Atraso �
 
         st.markdown("---")
         st.markdown("**Vigência**")
-        # Toggle "sem data de expiração" = adotar como NOVO PADRÃO da coordenação (grava
-        # vigente_ate = NULL). Reposto em 04/09/2026 -- existia desde a v16.1.0 (commit
-        # 9928cd2) e se perdeu no upload de app.py de 02/09 que reverteu o arquivo pra
-        # ~v16.0.1. api.py já trata vigente_ate NULL como "sem prazo final".
         sem_expiracao = st.toggle(
             "🔒 Sem data de expiração (vira o novo padrão para esta coordenação, até que alguém mude de novo)",
             value=False, key="config_op_sem_expiracao"
@@ -2537,7 +2796,10 @@ def render_tela_gestao_usuarios():
         # "Importação IW47" e "Mapeamento de Ativos" (pedido 31/07/2026): permissões
         # granulares -- liberam só a respectiva seção de render_tela_admin() sem exigir
         # o "Upload de Dados" completo (que também inclui a Carga de OS Programadas).
-        opcoes_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Importação IW47", "Mapeamento de Ativos", "Gestão de Usuários", "Exportar SAP", "Governança", "Configurações Operacionais"]
+        # "Baixa Manual NAPL" adicionada em 24/08/2026 -- por enquanto so tem efeito
+        # real pro username "admin" (trava extra em tem_napl_gov, regiao 3.8.6),
+        # mesmo que outro usuario tambem marque essa opcao aqui.
+        opcoes_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Importação IW47", "Mapeamento de Ativos", "Gestão de Usuários", "Exportar SAP", "Governança", "Configurações Operacionais", "Baixa Manual NAPL"]
 
         #region 8.2.1: Criar Novo Usuário (Formulário)
         with st.form("form_novo_user", clear_on_submit=True):
@@ -3409,8 +3671,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                         <select id="causa_${{idx}}" ${{locked ? "disabled" : ""}}>${{opcoesJustificativaNravHtml}}</select>
                     </div>
                     <div class="field">
-                        <label for="obs_${{idx}}">Observações (máx. 38 caracteres)</label>
-                        <input id="obs_${{idx}}" type="text" maxlength="38" ${{locked ? "disabled" : ""}}>
+                        <label for="obs_${{idx}}">Observações (máx. 40 caracteres)</label>
+                        <input id="obs_${{idx}}" type="text" maxlength="40" ${{locked ? "disabled" : ""}}>
                     </div>
                 </div>
 
@@ -4037,12 +4299,12 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 COORDENADAS_FIXAS = {
     "FPI": [-23.444413, -46.309269], "IAA": [-23.867675, -46.400270], "IAB": [-23.521338, -46.688570],
     "IBA": [-23.915135, -46.321495], "ICB": [-23.886147, -46.416167], "ICG": [-23.767863, -46.343114],
-    "ICP": [-23.658495, -46.490753], "ICQ": [-23.926493, -46.402720], "ICR": [-23.640310, -46.323992],
+    "ICP": [-23.658495, -46.490753], "ICQ": [-23.91531040683147, -46.41890410191962], "ICR": [-23.640310, -46.323992],
     "ICZ": [-23.954824, -46.293306], "IEF": [-23.477809, -46.360984], "IES": [-23.545441, -46.603648],
     "IIP": [-23.564977, -46.604896], "IJN": [-23.195297, -46.870829], "IJU": [-23.889626, -46.338534], 
     "ILA": [-23.520217, -46.698082], "IMO": [-23.557803, -46.608382], "IOF": [-23.658579, -46.338538],
-    "IPA": [-23.774399, -46.306769], "IPG": [-23.847950, -46.370812], "IPR": [-23.537749, -46.625522],
-    "IQA": [-23.928445, -46.363900], "IQB": [-23.876744, -46.347839], "IRA": [-23.500572, -46.339448], 
+    "IPA": [-23.774399, -46.306769], "IPG": [-23.847950, -46.370812], "IPN": [-23.948095774842265, -46.30579661328678], "IPR": [-23.537749, -46.625522],
+    "IQA": [-23.928445, -46.363900], "IQB": [-23.876744, -46.347839], "IQC": [-23.91530182548477, -46.41890965645514], "IRA": [-23.500572, -46.339448], 
     "IRG": [-23.736705, -46.382241], "IRP": [-23.713578, -46.414862], "IRS": [-23.828162, -46.363101],
     "ISA": [-23.647553, -46.531007], "ISC": [-23.613874, -46.558834], "ISL": [-23.752383, -46.389262],
     "ISN": [-23.929330, -46.356448], "ISU": [-23.551210, -46.288671], "IUF": [-23.860615, -46.359726],  
@@ -4108,8 +4370,7 @@ def carregar_config_operacional(coordenacao: str) -> dict:
 #region 4.2b: Cálculo do Raio de Roteirização (Cacheado)
 # ttl/max_entries: mesmo motivo das demais (df_pendentes_f deriva de df_base, que muda
 # a cada baixa registrada -- sem limite, cada combinacao nova ficava presa na RAM pra
-# sempre). Reposto 04/09/2026 -- tinha sido apagado no rollback de app.py de 02/09,
-# reabrindo o vazamento de memória do incidente de 21/08 (ver 09_APRENDIZADOS_E_ERROS.md).
+# sempre).
 @st.cache_data(show_spinner=False, ttl=600, max_entries=16)
 def calcular_df_recomendado(df_pendentes_f: pd.DataFrame, lat_origem: float, lon_origem: float, raio_busca_km: int, escopo_usr: str) -> pd.DataFrame:
     # Extraído de dentro de "Ferramentas de Campo" (10.3.2) e cacheado: sem isso, essa conta
@@ -4342,7 +4603,18 @@ def tratar_df_os(df: pd.DataFrame):
     })
     return df_out
 
-@st.cache_data
+# ttl/max_entries adicionados em 21/08/2026 -- app caiu por estouro de memoria no
+# Streamlit Cloud (sgomrs.streamlit.app). Sem limite, cada combinacao nova de
+# escopo_usuario/etl_version/lista_os_filtro (ex.: cada exportacao SAP por periodo, que
+# varia a lista de OS) ficava para sempre na RAM do processo, sem nunca liberar a
+# entrada anterior -- e essa base inclui a coluna dados_completos (JSONB), a mais pesada.
+# ttl elevado pra 1800s em 24/08/2026 -- app caiu de novo, agora por estouro do limite
+# do plano Neon Free (rede/compute). Essa e a unica funcao cacheada aqui que de fato
+# consulta o Neon (as demais operam em cima do DataFrame ja carregado); ttl curto forcava
+# reconsulta da base inteira (com o JSONB pesado) a cada 10min mesmo sem dado novo.
+# max_entries continua sendo quem prende a memoria (nao depende do ttl), entao subir o
+# ttl reduz consulta ao Neon sem voltar a arriscar o estouro de RAM original.
+@st.cache_data(ttl=1800, max_entries=16)
 def carregar_base_sem_overlay(escopo_usuario: str, etl_version: str, lista_os_filtro: tuple | None = None) -> pd.DataFrame:
     conn = get_connection()
     try:
@@ -4448,7 +4720,12 @@ def carregar_base_sem_overlay(escopo_usuario: str, etl_version: str, lista_os_fi
 
     return df_base_final
 
-@st.cache_data(show_spinner=False)
+# ttl/max_entries adicionados em 21/08/2026 (mesmo incidente de estouro de memoria da
+# funcao acima) -- baixas_mtime muda a cada baixa de OS registrada por qualquer usuario,
+# entao toda baixa criava uma copia inteira nova do DataFrame combinado na RAM, e a
+# anterior nunca era liberada. max_entries pequeno porque so importa o mtime mais recente
+# por escopo -- entradas antigas nunca mais sao reaproveitadas (o mtime nao repete).
+@st.cache_data(show_spinner=False, ttl=600, max_entries=8)
 def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, baixas_mtime: str) -> pd.DataFrame:
     df_base = df_base_bruto.copy()
     if df_base.empty: return df_base
@@ -4597,12 +4874,13 @@ st.markdown("""
     }
     [data-testid="stSidebar"] div[data-baseweb="select"] span, [data-testid="stSidebar"] div[data-baseweb="input"] input { color: white !important; }
 
-    /* 3b. CAMPO DE DATA (Período de Programação/Execução) -- fundo claro fixo + texto
-       preto em TUDO dentro do widget (`*`, cobre a pílula/tag VERMELHA do range picker do
-       BaseWeb, que é o que fica com "letras brancas em fundo vermelho"). Não brigar
-       sub-elemento por sub-elemento. Este bloco JÁ EXISTIA na v18.2.0 e se perdeu no
-       upload de app.py de 02/09/2026 que reverteu o arquivo pra ~v16.0.1 -- reposto
-       04/09/2026 (ver Agente/09_APRENDIZADOS_E_ERROS.md, incidente do rollback). */
+    /* 3b. CAMPO DE DATA (Período de Programação/Execução) -- tentativa anterior (fundo
+    escuro igual ao resto da sidebar) só pegou parte dos elementos internos do range
+    picker do st.date_input: sobrou uma pilula vermelha com texto branco (data ilegível)
+    num fundo claro. Em vez de brigar com o esquema de cor interno do BaseWeb, fundo
+    claro fixo + texto preto em TUDO dentro do widget (`*`, cobre a pilula/tag também) --
+    mais simples e não depende de acertar cada sub-elemento individualmente.
+    */
     [data-testid="stSidebar"] [data-testid="stDateInput"] * {
         color: #0F172A !important;
     }
@@ -4660,7 +4938,16 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v16.0.5")
+st.sidebar.caption("SGO Eletroeletrônica • v19.0.0")
+st.sidebar.markdown(
+    """
+    <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">
+        <div style="font-size:0.68rem; color:#64748B; text-transform:uppercase; letter-spacing:0.05em;">Desenvolvimento</div>
+        <div style="font-size:0.82rem; color:#CBD5E1; padding-left:10px;">Julio Paz</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 st.sidebar.markdown("### 🧭 Navegação")
@@ -7575,8 +7862,8 @@ def _render_apontamento_nrav(df_recomendado_ui: pd.DataFrame):
                 )
             with c2:
                 _obs = st.text_input(
-                    "Observações (máx. 38 caracteres)", key=f"observacao_nrav_{os_id}",
-                    max_chars=38
+                    "Observações (máx. 40 caracteres)", key=f"observacao_nrav_{os_id}",
+                    max_chars=40
                 )
             justificativas_nrav[os_id] = _sel
             observacoes_nrav[os_id] = _obs
@@ -7874,7 +8161,12 @@ if tab2 is not None:
 #endregion 10.3.3
 
 #region 10.3.4: Mapa Interativo Otimizado (Cache da Malha)
-@st.cache_resource(show_spinner=False)
+# ttl/max_entries adicionados em 21/08/2026: sem eles esse era o cache mais pesado do
+# app -- cache_resource guarda o objeto folium.Map DE VERDADE (nao serializado) e a
+# chave inclui lat/lon de origem, que muda a cada busca de endereco/GPS de qualquer
+# usuario. Sem limite, cada busca deixava mais um mapa inteiro (com a malha ferroviaria
+# completa desenhada dentro) preso na RAM do processo, pra sempre.
+@st.cache_resource(show_spinner=False, ttl=600, max_entries=8)
 def _construir_mapa_navegacao(lat_centro, lon_centro, zoom_mapa, lat_origem, lon_origem, local_nome, origem_tipo, raio_busca_km, agg_map):
     # cache_resource (nao so extrair a funcao): antes, o mapa inteiro -- inclusive a malha
     # ferroviaria inteira, 1 objeto folium.GeoJson por trecho -- era reconstruido em TODO
@@ -7887,17 +8179,26 @@ def _construir_mapa_navegacao(lat_centro, lon_centro, zoom_mapa, lat_origem, lon
     mapa = folium.Map(
         location=[lat_centro, lon_centro], zoom_start=zoom_mapa, max_bounds=True,
         min_lat=-25.50, max_lat=-19.50, min_lon=-53.50, max_lon=-44.00,
-        # "CartoDB positron" (26/08/2026): a Carto passou a exigir API key nos tiles de
-        # basemap -- sem ela o tile server devolve "API KEY REQUIRED" cobrindo o mapa.
-        # Esri "World Light Gray Base" é o equivalente gratuito mais próximo, URL pública
-        # da ArcGIS Online, sem chave. Reposto 04/09/2026 (perdido no rollback de 02/09).
+        # "CartoDB positron" (26/08/2026): a Carto passou a exigir API key nos tiles
+        # de basemap - sem ela, o tile server devolve um aviso "API KEY REQUIRED"
+        # cobrindo o mapa inteiro em vez do mapa de verdade. Trocado primeiro pro
+        # OpenStreetMap (preset nativo do Folium), mas o visual e muito mais poluido
+        # (ruas/POIs/cores fortes) do que o fundo claro que a malha ferroviaria
+        # precisa pra se destacar por cima - Julio pediu de volta o fundo
+        # branco/cinza claro, quase sem detalhe, so o tracado. Esri "World Light
+        # Gray Base" e o equivalente gratuito mais proximo do visual antigo do
+        # CartoDB positron, sem exigir chave/cadastro nenhum (URL publica da
+        # ArcGIS Online, mesmo padrao usado por qualquer app com Folium/Leaflet).
         control_scale=True, prefer_canvas=True,
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}",
         attr="Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ",
     )
 
-    # Camada de referência do Esri (rótulos de cidade/município + limites administrativos),
-    # transparente, encaixa por cima do "World Light Gray Base" sem trazer ruas/POIs.
+    # Camada de referencia do Esri (26/08/2026, pedido do Julio): rotulos de
+    # cidade/municipio + limites administrativos, transparente, feita pra encaixar
+    # por cima do "World Light Gray Base" acima sem trazer ruas/POIs (mesmo motivo
+    # que fez trocar o CartoDB positron). control=False (sempre visivel, sem
+    # entrada no LayerControl - nao ha LayerControl nesse mapa ainda).
     folium.TileLayer(
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}",
         attr="Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ",
@@ -7922,17 +8223,52 @@ def _construir_mapa_navegacao(lat_centro, lon_centro, zoom_mapa, lat_origem, lon
         location=[lat_origem, lon_origem], tooltip=f"Origem: {local_nome}",
         icon=folium.Icon(color="red", icon="home" if origem_tipo != "GPS" else "map-marker", prefix="fa"),
     ).add_to(mapa)
+    # Verde (26/08/2026, pedido do Julio) -- antes era o mesmo azul da malha ferroviaria
+    # e dos pinos de patio, dificultando diferenciar visualmente o que era raio de
+    # busca do que era ferrovia/patio.
     folium.Circle(
-        radius=raio_busca_km * 1000, location=[lat_origem, lon_origem], color="#3B82F6",
-        fill=True, fill_opacity=0.08, weight=2, tooltip=f"Raio: {raio_busca_km} km",
+        radius=raio_busca_km * 1000, location=[lat_origem, lon_origem], color="#16A34A",
+        fill=True, fill_color="#16A34A", fill_opacity=0.08, weight=2,
+        tooltip=f"Raio: {raio_busca_km} km",
     ).add_to(mapa)
 
     if agg_map is not None and not agg_map.empty:
         for _, row in agg_map.iterrows():
+            # Cor por volume de OS de Segurança pendente no patio (26/08/2026, pedido do
+            # Julio) -- escala qualitativa em 5 faixas (nao um gradiente continuo por
+            # min/max do conjunto atual, que mudaria de significado dependendo de quantos
+            # patios aparecem no mapa naquele momento). Azul = nenhuma Seguranca pendente
+            # (mesmo visual de antes); demais faixas ficam mais escuras/vermelhas conforme
+            # o volume sobe. Limiares sao um ponto de partida - ajustar se nao bater com o
+            # volume real observado.
+            _seg_pend = int(row["seg_total"])
+            if _seg_pend == 0:
+                _cor_borda, _cor_fill = "#1D4ED8", "#3B82F6"  # azul - sem OS de Seguranca pendente
+            elif _seg_pend <= 2:
+                _cor_borda, _cor_fill = "#F87171", "#FCA5A5"  # vermelho claro
+            elif _seg_pend <= 5:
+                _cor_borda, _cor_fill = "#EF4444", "#F87171"  # vermelho medio
+            elif _seg_pend <= 10:
+                _cor_borda, _cor_fill = "#B91C1C", "#EF4444"  # vermelho
+            else:
+                _cor_borda, _cor_fill = "#7F1D1D", "#991B1B"  # vermelho escuro
+
+            _popup_html = (
+                f"<b>Pátio: {row['Patio']}</b><br>"
+                f"Distância: {row['menor_dist']:.1f} km<br>"
+                f"<br><b>OS Pendentes: {int(row['qtd_os'])}</b><br>"
+                f"Segurança ({int(row['seg_total'])})<br>"
+                f"&nbsp;&nbsp;CI: {int(row['seg_ci'])}<br>"
+                f"&nbsp;&nbsp;SI: {int(row['seg_si'])}<br>"
+                f"<br>Confiabilidade ({int(row['conf_total'])})<br>"
+                f"&nbsp;&nbsp;CI: {int(row['conf_ci'])}<br>"
+                f"&nbsp;&nbsp;SI: {int(row['conf_si'])}"
+            )
             folium.CircleMarker(
-                location=[row["lat_patio"], row["lon_patio"]], radius=6, color="#1D4ED8", weight=1.5,
-                fill=True, fill_color="#3B82F6", fill_opacity=0.95,
-                tooltip=f"Pátio: {row['Patio']}<br>OS: {row['qtd_os']}<br>Distância: {row['menor_dist']:.1f} km",
+                location=[row["lat_patio"], row["lon_patio"]], radius=6, color=_cor_borda, weight=1.5,
+                fill=True, fill_color=_cor_fill, fill_opacity=0.95,
+                tooltip=f"Pátio: {row['Patio']} - clique para detalhes",
+                popup=folium.Popup(_popup_html, max_width=250),
             ).add_to(mapa)
 
     return mapa
@@ -7945,7 +8281,36 @@ if tab2 is not None:
 
     agg_map = None
     if not df_recomendado.empty:
-        agg_map = df_recomendado.groupby("Patio", as_index=False).agg(lat_patio=("lat_patio", "first"), lon_patio=("lon_patio", "first"), qtd_os=("Ordem servico", "count"), menor_dist=("Distancia_km", "min"))
+        # Segurança/Confiabilidade x Com/Sem Intervalo por patio (26/08/2026, pedido do
+        # Julio - popup detalhado + cor do pino por volume de Seguranca pendente).
+        # df_recomendado ja e' só OS pendentes (Status_norm em _status_aberto, ver
+        # df_pendentes_f) - não precisa filtrar concluida de novo aqui. Mesmo criterio
+        # de normalizacao de Tipo_Intervalo ja usado noutras abas (região 10.2.2/10.4):
+        # coluna pode nao existir em planilhas antigas, vira "N/D" em vez de quebrar.
+        _classif_map = df_recomendado.get(
+            "Classificacao", pd.Series("Confiabilidade", index=df_recomendado.index)
+        ).astype(str)
+        if "Tipo_Intervalo" in df_recomendado.columns:
+            _tipo_int_map = df_recomendado["Tipo_Intervalo"].fillna("N/D").astype(str).str.strip()
+        else:
+            _tipo_int_map = pd.Series("N/D", index=df_recomendado.index)
+        # Variavel local separada (nunca reatribui df_recomendado) - evita qualquer
+        # efeito colateral em outro trecho que use df_recomendado mais abaixo no
+        # mesmo escopo (ex.: Cronograma de Execução, mesmo fragment).
+        _df_map_calc = df_recomendado.assign(
+            _seg_ci=((_classif_map == "Segurança") & (_tipo_int_map == "Com Intervalo")).astype(int),
+            _seg_si=((_classif_map == "Segurança") & (_tipo_int_map == "Sem Intervalo")).astype(int),
+            _conf_ci=((_classif_map == "Confiabilidade") & (_tipo_int_map == "Com Intervalo")).astype(int),
+            _conf_si=((_classif_map == "Confiabilidade") & (_tipo_int_map == "Sem Intervalo")).astype(int),
+        )
+        agg_map = _df_map_calc.groupby("Patio", as_index=False).agg(
+            lat_patio=("lat_patio", "first"), lon_patio=("lon_patio", "first"),
+            qtd_os=("Ordem servico", "count"), menor_dist=("Distancia_km", "min"),
+            seg_ci=("_seg_ci", "sum"), seg_si=("_seg_si", "sum"),
+            conf_ci=("_conf_ci", "sum"), conf_si=("_conf_si", "sum"),
+        )
+        agg_map["seg_total"] = agg_map["seg_ci"] + agg_map["seg_si"]
+        agg_map["conf_total"] = agg_map["conf_ci"] + agg_map["conf_si"]
 
     mapa = _construir_mapa_navegacao(
         lat_centro, lon_centro, zoom_mapa, lat_origem, lon_origem,
