@@ -3007,6 +3007,25 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 
     df_export = df_pendentes[colunas_export].fillna("")
 
+    # BLINDAGEM DA FILA OFFLINE (05/09/2026): o IndexedDB do pacote usa keyPath "os_id"
+    # (o número da OS é a chave primária da fila). Duas linhas com o mesmo "Ordem servico"
+    # -- ou linhas com "Ordem servico" em branco (viram chave "") -- colidem: a 2ª gravação
+    # sobrescreve a 1ª sem erro. Sintoma real relatado: "8 OS gravadas com sucesso" mas só
+    # "1 na fila de envio". Removemos as OS sem número e deduplicamos por "Ordem servico"
+    # ANTES de montar o OS_DATA, para que cada card do pacote seja uma OS distinta.
+    _os_col = df_export["Ordem servico"].astype(str).str.strip()
+    _antes = len(df_export)
+    df_export = df_export[_os_col != ""].copy()
+    df_export = df_export.drop_duplicates(subset=["Ordem servico"], keep="first")
+    _removidas_pacote = _antes - len(df_export)
+    if _removidas_pacote > 0:
+        st.warning(
+            f"⚠️ Pacote offline: {_removidas_pacote} linha(s) foram descartadas por terem "
+            f"**Ordem servico** em branco ou duplicada (a fila offline é indexada pelo número "
+            f"da OS — linhas repetidas se sobrescreveriam no celular). Confira a planilha de "
+            f"origem se o número esperado for maior."
+        )
+
     # Sanitização crítica para evitar quebra de HTML/JS
     os_json = df_export.to_json(orient="records", force_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
 
@@ -3887,12 +3906,20 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 if (!ok) return;
             }}
 
+            // Guard: a fila offline e indexada por os_id (keyPath do IndexedDB). OS sem
+            // numero viraria chave "" e todas as OS sem numero colidiriam numa so. Nao grava.
+            const _osIdLote = String(osItem["Ordem servico"] || "").trim();
+            if (!_osIdLote) {{
+                alert(`Uma das OS selecionadas esta sem numero (Ordem servico) e nao pode ir para a fila de envio. Pule essa OS.`);
+                continue;
+            }}
+
             // GPS do navegador e obrigatorio (garantido no inicio da funcao), portanto NAO
             // dependemos mais do EXIF da foto. Comprimimos sempre para manter o payload leve.
             const fotoTratada = await comprimirImagemArquivo(fotoOriginal);
 
             selecionadas.push({{
-                os_id: String(osItem["Ordem servico"] || "").trim(),
+                os_id: _osIdLote,
                 ativo_id: String(osItem["Ativo"] || "").trim(),
                 usuario: USUARIO_LOGADO,
                 acompanhante: acompanhanteGlobal,
@@ -3987,10 +4014,18 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 continue;
             }}
 
+            // Guard: fila offline indexada por os_id (keyPath do IndexedDB) -- OS sem numero
+            // viraria chave "" e colidiria com as demais sem numero. Nao grava.
+            const _osIdNrav = String(osItem["Ordem servico"] || "").trim();
+            if (!_osIdNrav) {{
+                alert(`Uma das OS selecionadas esta sem numero (Ordem servico) e nao pode ir para a fila de envio. Pule essa OS.`);
+                continue;
+            }}
+
             const fotoTratada = await comprimirImagemArquivo(fotoOriginal);
 
             selecionadas.push({{
-                os_id: String(osItem["Ordem servico"] || "").trim(),
+                os_id: _osIdNrav,
                 ativo_id: String(osItem["Ativo"] || "").trim(),
                 usuario: USUARIO_LOGADO,
                 acompanhante: acompanhanteGlobal,
@@ -4938,7 +4973,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v19.0.0")
+st.sidebar.caption("SGO Eletroeletrônica • v19.0.1")
 st.sidebar.markdown(
     """
     <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">

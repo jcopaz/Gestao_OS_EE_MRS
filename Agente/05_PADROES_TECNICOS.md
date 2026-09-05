@@ -1,5 +1,9 @@
 # 🔧 Padrões Técnicos
 
+## 🚫 Regras inegociáveis (Git / deploy)
+
+0. **NUNCA subir `app.py`/`api.py` inteiro pela "Add files via upload" do GitHub** (nem colar o arquivo todo num editor web). Fluxo único: `git pull` → editar por `#region` → `git commit` → `git push`. Um "upload" reverte em silêncio tudo que a cópia local não tinha (incidente 02–04/09/2026: reverteu v16.1→v18.2). Commit com centenas de linhas removidas = abrir o diff antes de confiar. Depois de mergear branch de reconciliação: `git diff <branch-boa> <destino> -- app.py` tem que dar vazio.
+
 ## 🚫 Regras inegociáveis (app.py / api.py)
 
 1. **Estrutura por `#region` / `#endregion`** — `#endregion` é a **última linha** do bloco.
@@ -9,6 +13,15 @@
 3. **4 espaços de indentação** — nunca misturar TAB e espaços.
 4. **Remover HTML escapado** (`&lt;`, `&gt;`, `&amp;`) do código final.
 5. Tudo que precisa **sobreviver a rerun** vai para **`st.session_state`**.
+
+## 📴 Padrão do pacote PWA offline (`gerar_html_offline`)
+
+- **IndexedDB do pacote:** `DB_NAME = "sgo_mrs_offline_prod"`, store `"apontamentos"`, **`keyPath: "os_id"`** (o número da OS É a chave primária da fila). Consequência: **duas linhas com o mesmo "Ordem servico" — ou com número em branco — colidem** (o 2º `.put()` sobrescreve o 1º sem erro). Sintoma clássico: "N OS gravadas com sucesso" mas só "1 na fila de envio".
+  - Por isso `gerar_html_offline` **filtra "Ordem servico" em branco e faz `drop_duplicates(subset=["Ordem servico"])`** antes de montar `OS_DATA` (05/09/2026), e o JS de gravação recusa OS sem número. Não remover essas guardas.
+  - Correção estrutural pendente (precisa teste em device): trocar `keyPath` por id sintético único + índice `os_id`, com migração real no `onupgradeneeded` (hoje ele faz `deleteObjectStore`, que apagaria pendentes não sincronizadas — classe do incidente 13/07).
+- **Trava de prioridade** é snapshot estático embutido como constante JS na publicação — só vale para pacotes republicados. **Geofence/coordenadas** de `COORDENADAS_FIXAS` também vão embutidas no pacote, mas a validação real de geofence é sempre no servidor (`api.py`).
+- `COORDENADAS_FIXAS` é **duplicada em `app.py` e `api.py`** — editar as duas, sempre. (O rollback de 02/09 reverteu só a de `app.py`; a de `api.py` ficou correta, então o geofence de campo nunca quebrou.)
+- Validar mudança na JS do pacote: renderizar `gerar_html_offline` com dados falsos e `node --check` no `<script>` gerado (o JS mora em f-strings — conferir escape `{{`/`}}`).
 
 ---
 

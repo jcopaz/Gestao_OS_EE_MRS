@@ -67,19 +67,25 @@ Duas frentes de trabalho:
 
 ---
 
-## 🌿 Branches
+## 🌿 Branches e fluxo Git (INEGOCIÁVEL — ver incidente 02–04/09/2026 em `Agente/09_APRENDIZADOS_E_ERROS.md`)
 
 - `main` = produção (redeploya Streamlit Cloud + Render a cada push).
-- `dev` = homologação — segundo canal Streamlit Cloud apontando pra essa branch. Features grandes/arriscadas (ex.: Configurações Operacionais) são desenvolvidas e testadas aqui **antes** de ir pra `main`. Sempre confirmar em qual branch está (`git branch --show-current`) antes de commitar.
+- `dev` = homologação — segundo canal Streamlit Cloud apontando pra essa branch. Features grandes/arriscadas são testadas aqui **antes** de ir pra `main`. Sempre confirmar em qual branch está (`git branch --show-current`) antes de commitar. **Obs.: o `dev` hoje está desatualizado numa linha própria — não usar como referência de "código bom" sem antes reconciliar.**
+- ❌ **NUNCA** subir `app.py`/`api.py` inteiro pela opção **"Add files via upload"** da UI web do GitHub (nem colar o arquivo inteiro num editor web). O repo recebe commits de várias origens (web, Copilot, Claude, Streamlit Cloud) e qualquer cópia local desatualiza em dias — um "upload" é um `git checkout` mascarado que **reverte em silêncio** tudo que a cópia não tinha, sem conflito nem aviso. Em 02/09/2026 isso reverteu ~2 meses de trabalho (v16.1→v18.2).
+- ✅ Fluxo correto, sempre: `git pull` → editar (patch cirúrgico por `#region`) → `git commit` → `git push`. Alteração pontual direto na web só via edição da linha específica sobre a versão atual, nunca substituindo o arquivo.
+- ✅ Commit "Add files via upload" (ou qualquer commit) com **centenas de linhas removidas** = abrir o diff (`git show <sha> --stat` + hunks) antes de confiar.
+- ✅ Ao **mergear uma branch que corrige um rollback/regressão em massa**, `git merge` pode reintroduzir a regressão sem conflito (resolve a favor do lado que "mudou" relativo ao ancestral comum). Depois do merge, SEMPRE `git diff <branch-boa> <destino> -- app.py` — tem que dar **vazio** onde deveria; se der linha, `git checkout <branch-boa> -- app.py` antes de fechar o merge.
+- ✅ **Tag de "última versão boa conhecida":** `estavel-2026-07-17` (antiga) e **`estavel-2026-09-05` / `v19.0.0`** (atual). Ao primeiro sinal de regressão em massa: `git diff estavel-2026-09-05 HEAD -- app.py`.
 
 ---
 
-## 📌 Estado atual
+## 📌 Estado atual (05/09/2026)
 
 - **App:** em produção — painel Streamlit em **Streamlit Community Cloud** (`sgomrs.streamlit.app`, Python 3.12) + API FastAPI em **Render** (`gestao-os-ee-mrs-producao.onrender.com`) · Banco Neon · Storage Supabase. São **duas hospedagens diferentes**, cada push no `main` redeploya as duas.
-- **Deck:** v11 concluído (13/07/2026) — atualiza o slide "Motor de Priorização" para o modelo Segurança da Operação e adiciona Configurações Operacionais na arquitetura.
-- **Em homologação (`dev`, 13/07/2026):** Configurações Operacionais por coordenação (geofence/trava/escopo/ordem configuráveis, vigência automática) — ainda não promovido para `main`.
-- **Pendências:** hospedagem corporativa MRS + SSO/AD (contato: Bruno Capobiango).
+- **Versão em produção:** **v19.0.x** — reconciliação de 04/09 (base v18.2.0 + correções de datas + parser de Data Inicial Programada + flag da Agenda Mensal) depois do rollback de 02/09. Tag `estavel-2026-09-05`.
+- **Configurações Operacionais** por coordenação (geofence/trava/escopo/ordem, vigência automática **+ toggle "sem expiração / novo padrão"**): **em produção**.
+- **Deck:** v11 concluído (13/07/2026).
+- **Pendências:** hospedagem corporativa MRS + SSO/AD (contato: Bruno Capobiango); `requirements.txt` pina `streamlit==1.32.0` mas o código usa `@st.fragment` (≥1.37) — conferir a versão real e corrigir o pin; branch `dev` desatualizada numa linha própria (reconciliar antes de usar).
 
 ---
 

@@ -5,11 +5,17 @@
 > mudança em área já listada aqui — o mesmo tipo de erro já custou tempo real da equipe de
 > campo mais de uma vez.
 
-> ✅ **Ponto de referência de estabilidade:** commit `7beb220` / tag git `estavel-2026-07-17` —
-> confirmado pelo Julio sem nenhum imprevisto de 16/07 para 17/07/2026, depois da regressão
-> grave do upload de fotos (ver abaixo). Se uma mudança futura quebrar algo, comparar contra
-> esse ponto (`git diff estavel-2026-07-17 -- app.py api.py`) antes de qualquer outra
-> investigação.
+> ✅ **Ponto de referência de estabilidade (ATUAL):** tag git **`estavel-2026-09-05`** / **`v19.0.0`** —
+> resultado da reconciliação de 04/09/2026 depois do rollback por "Add files via upload" (ver
+> incidente de 02–04/09 abaixo). Se uma mudança futura quebrar algo ou aparecer regressão em
+> massa, comparar contra esse ponto **primeiro**: `git diff estavel-2026-09-05 HEAD -- app.py api.py`.
+>
+> (Referência histórica anterior: `7beb220` / `estavel-2026-07-17`, confirmada pelo Julio após a
+> regressão grave do upload de fotos de 15-16/07.)
+>
+> 🚫 **Regra de ouro deste projeto:** só se altera `app.py`/`api.py` por `git pull` → editar →
+> `git commit` → `git push`. **NUNCA** pela opção "Add files via upload" do GitHub nem colando
+> o arquivo inteiro num editor web — ver incidente 02–04/09.
 
 ---
 
@@ -402,6 +408,27 @@ Primeira execução real do `/limpar_evidencias_orfas` (endpoint criado nesta me
 
 ---
 
+## 05/09/2026 — Fila offline: "8 OS gravadas com sucesso" mas só "1 aguardando envio" (NÃO foi regressão)
+
+**O que aconteceu:** líder de campo reportou que o modo offline grava as fotos localmente mas elas "não vão pra fila de sincronização". Print: **"1 OS aguardando envio"** + **"8 OS gravada(s) localmente com sucesso"**. Nenhuma tela de erro.
+
+**Investigação — não regredimos:** o JS de sincronização + IndexedDB do `gerar_html_offline()` é **byte-idêntico** entre a versão do rollback (02–04/09) e a v18.2.0/v19.0.0 atual. As únicas diferenças no pacote offline entre as versões eram o `maxlength` do campo NRAV (38↔40) e as coordenadas `COORDENADAS_FIXAS` (ICQ/IPN/IQC) — nada que toque a fila.
+
+**Causa raiz (bug latente desde 09/07/2026):** o object store do IndexedDB usa **`keyPath: "os_id"`** — o número da OS é a chave primária da fila. Cada `.put()` na gravação usa `item.os_id` como chave, então **duas gravações com o mesmo `os_id` — ou com `os_id` vazio (`""`) — colidem: a 2ª sobrescreve a 1ª, sem erro**. Os 8 `.put()` rodam ("8 gravadas com sucesso" = `selecionadas.length`), mas se os 8 compartilham a chave, sobra 1 no store ("1 aguardando envio" = `filter(status_sync === "pendente").length`). Dispara quando o `OS_DATA` do pacote tem a **mesma "Ordem servico" repetida** (o `df_recomendado` ia pro `gerar_html_offline` **sem `drop_duplicates`**) ou linhas com **"Ordem servico" em branco** — plausível dado que a planilha do Plano de Setembro/Paranapiacaba já vinha com formatação suja (as datas "15-set" do incidente de 03/09).
+
+**Correção (v19.0.1, 05/09):**
+1. `gerar_html_offline`: **descarta linhas com "Ordem servico" em branco e faz `drop_duplicates(subset=["Ordem servico"], keep="first")`** antes de montar o `OS_DATA`; `st.warning` na tela de publicação avisando quantas linhas caíram (sinaliza planilha de origem suja).
+2. JS de gravação (Conclusão e NRAV): recusa (`alert` + `continue`) qualquer OS cujo número esteja vazio, em vez de enfileirar com chave `""`.
+
+**Pendente (precisa teste em device, não feito):** troca estrutural do `keyPath` por id sintético único + índice `os_id`, com migração real no `onupgradeneeded` — hoje ele faz `deleteObjectStore`, que apagaria pendentes não sincronizadas (mesma classe do incidente de 13/07 "Limpar Filas apagava sincronizadas").
+
+**Aprendizado:**
+1. **"Não vai pra fila" com contagem menor que o esperado, sem erro = colisão de chave primária.** Todo store IndexedDB com `keyPath` num campo de negócio (número de OS, matrícula, placa) só aceita **um** registro por valor — se esse valor pode repetir ou vir vazio no dado de entrada, a fila perde registros em silêncio. Preferir chave sintética (`crypto.randomUUID()` / `autoIncrement`) + índice no campo de negócio.
+2. **Todo dado que alimenta uma chave (aqui `df_recomendado` → `OS_DATA` → `keyPath`) precisa ser deduplicado e limpo de vazios ANTES**, no ponto de geração, não confiar que "não vai acontecer".
+3. **Antes de assumir regressão, comparar o trecho exato entre a versão suspeita e a última boa.** Aqui o `diff` do `gerar_html_offline` entre rollback e v18.2.0 mostrou em 30s que a fila não tinha mudado — o bug era antigo, e a energia foi direto pra causa raiz em vez de caçar "o que quebrou".
+
+---
+
 ## Lições transversais (válidas pra qualquer mudança futura)
 
 - **Verificar causa raiz com dado real (SQL/log) antes de aplicar patch** — não assumir, não adivinhar. Vale tanto pra bug de dado quanto pra bug de infraestrutura.
@@ -420,3 +447,5 @@ Primeira execução real do `/limpar_evidencias_orfas` (endpoint criado nesta me
 - **`app.py` e `api.py` são deploys separados sem código compartilhado** — uma lógica corrigida/reforçada num dos dois (ex.: resolução de pátio, fail-closed) não garante que o outro lado tenha a mesma robustez. "Parar de aceitar dado errado" e "conseguir resolver o dado certo" são correções diferentes — sempre checar os dois lados de qualquer regra que existe duplicada.
 - **Default de widget lido do `st.session_state` (data, slider, number_input) tem que ser saneado contra os `min`/`max` atuais antes de instanciar** — o valor foi gravado num rerun anterior, com base/faixa possivelmente diferentes; `st.date_input` ainda por cima retorna tupla de tamanho variável (0/1/2) durante a seleção. Extrair **um saneador único** e chamá-lo em toda fronteira onde o valor entra (fragmento do widget **e** releitura pro filtro/consulta), não só onde estourou.
 - **Nunca subir `app.py`/`api.py` inteiro pela UI "Add files via upload" do GitHub a partir de cópia local** — o repo recebe commits diretos (web/Copilot/Cloud) e a cópia local desatualiza em dias; um "upload" é `git checkout` mascarado que reverte tudo que a cópia não tinha, sem conflito nem aviso. Fluxo: `git pull` → editar → `commit`/`push`, ou patch cirúrgico na web sobre a versão atual. Commit "upload" com centenas de linhas removidas = abrir o diff antes de confiar. Regressão do tipo "isso já estava corrigido / voltou / sumiu" → suspeitar de rollback de versão e comparar contra a última tag boa (`git diff <bom> HEAD -- app.py`) antes de re-corrigir item por item.
+- **Store IndexedDB com `keyPath` num campo de negócio (nº de OS, matrícula, placa) perde registros em silêncio quando esse campo repete ou vem vazio** — cada `.put()` sobrescreve o anterior de mesma chave, sem erro. Sintoma: "N gravados com sucesso" mas fila mostra menos. Preferir chave sintética (`crypto.randomUUID()`/`autoIncrement`) + índice no campo de negócio; e deduplicar/limpar vazios do dado que alimenta a chave **no ponto de geração**.
+- **Antes de assumir "regressão", `diff` do trecho exato entre a versão suspeita e a última tag boa** — 30s de `git diff <bom> HEAD -- <arquivo>` na função certa dizem se aquilo mudou ou se o bug é antigo, e economizam uma caçada inteira por "o que quebrou".

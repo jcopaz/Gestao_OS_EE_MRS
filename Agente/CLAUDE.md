@@ -52,6 +52,7 @@ O agente atua em **duas frentes**:
 ## 🚫 Regras de ouro
 
 - ❌ **Não** reescrever `app.py` inteiro.
+- ❌ **NUNCA subir `app.py`/`api.py` inteiro pela opção "Add files via upload" da UI web do GitHub** (nem colar o arquivo todo num editor web). É um `git checkout` mascarado — reverte em silêncio tudo que a cópia local não tinha, sem conflito nem aviso. Em 02/09/2026 reverteu ~2 meses de trabalho (v16.1→v18.2). Fluxo correto SEMPRE: `git pull` → editar (patch por `#region`) → `git commit` → `git push`. Ver incidente completo em `09_APRENDIZADOS_E_ERROS.md`.
 - ❌ **Não** reintroduzir leitura de **EXIF** / fallback de GPS pela foto.
 - ❌ **Não** distribuir via `file://` (quebra geolocation) — sempre **PWA HTTPS**.
 - ✅ **GPS obrigatório** pelo navegador (online e offline); coordenada `0,0` → HTTP 400.
@@ -73,13 +74,16 @@ O agente atua em **duas frentes**:
 ## 🌿 Branches
 
 - `main` = produção (redeploya Streamlit Cloud + Render a cada push).
-- `dev` = homologação — segundo canal Streamlit Cloud apontando pra essa branch. Features grandes/arriscadas (ex.: Configurações Operacionais) são desenvolvidas e testadas aqui **antes** de ir pra `main`. Sempre confirmar em qual branch está (`git branch --show-current`) antes de commitar.
+- `dev` = homologação — segundo canal Streamlit Cloud apontando pra essa branch. Features grandes/arriscadas são testadas aqui **antes** de ir pra `main`. Sempre confirmar em qual branch está (`git branch --show-current`) antes de commitar. **Hoje o `dev` está desatualizado numa linha própria — reconciliar antes de usar como base.**
+- **Reconciliação pós-rollback:** ao mergear uma branch que desfaz um rollback, `git merge` pode reintroduzir a regressão sem conflito. Depois do merge: `git diff <branch-boa> <destino> -- app.py` **tem que dar vazio**; se der linha, `git checkout <branch-boa> -- app.py`.
+- **Tag de referência de estabilidade:** `estavel-2026-09-05` / `v19.0.0` (a antiga `estavel-2026-07-17` continua no doc). Regressão em massa → `git diff estavel-2026-09-05 HEAD -- app.py`.
 
 ---
 
-## 📌 Estado atual
+## 📌 Estado atual (05/09/2026)
 
-- **App:** em produção — painel Streamlit em **Streamlit Community Cloud** (`sgomrs.streamlit.app`, Python 3.12) + API FastAPI em **Render** (`gestao-os-ee-mrs-producao.onrender.com`) · Banco Neon · Storage Supabase. São **duas hospedagens diferentes**, cada push no `main` redeploya as duas.
-- **Deck:** v11 concluído (13/07/2026) — atualiza o slide "Motor de Priorização" para o modelo Segurança da Operação e adiciona Configurações Operacionais na arquitetura.
-- **Em homologação (`dev`, 13/07/2026):** Configurações Operacionais por coordenação (geofence/trava/escopo/ordem configuráveis, vigência automática) — ainda não promovido para `main`.
-- **Pendências:** hospedagem corporativa MRS + SSO/AD (contato: Bruno Capobiango).
+- **App:** em produção — painel Streamlit em **Streamlit Community Cloud** (`sgomrs.streamlit.app`, Python 3.12) + API FastAPI em **Render** (`gestao-os-ee-mrs-producao.onrender.com`) · Banco Neon · Storage Supabase. Cada push no `main` redeploya as duas.
+- **Versão:** **v19.0.x** (reconciliação de 04/09 após o rollback de 02/09; ver `09_APRENDIZADOS_E_ERROS.md`).
+- **Configurações Operacionais** por coordenação (incl. toggle "sem expiração / novo padrão"): **em produção**.
+- **Deck:** v11 concluído (13/07/2026).
+- **Pendências:** hospedagem corporativa MRS + SSO/AD (Bruno Capobiango); pin `streamlit==1.32.0` no `requirements.txt` vs `@st.fragment` usado no código (≥1.37) — conferir versão real; branch `dev` desatualizada.
