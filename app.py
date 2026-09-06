@@ -3007,12 +3007,10 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 
     df_export = df_pendentes[colunas_export].fillna("")
 
-    # BLINDAGEM DA FILA OFFLINE (05/09/2026): o IndexedDB do pacote usa keyPath "os_id"
-    # (o número da OS é a chave primária da fila). Duas linhas com o mesmo "Ordem servico"
-    # -- ou linhas com "Ordem servico" em branco (viram chave "") -- colidem: a 2ª gravação
-    # sobrescreve a 1ª sem erro. Sintoma real relatado: "8 OS gravadas com sucesso" mas só
-    # "1 na fila de envio". Removemos as OS sem número e deduplicamos por "Ordem servico"
-    # ANTES de montar o OS_DATA, para que cada card do pacote seja uma OS distinta.
+    # BLINDAGEM DA FILA OFFLINE (05/09/2026): não deixa entrar no pacote OS sem número ou
+    # OS repetida. A partir da v3 a fila usa keyPath "uid" (não colide mais), mas card
+    # duplicado ainda é ruim (o técnico baixaria a mesma OS 2x) e OS sem número não pode
+    # ser concluída de jeito nenhum. Cada card do pacote = uma OS distinta.
     _os_col = df_export["Ordem servico"].astype(str).str.strip()
     _antes = len(df_export)
     df_export = df_export[_os_col != ""].copy()
@@ -3021,9 +3019,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     if _removidas_pacote > 0:
         st.warning(
             f"⚠️ Pacote offline: {_removidas_pacote} linha(s) foram descartadas por terem "
-            f"**Ordem servico** em branco ou duplicada (a fila offline é indexada pelo número "
-            f"da OS — linhas repetidas se sobrescreveriam no celular). Confira a planilha de "
-            f"origem se o número esperado for maior."
+            f"**Ordem servico** em branco ou duplicada. Confira a planilha de origem se o "
+            f"número de OS esperado for maior."
         )
 
     # Sanitização crítica para evitar quebra de HTML/JS
@@ -3327,7 +3324,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     const JUSTIFICATIVAS_NRAV = {justificativas_nrav_json};
 
     const DB_NAME = "sgo_mrs_offline_prod";
-    const STORE_NAME = "apontamentos";
+    const STORE_NAME = "fila";            // v3 (05/09/2026): keyPath "uid" (id sintetico unico) -- ver abrirDB()
+    const STORE_ANTIGO = "apontamentos";  // store v2 (keyPath "os_id") -- migrado pro novo e mantido como backup congelado
     let db = null;
     let gpsAtual = null;
     let filtroIntervalo = "";
@@ -3346,9 +3344,13 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     async function carregarOsGravadas() {{
         return new Promise((resolve) => {{
             try {{
-                const req = txStore("readonly").getAllKeys();
+                // v3: a chave do store agora e "uid" (sintetico), nao mais o numero da OS --
+                // entao le os registros e monta o set pelo campo os_id, nao por getAllKeys().
+                const req = txStore("readonly").getAll();
                 req.onsuccess = () => {{
-                    osGravadasSet = new Set((req.result || []).map((k) => String(k).trim()));
+                    osGravadasSet = new Set(
+                        (req.result || []).map((r) => String((r && r.os_id) || "").trim()).filter((v) => v)
+                    );
                     resolve(osGravadasSet);
                 }};
                 req.onerror = () => resolve(osGravadasSet);
@@ -3388,16 +3390,43 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         if (btnSalvar) btnSalvar.textContent = modo === "NRAV" ? "🔍 Gravar NRAV(s)" : "💾 Gravar OS(s) Preenchida(s)";
     }}
 
+    function gerarUid() {{
+        return (window.crypto && crypto.randomUUID)
+            ? crypto.randomUUID()
+            : (Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 10));
+    }}
+
     function abrirDB() {{
         return new Promise((resolve, reject) => {{
-            const req = indexedDB.open(DB_NAME, 2);
+            // v3 (05/09/2026): store "fila" com keyPath "uid" (id sintetico unico por
+            // registro) no lugar do "apontamentos" com keyPath "os_id". Com "os_id" como
+            // chave, dois apontamentos da mesma OS -- ou uma OS sem numero -- colidiam e a
+            // 2a gravacao sobrescrevia a 1a sem erro (fila perdia registros em silencio).
+            const req = indexedDB.open(DB_NAME, 3);
             req.onupgradeneeded = (event) => {{
                 const database = event.target.result;
-                if (database.objectStoreNames.contains(STORE_NAME)) {{
-                    database.deleteObjectStore(STORE_NAME);
+                const tx = event.target.transaction;
+
+                if (!database.objectStoreNames.contains(STORE_NAME)) {{
+                    const s = database.createObjectStore(STORE_NAME, {{ keyPath: "uid" }});
+                    s.createIndex("status_sync", "status_sync", {{ unique: false }});
+                    s.createIndex("os_id", "os_id", {{ unique: false }});
                 }}
-                const store = database.createObjectStore(STORE_NAME, {{ keyPath: "os_id" }});
-                store.createIndex("status_sync", "status_sync", {{ unique: false }});
+
+                // Migracao NAO destrutiva: copia cada registro do store antigo pro novo,
+                // gerando um uid. O store antigo NAO e apagado -- fica como backup congelado,
+                // entao mesmo que a migracao falhe os apontamentos pendentes continuam la.
+                if (database.objectStoreNames.contains(STORE_ANTIGO)) {{
+                    let _i = 0;
+                    tx.objectStore(STORE_ANTIGO).openCursor().onsuccess = (e) => {{
+                        const cur = e.target.result;
+                        if (!cur) return;
+                        const r = cur.value || {{}};
+                        if (!r.uid) r.uid = "mig__" + (_i++) + "__" + gerarUid();
+                        tx.objectStore(STORE_NAME).put(r);
+                        cur.continue();
+                    }};
+                }}
             }};
             req.onsuccess = () => {{
                 db = req.result;
@@ -3906,8 +3935,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 if (!ok) return;
             }}
 
-            // Guard: a fila offline e indexada por os_id (keyPath do IndexedDB). OS sem
-            // numero viraria chave "" e todas as OS sem numero colidiriam numa so. Nao grava.
+            // Guard: OS sem numero nao pode ir pra fila (nem baixa online tem como concluir
+            // sem numero de OS). Mantido mesmo com keyPath "uid" -- e validacao de negocio.
             const _osIdLote = String(osItem["Ordem servico"] || "").trim();
             if (!_osIdLote) {{
                 alert(`Uma das OS selecionadas esta sem numero (Ordem servico) e nao pode ir para a fila de envio. Pule essa OS.`);
@@ -3919,6 +3948,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             const fotoTratada = await comprimirImagemArquivo(fotoOriginal);
 
             selecionadas.push({{
+                uid: gerarUid(),
                 os_id: _osIdLote,
                 ativo_id: String(osItem["Ativo"] || "").trim(),
                 usuario: USUARIO_LOGADO,
@@ -4014,8 +4044,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 continue;
             }}
 
-            // Guard: fila offline indexada por os_id (keyPath do IndexedDB) -- OS sem numero
-            // viraria chave "" e colidiria com as demais sem numero. Nao grava.
+            // Guard: OS sem numero nao pode ir pra fila (validacao de negocio, mantida com keyPath "uid").
             const _osIdNrav = String(osItem["Ordem servico"] || "").trim();
             if (!_osIdNrav) {{
                 alert(`Uma das OS selecionadas esta sem numero (Ordem servico) e nao pode ir para a fila de envio. Pule essa OS.`);
@@ -4025,6 +4054,7 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             const fotoTratada = await comprimirImagemArquivo(fotoOriginal);
 
             selecionadas.push({{
+                uid: gerarUid(),
                 os_id: _osIdNrav,
                 ativo_id: String(osItem["Ativo"] || "").trim(),
                 usuario: USUARIO_LOGADO,
@@ -4973,7 +5003,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v19.0.1")
+st.sidebar.caption("SGO Eletroeletrônica • v20.0.0")
 st.sidebar.markdown(
     """
     <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">
