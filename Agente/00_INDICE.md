@@ -2,7 +2,7 @@
 ## Índice Mestre para o Agente Copilot / Claude
 
 > 📌 **Status atual:** App em produção ✅ — **v19.0.x** (reconciliação de 04/09/2026 após o rollback de 02/09; tag de estabilidade `estavel-2026-09-05` / `v19.0.0`). Config Operacional em produção. Apresentação executiva v11 concluída 🎨
-> 📅 **Última atualização:** 05/09/2026
+> 📅 **Última atualização:** 06/09/2026
 > 👤 **Mantenedor:** Julio Cesar de Oliveira Paz
 > 🌐 **Distribuição:** PWA em HTTPS (nunca `file://`) · API no Render · Banco Neon
 > ⚠️ **Antes de qualquer mudança em `app.py`:** `git pull` → editar por `#region` → `git commit`/`push`. **NUNCA** "Add files via upload" / colar arquivo inteiro na web — ver incidente 02–04/09 em `09_APRENDIZADOS_E_ERROS.md`.
@@ -74,6 +74,7 @@
 | 1.0 | 09/07/2026 | Pacote de contexto inicial do SGO (app + apresentação v10) |
 | 1.1 | 13/07/2026 | Rateio de HH + fix "Trab. real" (export SAP); fix PWA offline (Limpar Filas); Configurações Operacionais por coordenação (`dev`); modelo de priorização "Segurança da Operação"; apresentação v11 |
 | 1.2 | 05/09/2026 | Incidente do **rollback por "Add files via upload"** (02–04/09, reverteu v16.1→v18.2) documentado em `09_`; regra inegociável de fluxo Git em `CLAUDE.md` (raiz + `Agente/`) e `05_`; nova tag de estabilidade `estavel-2026-09-05` / `v19.0.0`; padrão do pacote PWA offline (`keyPath: "os_id"` / dedup) em `05_`; investigação do bug "8 gravadas / 1 na fila" (não foi regressão — `keyPath` colidindo em OS duplicada/vazia) |
+| 1.3 | 06/09/2026 | **Ciclo de vida da evidência fotográfica** documentado: nova seção em `04_` (política de retenção `CICLO + 30 dias`, 2 workflows do GitHub Actions, split Neon/Supabase), verbetes + endpoints em `08_`, padrão de Storage/compressão e "nunca apagar evidência sem cruzar com `baixas`" em `05_`, verificação de saúde de 06/09 em `09_` (ciclo OK; bucket >1 GB é volume real de campo × plano free, não bug). **Revisão "manutenção às cegas"** (06/09): `04_` ganhou "Onde está no código" (ponteiros arquivo/região), "Manutenção / diagnóstico" (rodar workflow manual, SQL de saúde, sem teste local), seção **"🔑 Variáveis de ambiente / segredos"**, fluxo online (levanta exceção, bloqueia baixa) × offline (fallback base64 no Neon, nunca ciclado); `05_` ganhou o mapa de regiões vivo (`grep -nE "#region" app.py`) |
 
 ---
 

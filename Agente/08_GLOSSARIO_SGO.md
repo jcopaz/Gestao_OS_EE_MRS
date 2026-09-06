@@ -19,6 +19,8 @@
 | **Roteirização** | Agrupamento/ordenação de OS por proximidade |
 | **Raio de atuação** | Distância de busca de OS (inicial **1 km**) |
 | **Evidência** | Foto obrigatória da execução |
+| **Ciclo de evidência** | Retenção da foto no Storage = `realizado_em` + `CICLO` da OS + 30 dias. Ao vencer, o arquivo é apagado e `evidencias.foto_url` vira `''` (a linha fica). Sem `CICLO`/data → nunca expira |
+| **Evidência órfã** | Arquivo no bucket `evidencias` (Supabase) sem nenhuma linha em `evidencias` (Neon) apontando pra ele — resíduo de upload duplicado ou falha silenciosa de escrita |
 | **Segurança da Operação** | Camada composta de priorização (atualizado 21/07/2026): Rank0 (Segurança+Muito Alta) → Rank1 (Confiabilidade+Muito Alta) → Rank2 (Confiabilidade+Alta/Média/Baixa) → Rank3 (demais). "Confiabilidade e Segurança" **não existe** como classificação — confirmado com especialistas MRS |
 | **Classificação** | Só existe **Segurança** ou **Confiabilidade** (a partir do código da Atividade Ativo: `_SEG_` → Segurança, `_CONF_` → Confiabilidade, default → Confiabilidade) |
 | **Prioridade 1 / Prioridade 2,3,4** | Nomenclatura do scorecard de Meta = Criticidade Muito Alta / Criticidade Alta,Média,Baixa (fora do bucket Segurança). Peso fixo: Segurança 40%, Prioridade 1 25%, Prioridade 2,3,4 35% |
@@ -34,9 +36,13 @@
 | Método | Rota | Função |
 |---|---|---|
 | `POST` | `/sincronizar_baixa_offline` | Sincroniza baixa feita offline |
+| `POST` | `/limpar_evidencias_expiradas` | Apaga fotos além da retenção (`CICLO + 30d`). Cron diário 03:00 BRT (`dry_run=false`); manual = `dry_run=true` |
+| `POST` | `/limpar_evidencias_orfas` | Apaga arquivos do bucket sem vínculo em `evidencias`. Manual apenas, `dry_run=true` por padrão |
 | `GET` | `/health` | Healthcheck |
 | `POST` | `/publicar_pacote` | Publica pacote da Rota PWA |
 | `GET` | `/pacote/{id}` | Abre o pacote 1x online antes do uso offline |
+
+> Endpoints de limpeza exigem `x-api-key` (`OFFLINE_API_KEY`). Detalhe da política de retenção e dos workflows em `04_ARQUITETURA.md` → "Ciclo de vida da evidência fotográfica".
 
 ### Campos de `/sincronizar_baixa_offline`
 **Obrigatórios:** `os_id`, `ativo_id`, `usuario`, `lat_browser`, `lon_browser`, `data_hora_local`, `horario_inicio`, `horario_fim`, `foto`

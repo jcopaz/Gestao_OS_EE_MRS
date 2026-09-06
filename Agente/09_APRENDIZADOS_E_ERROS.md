@@ -429,6 +429,34 @@ Primeira execução real do `/limpar_evidencias_orfas` (endpoint criado nesta me
 
 ---
 
+## 06/09/2026 — Verificação de saúde do ciclo de fotos: ciclo OK, o gargalo é o plano free do Supabase
+
+**O que aconteceu:** Julio viu o "File Storage" do Supabase em ~0,91 GB de 1 GB (plano free) e temeu que a aplicação fosse suspensa quando estourasse. Pediu uma query pra confirmar se a "ciclagem de fotos" combinada antes estava mesmo rodando.
+
+**Contexto de arquitetura (reconfirmado):** as tabelas (`evidencias`, `baixas`, `os_programadas`) ficam no **Neon**; o Supabase guarda **só o arquivo** da foto (bucket `evidencias`). Rodar `SELECT ... FROM evidencias` no SQL Editor do Supabase dá `relation "evidencias" does not exist` — a query certa depende de saber onde cada coisa mora. Diagnóstico: query de saúde no Neon (reproduzindo a lógica de `/limpar_evidencias_expiradas`) + `storage.objects` no Supabase.
+
+**Resultado (Neon, reproduzindo o endpoint):** 6885 fotos com vínculo vivo no Storage; **0** imunes por falta de OS programada, **0** por falta da chave `CICLO`, **0** por `realizado_em` ilegível → a regressão `Ciclo` vs `CICLO` de 26/07/2026 **não voltou**. 6880 dentro da janela de retenção (legítimas); **5** já vencidas e ainda presentes (0,07% — lag normal do cron diário das 03:00 BRT).
+
+**Resultado (Supabase, `storage.objects` por mês):** jun/2026 = 15 arquivos (2,3 MB) · jul = 2800 (451 MB) · ago = 3573 (568 MB) · set (parcial) = 838 (121 MB). Total ~7226 arquivos / ~1,14 GB. **Junho quase vazio = prova de que o ciclo apaga** (fotos além de `CICLO + 30` sumiram). Diferença bucket (7226) − vínculo vivo (~6885) ≈ **340 arquivos órfãos (~55 MB)**, resíduo de upload duplicado — recuperável com `/limpar_evidencias_orfas`.
+
+**Conclusão:** o ciclo está saudável. O bucket estoura porque o campo gera **~3.000–3.600 fotos/mês (~550 MB/mês)** e a política de retenção (`CICLO + 30 dias`) mantém ~2 meses vivos ao mesmo tempo → regime permanente > 1 GB. É **dimensionamento**, não bug — o plano free (1 GB) ia estourar de qualquer jeito com a adoção crescendo.
+
+**Risco real:** bucket cheio **não suspende o app**. `upload_foto_supabase` passa a retornar `""` → a baixa **ainda grava, sem a foto** (perda silenciosa de evidência de auditoria), ou cai no fallback base64 que incha o **Neon**. Prioridade média-alta, não emergência.
+
+**Alavancas (pendentes de decisão do Julio):**
+1. Rodar `/limpar_evidencias_orfas` (`dry_run=false`, grupo seguro) + confirmar as 5 expiradas — recupera ~55 MB, sem código.
+2. Comprimir mais no upload: 1280px/q75 → 1024px/q70 corta ~40% do crescimento futuro (patch cirúrgico, `app.py` + `api.py`).
+3. Reduzir a folga de 30 → 7 dias — **é regra de negócio**, não alterar sem OK.
+4. Supabase Pro (100 GB, ~US$ 25/mês) — resolve de vez, sem risco pra evidência.
+
+**Aprendizado:**
+1. **Bucket enchendo não é sinônimo de ciclo quebrado** — pode ser retenção funcionando com um volume que o plano não comporta. Separar "o job roda?" de "o job dá conta do volume?" antes de mexer no código.
+2. **A query de diagnóstico depende de onde o dado mora.** Vínculo/metadado = Neon; arquivo em si = `storage.objects` no Supabase. Medir os dois lados e cruzar (contagem no bucket vs. vínculos vivos) dá o nº de órfãs sem precisar do endpoint.
+3. **Saúde do ciclo se verifica pelo "porquê está imune"**, não só pela contagem: quebrar o total em `sem OS / sem CICLO / data ilegível / dentro da janela / já vencida` pega a regressão de chave (26/07) na hora, sem reprocessar tudo.
+4. **`curl -s` sem `-f` num workflow de limpeza deixa o job verde mesmo com a API em erro** — "verde no Actions" não prova que apagou; ler o JSON (`total_candidatas`/`apagadas`/`erros`) no log da execução.
+
+---
+
 ## Lições transversais (válidas pra qualquer mudança futura)
 
 - **Verificar causa raiz com dado real (SQL/log) antes de aplicar patch** — não assumir, não adivinhar. Vale tanto pra bug de dado quanto pra bug de infraestrutura.
@@ -449,3 +477,4 @@ Primeira execução real do `/limpar_evidencias_orfas` (endpoint criado nesta me
 - **Nunca subir `app.py`/`api.py` inteiro pela UI "Add files via upload" do GitHub a partir de cópia local** — o repo recebe commits diretos (web/Copilot/Cloud) e a cópia local desatualiza em dias; um "upload" é `git checkout` mascarado que reverte tudo que a cópia não tinha, sem conflito nem aviso. Fluxo: `git pull` → editar → `commit`/`push`, ou patch cirúrgico na web sobre a versão atual. Commit "upload" com centenas de linhas removidas = abrir o diff antes de confiar. Regressão do tipo "isso já estava corrigido / voltou / sumiu" → suspeitar de rollback de versão e comparar contra a última tag boa (`git diff <bom> HEAD -- app.py`) antes de re-corrigir item por item.
 - **Store IndexedDB com `keyPath` num campo de negócio (nº de OS, matrícula, placa) perde registros em silêncio quando esse campo repete ou vem vazio** — cada `.put()` sobrescreve o anterior de mesma chave, sem erro. Sintoma: "N gravados com sucesso" mas fila mostra menos. Preferir chave sintética (`crypto.randomUUID()`/`autoIncrement`) + índice no campo de negócio; e deduplicar/limpar vazios do dado que alimenta a chave **no ponto de geração**.
 - **Antes de assumir "regressão", `diff` do trecho exato entre a versão suspeita e a última tag boa** — 30s de `git diff <bom> HEAD -- <arquivo>` na função certa dizem se aquilo mudou ou se o bug é antigo, e economizam uma caçada inteira por "o que quebrou".
+- **Banco (Neon) e Storage (Supabase) são serviços separados** — metadado/vínculo mora num, o arquivo mora no outro. Query de diagnóstico de foto tem que saber disso (`evidencias` está no Neon, não no SQL Editor do Supabase). "Storage enchendo" pode ser o ciclo de retenção funcionando com volume acima do plano free, não um job quebrado — separar "roda?" de "dá conta?" antes de tocar em código. Verificar saúde do ciclo pelo *porquê cada foto está imune* (sem OS / sem `CICLO` / data ilegível / dentro da janela), não só pela contagem total.

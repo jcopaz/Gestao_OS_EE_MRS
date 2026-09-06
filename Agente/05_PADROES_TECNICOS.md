@@ -6,7 +6,7 @@
 
 ## 🚫 Regras inegociáveis (app.py / api.py)
 
-1. **Estrutura por `#region` / `#endregion`** — `#endregion` é a **última linha** do bloco.
+1. **Estrutura por `#region` / `#endregion`** — `#endregion` é a **última linha** do bloco. **Mapa de regiões vivo:** `grep -nE "#region" app.py` (SESSÃO 1 imports/config/DB · 2 login · 3 funções [3.3 = Supabase Storage/evidências, 3.9–3.13 = gerador do pacote offline] · 4 coordenadas fixas · 5 ETL · 7 sidebar/navegação · 9+ dashboard/telas). `api.py` é linear, sem regiões — navegar pelos `@app_api.*` e pelos comentários de bloco `# ===`.
 2. **Apenas um `with tab1:` e um `with tab2:`** por caminho de execução.
    - Blocos `10.3.x` usam guard `if tab2 is not None:`.
    - `tab1 = None; tab2 = None` inicializados **ANTES** do roteamento (sessão `10.1`).
@@ -109,6 +109,16 @@ Dentro de cada rank: `Criticidade → Atraso ao vencimento → Proximidade`. Ord
 8. **Status calculado** (`Realizado` / `Realizado Fora da Data de Programação`), nunca digitado.
 9. **Baixa administrativa (IW47) não sobrescreve baixa real de campo** — só atualiza se a OS ainda não tiver foto/evidência/geolocalização própria do app.
 10. **Governança "Mapa de Campo"** controla quem vê a tela de baixa.
+
+---
+
+## 🗂️ Padrão de evidência fotográfica / Storage
+
+- **Compressão no servidor** (`upload_foto_supabase`): 1280 px máx. + JPEG q75. **Duplicada em `app.py` (região ~762) e `api.py` (~173)** — editar as duas, mesmo padrão de `COORDENADAS_FIXAS`. Ajuste de parâmetro afeta **só fotos novas**, não recupera espaço do que já subiu.
+  - Isso **não** contradiz "não reencodar a foto no cliente" (Padrão GPS acima): a compressão é **no servidor, depois** do GPS já ter sido validado pelas coordenadas do navegador.
+- **Nunca apagar evidência (arquivo OU linha) sem cruzar com `baixas` primeiro.** O grupo `revisar_manualmente` do `/limpar_evidencias_orfas` já se provou ser evidência de auditoria real que só perdeu o vínculo (incidente 27/07/2026). Rodar **sempre `dry_run=true`** antes; só o grupo `seguro_apagar` (que tem foto atual substituindo) pode ir com `dry_run=false`.
+- **Cron de expiradas força `dry_run=false`; disparo manual assume `true`.** Não inverter — o `if github.event_name == 'schedule'` em `.github/workflows/limpeza-evidencias-expiradas.yml` existe de propósito (bug de 27/07: sem ele, o cron nunca apagava nada de verdade).
+- **Retenção:** `realizado_em + CICLO + 30 dias`; sem `CICLO`/data → nunca expira. Política completa em `04_ARQUITETURA.md`.
 
 ---
 
