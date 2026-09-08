@@ -110,7 +110,32 @@ def init_connection_pool():
             time.sleep(4)
     raise RuntimeError("Falha ao inicializar o pool de conexões após todas as tentativas.")
 
-pool_conexoes = init_connection_pool()
+pool_conexoes = None
+
+def _abrir_pool_ou_tela_de_espera():
+    """Chamada no topo do script. init_connection_pool() já tenta 10x/4s contra o
+    Neon; se AINDA assim falhar (Neon suspenso por limite do plano Free, manutenção
+    ou incidente -- mesma classe do incidente de 24/08/2026), mostra uma tela limpa
+    com botão de retry em vez de despejar o traceback do psycopg2 pro técnico de
+    campo (incidente 08/09/2026). Sem banco não há app, então é st.stop() -- mas com
+    mensagem, não com stack trace vermelho. st.set_page_config já rodou na região 1.2."""
+    global pool_conexoes
+    try:
+        pool_conexoes = init_connection_pool()
+    except Exception as e:
+        print(f"[BOOT] Pool de conexões Neon indisponível: {type(e).__name__}: {e}")
+        st.error(
+            "🔌 **Banco de dados temporariamente indisponível.**\n\n"
+            "O servidor do banco (Neon) pode estar reiniciando, em manutenção ou "
+            "com o limite do plano atingido. Aguarde cerca de 1 minuto e toque em "
+            "**Tentar novamente**. Se persistir por vários minutos, avise a coordenação."
+        )
+        if st.button("🔄 Tentar novamente", type="primary"):
+            init_connection_pool.clear()  # limpa só o cache deste recurso, não o mapa
+            st.rerun()
+        st.stop()
+
+_abrir_pool_ou_tela_de_espera()
 
 def get_connection():
     global pool_conexoes # A declaração global OBRIGATORIAMENTE precisa ser a primeira linha
@@ -5005,7 +5030,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v20.1.1")
+st.sidebar.caption("SGO Eletroeletrônica • v20.1.2")
 st.sidebar.markdown(
     """
     <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">

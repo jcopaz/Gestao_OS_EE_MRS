@@ -457,6 +457,23 @@ Primeira execução real do `/limpar_evidencias_orfas` (endpoint criado nesta me
 
 ---
 
+## 08/09/2026 — App caiu com `psycopg2.OperationalError` no boot (traceback cru na tela do técnico)
+
+**O que aconteceu:** por volta das 19:27 um técnico reportou `sgomrs.streamlit.app` fora do ar — tela com `psycopg2.OperationalError` (mensagem redigida + "recorded in the logs") e o traceback do Python à mostra. O ponto de falha no traceback é `pool_conexoes = init_connection_pool()` no topo do `app.py`, dentro do wrapper do `@st.cache_resource` (`_get_or_create_cache` / `_handle_cache_miss`).
+
+**Investigação — não foi regressão do código:** `git show` dos 2 commits desde o último bom (`4c98ae0` v20.1.0, `137683f` v20.1.1) — **nenhum tocou conexão, cache, query ou `dados_completos`**. v20.1.0 só trocou o pin do Streamlit (`==1.32.0` → `>=1.37,<1.60`) e adicionou o filtro "Especialidade" (em memória, sem query nova); v20.1.1 só isolou 2 blocos de exibição em `@st.fragment`. A assinatura é **idêntica ao incidente de 24/08/2026** (estouro do plano Neon Free / projeto suspenso): `OperationalError` logo no boot, com os 10 retries × 4s de `init_connection_pool()` esgotados.
+
+**Correção (v20.1.2):** `init_connection_pool()` mantido igual (a retentativa interna está certa). A chamada no topo do script virou `_abrir_pool_ou_tela_de_espera()` — se o pool não abrir, mostra `st.error` limpo ("Banco temporariamente indisponível… aguarde ~1 min") + botão **"🔄 Tentar novamente"** (`init_connection_pool.clear()` + `st.rerun()`) + `st.stop()`, em vez de deixar o traceback do psycopg2 subir pra tela do técnico. **Isso não conserta a disponibilidade do Neon — só a UX da falha.**
+
+**Pendente (infra, decisão do Julio):** confirmar no **painel do Neon** qual limite estourou (compute-hours / data-transfer / storage) e ler a linha real no log "Manage app" do Streamlit (a da tela vem redigida). Se for transfer/compute de novo, a "próxima alavanca" registrada em 24/08 continua valendo: `carregar_base_sem_overlay` sempre puxa a coluna `dados_completos` (JSONB) inteira, mesmo pra telas que não usam — selecionar colunas por caso de uso, ou migrar o Neon pra um plano pago.
+
+**Aprendizado:**
+1. **Falha ao abrir conexão com serviço externo no boot = tela de espera + retry, nunca traceback cru.** Pro técnico de campo, "erro vermelho com stack" e "aguarde 1 min e tente de novo" são experiências opostas — e o traceback ainda vaza caminho de arquivo/deploy (`/mount/src/gestao_os_ee_mrs/…`).
+2. **`OperationalError` em `init_connection_pool()` no boot, com os retries esgotados, é assinatura de limite/suspensão do provedor**, não de bug de código. Antes de qualquer patch, olhar o painel do Neon e o log real — a mensagem da tela vem redigida de propósito.
+3. **Incidente logo após um deploy nem sempre é causado por ele.** `git show` das mudanças recentes em 1 minuto descarta ou confirma; aqui as duas (pin do Streamlit + `@st.fragment`) não encostavam em banco.
+
+---
+
 ## Lições transversais (válidas pra qualquer mudança futura)
 
 - **Verificar causa raiz com dado real (SQL/log) antes de aplicar patch** — não assumir, não adivinhar. Vale tanto pra bug de dado quanto pra bug de infraestrutura.
@@ -478,3 +495,4 @@ Primeira execução real do `/limpar_evidencias_orfas` (endpoint criado nesta me
 - **Store IndexedDB com `keyPath` num campo de negócio (nº de OS, matrícula, placa) perde registros em silêncio quando esse campo repete ou vem vazio** — cada `.put()` sobrescreve o anterior de mesma chave, sem erro. Sintoma: "N gravados com sucesso" mas fila mostra menos. Preferir chave sintética (`crypto.randomUUID()`/`autoIncrement`) + índice no campo de negócio; e deduplicar/limpar vazios do dado que alimenta a chave **no ponto de geração**.
 - **Antes de assumir "regressão", `diff` do trecho exato entre a versão suspeita e a última tag boa** — 30s de `git diff <bom> HEAD -- <arquivo>` na função certa dizem se aquilo mudou ou se o bug é antigo, e economizam uma caçada inteira por "o que quebrou".
 - **Banco (Neon) e Storage (Supabase) são serviços separados** — metadado/vínculo mora num, o arquivo mora no outro. Query de diagnóstico de foto tem que saber disso (`evidencias` está no Neon, não no SQL Editor do Supabase). "Storage enchendo" pode ser o ciclo de retenção funcionando com volume acima do plano free, não um job quebrado — separar "roda?" de "dá conta?" antes de tocar em código. Verificar saúde do ciclo pelo *porquê cada foto está imune* (sem OS / sem `CICLO` / data ilegível / dentro da janela), não só pela contagem total.
+- **Falha ao abrir conexão com serviço externo (Neon/Supabase) no boot: tela de espera + botão de retry + `st.stop()`, nunca deixar o traceback subir.** Pro campo, "erro vermelho com stack" e "aguarde 1 min" são experiências opostas, e o traceback vaza caminho de arquivo/deploy. `OperationalError`/`OperationalError`-like no boot, com os retries internos esgotados, aponta pra limite/suspensão do provedor (ver incidentes 24/08 e 08/09), não pra bug — conferir o painel do provedor e o log real (a mensagem da tela vem redigida) antes de qualquer patch. E: incidente logo após deploy nem sempre é do deploy — `git show` das mudanças recentes descarta em 1 min.
