@@ -1114,7 +1114,7 @@ def aplicar_filtros_sidebar(
     turnos_selecionados: list, start_date, end_date, status_sel: str = "Todos", intervalo_sel: str = "Todas",
     crit_selecionadas: list | None = None, exec_start_date=None, exec_end_date=None,
     grupos_ativo_selecionados: list | None = None, ativos_selecionados: list | None = None,
-    baixa_evidencia_sel: str = "Todas"
+    baixa_evidencia_sel: str = "Todas", especialidade_sel: str = "Todas as Especialidades"
 ) -> pd.DataFrame:
     df = df_visao.copy()
     if "dt_prog_filtro" in df.columns:
@@ -1154,6 +1154,8 @@ def aplicar_filtros_sidebar(
         df = df[df["Grupo_Ativo"].isin(grupos_ativo_selecionados)]
     if ativos_selecionados and "Ativo" in df.columns:
         df = df[df["Ativo"].isin(ativos_selecionados)]
+    if especialidade_sel and especialidade_sel != "Todas as Especialidades" and "Especialidade" in df.columns:
+        df = df[df["Especialidade"].astype(str).str.strip() == str(especialidade_sel).strip()]
     if turnos_selecionados and "Turno_Filtro" in df.columns:
         df = df[df["Turno_Filtro"].isin(turnos_selecionados)]
     if status_sel != "Todos" and "Status_norm" in df.columns:
@@ -5003,7 +5005,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v20.0.0")
+st.sidebar.caption("SGO Eletroeletrônica • v20.1.0")
 st.sidebar.markdown(
     """
     <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">
@@ -5150,6 +5152,18 @@ lista_turnos = ["Turno Dia (07h-19h)", "Administrativo (08h-17h30)", "Turno Noit
 status_opcoes = ["Todos", "Todas Concluídas", "Concluídas no Prazo", "Concluídas com Atraso", "Pendentes", "Atrasado", "NRAV", "NAPL"]
 baixa_evidencia_opcoes = ["Todas", "Com Evidências Online", "Com Evidência Offline", "Sem Evidências", "Manual IW47"]
 
+# Especialidade (pedido 08/09/2026): mesmo filtro da aba do time de campo ("🛠️ Filtrar por
+# Especialidade"), agora também na sidebar. Opções = especialidades distintas presentes na
+# base do escopo atual (sem "N/D"); selectbox de escolha única, igual ao do campo.
+lista_especialidades = (
+    sorted(
+        e for e in df_visao["Especialidade"].dropna().astype(str).str.strip().unique().tolist()
+        if e and e.upper() != "N/D"
+    )
+    if "Especialidade" in df_visao.columns else []
+)
+especialidade_opcoes = ["Todas as Especialidades"] + lista_especialidades
+
 def _sanear_lista_filtro(chave: str, opcoes: list[str], padrao: list[str]):
     # Pega o que o usuário selecionou no st.multiselect
     atuais = st.session_state.get(chave, list(padrao))
@@ -5198,7 +5212,14 @@ def fragmento_filtros_sidebar_seguro():
         st.session_state["filtro_intervalo_sel"] = "Todas"
         st.session_state["filtro_status_sel"] = "Todos"
         st.session_state["filtro_baixa_evidencia_sel"] = "Todas"
+        st.session_state["filtro_especialidade_sel"] = "Todas as Especialidades"
     st.session_state["_escopo_dos_filtros"] = st.session_state.get("escopo")
+
+    # Especialidade: as opções mudam com a base/escopo. Se o valor salvo não está mais nas
+    # opções atuais, volta pra "Todas" ANTES de instanciar o selectbox (senão o Streamlit
+    # levanta exceção com value fora da lista) -- mesmo cuidado do filtro do time de campo.
+    if st.session_state.get("filtro_especialidade_sel", "Todas as Especialidades") not in especialidade_opcoes:
+        st.session_state["filtro_especialidade_sel"] = "Todas as Especialidades"
 
     if _escopo_mudou:
         # lista_ativos (fora desta função, calculada mais acima) segue a cascata de
@@ -5264,6 +5285,7 @@ def fragmento_filtros_sidebar_seguro():
         st.selectbox("Tipo de Intervalo", ["Todas", "Com Intervalo", "Sem Intervalo"], key="filtro_intervalo_sel")
         st.selectbox("Status da OS", status_opcoes, key="filtro_status_sel")
         st.selectbox("Baixa de OS", baixa_evidencia_opcoes, key="filtro_baixa_evidencia_sel")
+        st.selectbox("🛠️ Especialidade", especialidade_opcoes, key="filtro_especialidade_sel")
     
         # O botão fica DENTRO do form e SÓ para quem não é técnico
         submit_filtros = st.form_submit_button("✅ Aplicar Filtros", use_container_width=True, type="primary")
@@ -5308,6 +5330,7 @@ turnos_selecionados = st.session_state.get("filtro_turnos", list(lista_turnos))
 status_sel = st.session_state.get("filtro_status_sel", "Todos")
 intervalo_sel = st.session_state.get("filtro_intervalo_sel", "Todas")
 baixa_evidencia_sel = st.session_state.get("filtro_baixa_evidencia_sel", "Todas")
+especialidade_sel = st.session_state.get("filtro_especialidade_sel", "Todas as Especialidades")
 
 # Lido aqui (antes do bloco do Ciclo Vigente abaixo) porque a CORREÇÃO 2 de 31/07/2026 precisa
 # saber se o usuário travou um Mês de Referência explícito antes de decidir o "ultimo_plano".
@@ -5369,7 +5392,7 @@ if ultimo_plano is not None:
         start_date=_start_ultimo, end_date=_end_ultimo, status_sel=status_sel, intervalo_sel=intervalo_sel,
         crit_selecionadas=crit_selecionadas, exec_start_date=None, exec_end_date=None,
         grupos_ativo_selecionados=grupos_ativo_selecionados, ativos_selecionados=ativos_selecionados,
-        baixa_evidencia_sel=baixa_evidencia_sel
+        baixa_evidencia_sel=baixa_evidencia_sel, especialidade_sel=especialidade_sel
     )
 else:
     df_kpi_topo = None  # sem dado de ciclo/upload -- região 9.3 cai para df_filtrado
@@ -5383,7 +5406,7 @@ df_filtrado = aplicar_filtros_sidebar(
     start_date=start_date, end_date=end_date, status_sel=status_sel, intervalo_sel=intervalo_sel,
     crit_selecionadas=crit_selecionadas, exec_start_date=exec_start_date, exec_end_date=exec_end_date,
     grupos_ativo_selecionados=grupos_ativo_selecionados, ativos_selecionados=ativos_selecionados,
-    baixa_evidencia_sel=baixa_evidencia_sel
+    baixa_evidencia_sel=baixa_evidencia_sel, especialidade_sel=especialidade_sel
 )
 #endregion 7.3
 #endregion
