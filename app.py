@@ -5005,7 +5005,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v20.1.0")
+st.sidebar.caption("SGO Eletroeletrônica • v20.1.1")
 st.sidebar.markdown(
     """
     <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">
@@ -5675,6 +5675,122 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                 _series_c, _legend_c = _series_micro(p_ci, p_si, p_nd, r_ci, r_si, r_nd)
                 _grafico_micro(categorias, _series_c, _legend_c, key=f"{key_prefix}_{_classif}")
 #endregion 10.1b
+
+    # @st.fragment (08/09/2026): a barra de busca "Pesquisar por N° da OS/Pátio/Ativo" e o
+    # drilldown re-executavam o script inteiro (todas as abas + o mapa) a cada tecla. Isolando
+    # num fragmento, só este bloco re-renderiza. df_visao_base entra como ARGUMENTO (não
+    # closure) -- numa rerun só-do-fragmento ele fica congelado no último run completo (o certo:
+    # mudança na sidebar dispara run completo).
+    @st.fragment
+    def _bloco_lista_detalhada_os(df_visao_base):
+        st.subheader("📋 Lista Detalhada de OS")
+
+        # --- NOVIDADE: BARRA DE PESQUISA ---
+        col_busca, _ = st.columns([4, 6])
+        with col_busca:
+            busca_os = st.text_input("🔍 Pesquisar por N° da OS, Pátio ou Ativo:")
+
+        df_lista = df_visao_base.copy().rename(columns={"Ordem servico": "OS"})
+        try:
+            df_evidencias = carregar_evidencias_df()
+            if not df_evidencias.empty and "OS" in df_lista.columns:
+                df_lista["OS_match"] = df_lista["OS"].astype(str).str.strip()
+                df_evidencias["os_ref_match"] = df_evidencias["os_referencia"].astype(str).str.strip()
+                # Uma OS pode ter varias linhas em 'evidencias' (chave e ativo+atividade).
+                # Deduplica por OS antes do merge para NAO multiplicar linhas da lista (baixa duplicada).
+                df_evidencias = df_evidencias.drop_duplicates(subset=["os_ref_match"], keep="last")
+                df_lista = df_lista.merge(df_evidencias[["os_ref_match", "foto_url"]], left_on="OS_match", right_on="os_ref_match", how="left")
+            else: 
+                df_lista["foto_url"] = None
+
+            def obter_link(row):
+                if "foto_url" in row and pd.notna(row["foto_url"]) and str(row["foto_url"]).startswith("http"):
+                    return str(row["foto_url"])
+                return None
+            df_lista["Evidência"] = df_lista.apply(obter_link, axis=1)
+            df_lista.drop(columns=["OS_match", "os_ref_match", "foto_url", "ativo", "atividade"], inplace=True, errors="ignore")
+        except Exception: 
+            df_lista["Evidência"] = None
+
+        if "Data inicial programada" in df_lista.columns: df_lista["Data inicial programada"] = pd.to_datetime(df_lista["Data inicial programada"], errors="coerce").dt.strftime("%d/%m/%Y")
+        if "Data/Hora Realizado" in df_lista.columns: df_lista["Data/Hora Realizado"] = pd.to_datetime(df_lista["Data/Hora Realizado"], dayfirst=True, errors="coerce").dt.strftime("%d/%m/%Y %H:%M").fillna("")
+
+        colunas_ordem = ["OS", "Patio", "Ativo", "Criticidade", "Classificacao", "Descrição Longa", "Data inicial programada", "Status da Operação", "Data/Hora Realizado", "Concluído por", "Geolocalização de Baixa", "Evidência"]
+        for c in colunas_ordem:
+            if c not in df_lista.columns: df_lista[c] = ""
+
+        # --- APLICA O FILTRO DA PESQUISA (drilldown: sugestões enquanto digita) ---
+        # Pedido de 22/07/2026: em vez de só filtrar a tabela por "contém", mostra as
+        # sugestões (OS/Pátio/Ativo que batem com o texto) numa lista pra escolher -- a
+        # pessoa pode digitar um trecho parcial e drilar até o valor exato antes de ver
+        # a tabela filtrada por ele.
+        if busca_os:
+            b_up = busca_os.upper()
+            mask_busca = (
+                df_lista["OS"].astype(str).str.upper().str.contains(b_up, na=False)
+                | df_lista["Patio"].astype(str).str.upper().str.contains(b_up, na=False)
+                | df_lista["Ativo"].astype(str).str.upper().str.contains(b_up, na=False)
+            )
+            df_candidatos_busca = df_lista[mask_busca]
+
+            sugestoes_busca = sorted({
+                v for v in (
+                    df_candidatos_busca["OS"].astype(str).tolist()
+                    + df_candidatos_busca["Patio"].astype(str).tolist()
+                    + df_candidatos_busca["Ativo"].astype(str).tolist()
+                )
+                if b_up in v.upper()
+            })
+
+            opcao_drilldown = st.selectbox(
+                f"🔎 {len(sugestoes_busca)} sugestão(ões) — selecione pra filtrar exatamente, "
+                "ou deixe em \"Todos os resultados\" pra ver tudo que bateu com a busca:",
+                ["(Todos os resultados da busca)"] + sugestoes_busca,
+                key="drilldown_lista_os"
+            )
+
+            if opcao_drilldown != "(Todos os resultados da busca)":
+                df_lista = df_lista[
+                    (df_lista["OS"].astype(str) == opcao_drilldown)
+                    | (df_lista["Patio"].astype(str) == opcao_drilldown)
+                    | (df_lista["Ativo"].astype(str) == opcao_drilldown)
+                ]
+            else:
+                df_lista = df_candidatos_busca
+
+        if not df_lista.empty:
+            # Tabela nativa do Streamlit (ordenação por clique na coluna já é nativa) em vez de
+            # HTML/JS cru via components.html -- essa era a causa raiz recorrente do
+            # Segmentation fault (crash nativo sem traceback Python) apos o upgrade forcado
+            # do Streamlit pela nuvem. LinkColumn renderiza o link de evidência sem precisar
+            # de HTML cru.
+            df_display = df_lista[colunas_ordem].copy()
+
+            # Exportação em ";" (não ","): "Descrição Longa" e "Geolocalização de Baixa"
+            # ("Lat: X, Lon: Y") trazem vírgula dentro do próprio texto -- CSV separado por
+            # vírgula quebra a organização das colunas ao abrir/ordenar no Excel. O ícone
+            # nativo do st.dataframe (canto da tabela) continua exportando em ",".
+            csv_lista_os = df_display.to_csv(index=False, sep=";").encode("utf-8-sig")
+            st.download_button(
+                "⬇️ Baixar CSV (separado por ;)",
+                data=csv_lista_os,
+                file_name="lista_detalhada_os.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+
+            st.dataframe(
+                df_display,
+                use_container_width=True,
+                hide_index=True,
+                height=450,
+                column_config={
+                    "Evidência": st.column_config.LinkColumn("Evidência", display_text="🔗 Abrir Foto"),
+                }
+            )
+        else:
+            st.info("Nenhuma OS encontrada para a pesquisa.")
+
 
 #region 10.2: ABA 1 — Visão Gerencial (Indicadores)
     if tab1 is not None:
@@ -6808,113 +6924,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
 #endregion 10.2.3b
 
 #region 10.2.4: Lista Detalhada de OS (com Evidências)
-                st.subheader("📋 Lista Detalhada de OS")
-                
-                # --- NOVIDADE: BARRA DE PESQUISA ---
-                col_busca, _ = st.columns([4, 6])
-                with col_busca:
-                    busca_os = st.text_input("🔍 Pesquisar por N° da OS, Pátio ou Ativo:")
-
-                df_lista = df_visao_base.copy().rename(columns={"Ordem servico": "OS"})
-                try:
-                    df_evidencias = carregar_evidencias_df()
-                    if not df_evidencias.empty and "OS" in df_lista.columns:
-                        df_lista["OS_match"] = df_lista["OS"].astype(str).str.strip()
-                        df_evidencias["os_ref_match"] = df_evidencias["os_referencia"].astype(str).str.strip()
-                        # Uma OS pode ter varias linhas em 'evidencias' (chave e ativo+atividade).
-                        # Deduplica por OS antes do merge para NAO multiplicar linhas da lista (baixa duplicada).
-                        df_evidencias = df_evidencias.drop_duplicates(subset=["os_ref_match"], keep="last")
-                        df_lista = df_lista.merge(df_evidencias[["os_ref_match", "foto_url"]], left_on="OS_match", right_on="os_ref_match", how="left")
-                    else: 
-                        df_lista["foto_url"] = None
-
-                    def obter_link(row):
-                        if "foto_url" in row and pd.notna(row["foto_url"]) and str(row["foto_url"]).startswith("http"):
-                            return str(row["foto_url"])
-                        return None
-                    df_lista["Evidência"] = df_lista.apply(obter_link, axis=1)
-                    df_lista.drop(columns=["OS_match", "os_ref_match", "foto_url", "ativo", "atividade"], inplace=True, errors="ignore")
-                except Exception: 
-                    df_lista["Evidência"] = None
-
-                if "Data inicial programada" in df_lista.columns: df_lista["Data inicial programada"] = pd.to_datetime(df_lista["Data inicial programada"], errors="coerce").dt.strftime("%d/%m/%Y")
-                if "Data/Hora Realizado" in df_lista.columns: df_lista["Data/Hora Realizado"] = pd.to_datetime(df_lista["Data/Hora Realizado"], dayfirst=True, errors="coerce").dt.strftime("%d/%m/%Y %H:%M").fillna("")
-
-                colunas_ordem = ["OS", "Patio", "Ativo", "Criticidade", "Classificacao", "Descrição Longa", "Data inicial programada", "Status da Operação", "Data/Hora Realizado", "Concluído por", "Geolocalização de Baixa", "Evidência"]
-                for c in colunas_ordem:
-                    if c not in df_lista.columns: df_lista[c] = ""
-
-                # --- APLICA O FILTRO DA PESQUISA (drilldown: sugestões enquanto digita) ---
-                # Pedido de 22/07/2026: em vez de só filtrar a tabela por "contém", mostra as
-                # sugestões (OS/Pátio/Ativo que batem com o texto) numa lista pra escolher -- a
-                # pessoa pode digitar um trecho parcial e drilar até o valor exato antes de ver
-                # a tabela filtrada por ele.
-                if busca_os:
-                    b_up = busca_os.upper()
-                    mask_busca = (
-                        df_lista["OS"].astype(str).str.upper().str.contains(b_up, na=False)
-                        | df_lista["Patio"].astype(str).str.upper().str.contains(b_up, na=False)
-                        | df_lista["Ativo"].astype(str).str.upper().str.contains(b_up, na=False)
-                    )
-                    df_candidatos_busca = df_lista[mask_busca]
-
-                    sugestoes_busca = sorted({
-                        v for v in (
-                            df_candidatos_busca["OS"].astype(str).tolist()
-                            + df_candidatos_busca["Patio"].astype(str).tolist()
-                            + df_candidatos_busca["Ativo"].astype(str).tolist()
-                        )
-                        if b_up in v.upper()
-                    })
-
-                    opcao_drilldown = st.selectbox(
-                        f"🔎 {len(sugestoes_busca)} sugestão(ões) — selecione pra filtrar exatamente, "
-                        "ou deixe em \"Todos os resultados\" pra ver tudo que bateu com a busca:",
-                        ["(Todos os resultados da busca)"] + sugestoes_busca,
-                        key="drilldown_lista_os"
-                    )
-
-                    if opcao_drilldown != "(Todos os resultados da busca)":
-                        df_lista = df_lista[
-                            (df_lista["OS"].astype(str) == opcao_drilldown)
-                            | (df_lista["Patio"].astype(str) == opcao_drilldown)
-                            | (df_lista["Ativo"].astype(str) == opcao_drilldown)
-                        ]
-                    else:
-                        df_lista = df_candidatos_busca
-
-                if not df_lista.empty:
-                    # Tabela nativa do Streamlit (ordenação por clique na coluna já é nativa) em vez de
-                    # HTML/JS cru via components.html -- essa era a causa raiz recorrente do
-                    # Segmentation fault (crash nativo sem traceback Python) apos o upgrade forcado
-                    # do Streamlit pela nuvem. LinkColumn renderiza o link de evidência sem precisar
-                    # de HTML cru.
-                    df_display = df_lista[colunas_ordem].copy()
-
-                    # Exportação em ";" (não ","): "Descrição Longa" e "Geolocalização de Baixa"
-                    # ("Lat: X, Lon: Y") trazem vírgula dentro do próprio texto -- CSV separado por
-                    # vírgula quebra a organização das colunas ao abrir/ordenar no Excel. O ícone
-                    # nativo do st.dataframe (canto da tabela) continua exportando em ",".
-                    csv_lista_os = df_display.to_csv(index=False, sep=";").encode("utf-8-sig")
-                    st.download_button(
-                        "⬇️ Baixar CSV (separado por ;)",
-                        data=csv_lista_os,
-                        file_name="lista_detalhada_os.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
-
-                    st.dataframe(
-                        df_display,
-                        use_container_width=True,
-                        hide_index=True,
-                        height=450,
-                        column_config={
-                            "Evidência": st.column_config.LinkColumn("Evidência", display_text="🔗 Abrir Foto"),
-                        }
-                    )
-                else:
-                    st.info("Nenhuma OS encontrada para a pesquisa.")
+                _bloco_lista_detalhada_os(df_visao_base)
 #endregion 10.2.4
 #endregion 10.2
 
@@ -8446,65 +8456,75 @@ def gerar_pdf_concluidas_bytes(df_pdf, titulo="OS Concluídas - Fim de Turno"):
     buffer.seek(0)
     return buffer.getvalue()
 
+# @st.fragment (08/09/2026): o checkbox "só as minhas" e o seletor de data do turno
+# re-executavam o script inteiro (todas as abas + o PDF do relatorio) a cada clique.
+# Isolando num fragmento, a interacao so re-renderiza este bloco. df_filtrado entra como
+# ARGUMENTO (nao closure) -- numa rerun so-do-fragmento ele fica congelado no ultimo run
+# completo, que e o comportamento correto (mudanca na sidebar dispara run completo).
+@st.fragment
+def _bloco_relatorio_turno(df_filtrado):
+    st.markdown("---")
+    st.markdown("### 🏁 Relatório de OS Concluídas (Fim de Turno)")
+    st.caption("PDF das OS concluídas para conferência ao final do turno.")
+    # _status_exportavel_sap (nao so prazo|atraso): inclui ABER NRAV -- a equipe foi a
+    # campo e fez a vistoria, o turno precisa mostrar essa atividade tambem, mesmo a OS
+    # continuando pendente no Backlog (pedido 29/07/2026).
+    _status_concluido_rel = _status_exportavel_sap
+    if "Status_norm" in df_filtrado.columns:
+        df_conc = df_filtrado[df_filtrado["Status_norm"].isin(_status_concluido_rel)].copy()
+    else:
+        df_conc = df_filtrado.iloc[0:0].copy()
+
+    usuario_atual = str(st.session_state.get("username", "")).strip()
+    somente_minhas = st.checkbox("Mostrar apenas as OS que EU concluí", value=True, key="chk_rel_minhas")
+    if somente_minhas and usuario_atual and "Concluído por" in df_conc.columns:
+        df_conc = df_conc[df_conc["Concluído por"].astype(str).str.strip().str.casefold() == usuario_atual.casefold()]
+
+    # Filtro por data de execução (turno): usa "dt_realizado", já calculado uma vez
+    # em df_visao (linha ~908) e preservado até aqui por aplicar_filtros_sidebar --
+    # é um filtro em memória sobre dado já carregado, sem nova consulta ao banco.
+    data_turno_sel = st.date_input(
+        "📅 Data de execução (turno)",
+        value=agora_dt().date(),
+        key="data_rel_turno",
+        format="DD/MM/YYYY",
+    )
+    if "dt_realizado" in df_conc.columns:
+        df_conc = df_conc[pd.to_datetime(df_conc["dt_realizado"], errors="coerce").dt.date == data_turno_sel]
+
+    if df_conc.empty:
+        st.info("Nenhuma OS concluída encontrada para os filtros atuais.")
+    else:
+        # Identifica visualmente NRAV (vistoriada, backlog pendente) x Realizado de verdade
+        # -- senão o relatório passa a impressão de que tudo virou conclusão definitiva.
+        def _rotulo_status_rel(s):
+            if s == "ABER NRAV": return "🔍 NRAV"
+            if s in _status_atraso: return "Realizado (Atraso)"
+            return "Realizado"
+        df_rel = pd.DataFrame({
+            "OS": df_conc["Ordem servico"].astype(str),
+            "Status": df_conc["Status_norm"].apply(_rotulo_status_rel),
+            "Data Prog. (Data Inicial Programada)": pd.to_datetime(df_conc["dt_prog_filtro"], errors="coerce").dt.strftime("%d/%m/%Y").fillna(""),
+            "Patio": df_conc["Patio"].astype(str),
+            "Ativo": df_conc["Ativo"].astype(str),
+            "Criticidade": df_conc["Criticidade"].astype(str),
+            "Classificação": df_conc["Classificacao"].astype(str),
+            "Descrição Longa": df_conc["Descrição Longa"].astype(str) if "Descrição Longa" in df_conc.columns else "",
+            "Data/Hora Realizado": pd.to_datetime(df_conc["Data/Hora Realizado"], dayfirst=True, errors="coerce").dt.strftime("%d/%m/%Y %H:%M").fillna(""),
+        })
+        st.success(f"✅ {len(df_rel)} OS concluída(s) no período/filtros atuais.")
+        col_rel_1, col_rel_2 = st.columns([8, 2])
+        with col_rel_2:
+            pdf_conc_bytes = gerar_pdf_concluidas_bytes(df_rel)
+            st.download_button("📄 Gerar Relatório PDF", data=pdf_conc_bytes,
+                file_name=f"OS_Concluidas_{datetime.now().strftime('%Y%m%d')}.pdf",
+                mime="application/pdf", use_container_width=True)
+        st.dataframe(df_rel, use_container_width=True, hide_index=True)
+
+
 if tab2 is not None:
     with tab2:
-        st.markdown("---")
-        st.markdown("### 🏁 Relatório de OS Concluídas (Fim de Turno)")
-        st.caption("PDF das OS concluídas para conferência ao final do turno.")
-        # _status_exportavel_sap (nao so prazo|atraso): inclui ABER NRAV -- a equipe foi a
-        # campo e fez a vistoria, o turno precisa mostrar essa atividade tambem, mesmo a OS
-        # continuando pendente no Backlog (pedido 29/07/2026).
-        _status_concluido_rel = _status_exportavel_sap
-        if "Status_norm" in df_filtrado.columns:
-            df_conc = df_filtrado[df_filtrado["Status_norm"].isin(_status_concluido_rel)].copy()
-        else:
-            df_conc = df_filtrado.iloc[0:0].copy()
-
-        usuario_atual = str(st.session_state.get("username", "")).strip()
-        somente_minhas = st.checkbox("Mostrar apenas as OS que EU concluí", value=True, key="chk_rel_minhas")
-        if somente_minhas and usuario_atual and "Concluído por" in df_conc.columns:
-            df_conc = df_conc[df_conc["Concluído por"].astype(str).str.strip().str.casefold() == usuario_atual.casefold()]
-
-        # Filtro por data de execução (turno): usa "dt_realizado", já calculado uma vez
-        # em df_visao (linha ~908) e preservado até aqui por aplicar_filtros_sidebar --
-        # é um filtro em memória sobre dado já carregado, sem nova consulta ao banco.
-        data_turno_sel = st.date_input(
-            "📅 Data de execução (turno)",
-            value=agora_dt().date(),
-            key="data_rel_turno",
-            format="DD/MM/YYYY",
-        )
-        if "dt_realizado" in df_conc.columns:
-            df_conc = df_conc[pd.to_datetime(df_conc["dt_realizado"], errors="coerce").dt.date == data_turno_sel]
-
-        if df_conc.empty:
-            st.info("Nenhuma OS concluída encontrada para os filtros atuais.")
-        else:
-            # Identifica visualmente NRAV (vistoriada, backlog pendente) x Realizado de verdade
-            # -- senão o relatório passa a impressão de que tudo virou conclusão definitiva.
-            def _rotulo_status_rel(s):
-                if s == "ABER NRAV": return "🔍 NRAV"
-                if s in _status_atraso: return "Realizado (Atraso)"
-                return "Realizado"
-            df_rel = pd.DataFrame({
-                "OS": df_conc["Ordem servico"].astype(str),
-                "Status": df_conc["Status_norm"].apply(_rotulo_status_rel),
-                "Data Prog. (Data Inicial Programada)": pd.to_datetime(df_conc["dt_prog_filtro"], errors="coerce").dt.strftime("%d/%m/%Y").fillna(""),
-                "Patio": df_conc["Patio"].astype(str),
-                "Ativo": df_conc["Ativo"].astype(str),
-                "Criticidade": df_conc["Criticidade"].astype(str),
-                "Classificação": df_conc["Classificacao"].astype(str),
-                "Descrição Longa": df_conc["Descrição Longa"].astype(str) if "Descrição Longa" in df_conc.columns else "",
-                "Data/Hora Realizado": pd.to_datetime(df_conc["Data/Hora Realizado"], dayfirst=True, errors="coerce").dt.strftime("%d/%m/%Y %H:%M").fillna(""),
-            })
-            st.success(f"✅ {len(df_rel)} OS concluída(s) no período/filtros atuais.")
-            col_rel_1, col_rel_2 = st.columns([8, 2])
-            with col_rel_2:
-                pdf_conc_bytes = gerar_pdf_concluidas_bytes(df_rel)
-                st.download_button("📄 Gerar Relatório PDF", data=pdf_conc_bytes,
-                    file_name=f"OS_Concluidas_{datetime.now().strftime('%Y%m%d')}.pdf",
-                    mime="application/pdf", use_container_width=True)
-            st.dataframe(df_rel, use_container_width=True, hide_index=True)
+        _bloco_relatorio_turno(df_filtrado)
 #endregion 10.3.6
 
 #endregion 10.3
