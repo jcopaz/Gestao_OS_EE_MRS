@@ -111,25 +111,95 @@ def init_connection_pool():
     raise RuntimeError("Falha ao inicializar o pool de conexões após todas as tentativas.")
 
 pool_conexoes = None
+_ALERTA_DEV_ULTIMO_ENVIO = 0.0  # epoch; segura o alerta pra não repetir a cada rerun
+
+def _diagnostico_falha_neon(texto_erro: str):
+    """A partir do texto do erro do psycopg2, devolve (assunto, detalhe) legível.
+    Distingue os 3 casos que exigem ação diferente: credencial errada (config),
+    limite do plano Free (upgrade/virada de ciclo) e sem-resposta genérico."""
+    m = (texto_erro or "").lower()
+    if "password authentication failed" in m or ("role" in m and "does not exist" in m):
+        return (
+            "🔑 Credencial do banco inválida",
+            "O segredo `NEON_POSTGRES_URL` parece incorreto ou foi rotacionado — é "
+            "configuração, não limite de uso. Precisa do desenvolvedor pra corrigir o secret.",
+        )
+    if any(k in m for k in ("quota", "exceeded", "disabled", "suspend", "compute time",
+                            "data transfer", "limit reached", "over the limit")):
+        return (
+            "🚫 Limite do plano gratuito do banco atingido",
+            "O banco (Neon, plano **Free**) bateu o limite do mês e o servidor foi "
+            "suspenso. Só volta com **upgrade do plano** ou na **virada do ciclo mensal**.",
+        )
+    return (
+        "🔌 Banco de dados sem resposta",
+        "O servidor do banco (Neon) não respondeu após 10 tentativas. Causa mais "
+        "provável: **limite do plano gratuito atingido** (já ocorreu em 24/08/2026). "
+        "Pode também ser reinício ou manutenção do provedor.",
+    )
+
+def _alertar_dev_falha_banco(assunto: str, detalhe: str) -> bool:
+    """Best-effort: avisa o desenvolvedor via webhook (Teams / Slack / Discord /
+    Power Automate — qualquer 'incoming webhook' que aceite POST JSON). Só dispara
+    se `st.secrets['ALERTA_WEBHOOK_URL']` estiver configurado, no máximo 1x a cada
+    30 min, e NUNCA levanta — uma falha aqui não pode piorar a tela de erro.
+    Devolve True só se o webhook respondeu 2xx."""
+    global _ALERTA_DEV_ULTIMO_ENVIO
+    try:
+        url = st.secrets.get("ALERTA_WEBHOOK_URL", "")
+    except Exception:
+        url = ""
+    if not url:
+        return False
+    agora = time.time()
+    if agora - _ALERTA_DEV_ULTIMO_ENVIO < 1800:
+        return False  # já avisou há menos de 30 min
+    msg = (
+        f"🚨 SGO Eletroeletronica MRS — {assunto}\n"
+        f"{detalhe}\n"
+        f"Painel: https://sgomrs.streamlit.app  ·  "
+        f"{time.strftime('%d/%m/%Y %H:%M', time.localtime(agora))}"
+    )
+    try:
+        # "text" cobre Teams/Slack/Power Automate; "content" cobre Discord.
+        r = requests.post(url, json={"text": msg, "content": msg}, timeout=5)
+        if 200 <= r.status_code < 300:
+            _ALERTA_DEV_ULTIMO_ENVIO = agora
+            return True
+    except Exception:
+        pass
+    return False
 
 def _abrir_pool_ou_tela_de_espera():
     """Chamada no topo do script. init_connection_pool() já tenta 10x/4s contra o
     Neon; se AINDA assim falhar (Neon suspenso por limite do plano Free, manutenção
     ou incidente -- mesma classe do incidente de 24/08/2026), mostra uma tela limpa
-    com botão de retry em vez de despejar o traceback do psycopg2 pro técnico de
-    campo (incidente 08/09/2026). Sem banco não há app, então é st.stop() -- mas com
-    mensagem, não com stack trace vermelho. st.set_page_config já rodou na região 1.2."""
+    com o diagnóstico + botão de retry, aciona o desenvolvedor por webhook, e para
+    o script -- em vez de despejar o traceback do psycopg2 pro técnico de campo
+    (incidentes 08/09/2026). st.set_page_config já rodou na região 1.2."""
     global pool_conexoes
     try:
         pool_conexoes = init_connection_pool()
+        return
     except Exception as e:
-        print(f"[BOOT] Pool de conexões Neon indisponível: {type(e).__name__}: {e}")
+        texto_erro = f"{type(e).__name__}: {e}"
+        print(f"[BOOT] Pool de conexões Neon indisponível: {texto_erro}")
+        assunto, detalhe = _diagnostico_falha_neon(str(e))
+        avisado = _alertar_dev_falha_banco(assunto, f"{detalhe}  (erro técnico: {texto_erro})")
+
         st.error(
-            "🔌 **Banco de dados temporariamente indisponível.**\n\n"
-            "O servidor do banco (Neon) pode estar reiniciando, em manutenção ou "
-            "com o limite do plano atingido. Aguarde cerca de 1 minuto e toque em "
-            "**Tentar novamente**. Se persistir por vários minutos, avise a coordenação."
+            f"**{assunto}**\n\n"
+            f"{detalhe}\n\n"
+            "**O trabalho de campo NÃO para:** quem já abriu a Rota PWA no celular "
+            "continua fazendo baixa offline normalmente — a fila fica no aparelho e "
+            "sincroniza sozinha quando o banco voltar. Nada se perde.\n\n"
+            "O **painel** só volta quando o banco for restabelecido. Aguarde cerca de "
+            "1 minuto e toque em **Tentar novamente**."
         )
+        if avisado:
+            st.caption("✅ O desenvolvedor foi notificado automaticamente.")
+        else:
+            st.caption("⚠️ Avise a coordenação / o desenvolvedor (Julio).")
         if st.button("🔄 Tentar novamente", type="primary"):
             init_connection_pool.clear()  # limpa só o cache deste recurso, não o mapa
             st.rerun()
@@ -5030,7 +5100,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v20.1.2")
+st.sidebar.caption("SGO Eletroeletrônica • v20.1.3")
 st.sidebar.markdown(
     """
     <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">
