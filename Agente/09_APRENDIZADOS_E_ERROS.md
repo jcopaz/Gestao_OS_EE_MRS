@@ -476,6 +476,18 @@ Primeira execução real do `/limpar_evidencias_orfas` (endpoint criado nesta me
 2. **`OperationalError` em `init_connection_pool()` no boot, com os retries esgotados, é assinatura de limite/suspensão do provedor**, não de bug de código. Antes de qualquer patch, olhar o painel do Neon e o log real — a mensagem da tela vem redigida de propósito.
 3. **Incidente logo após um deploy nem sempre é causado por ele.** `git show` das mudanças recentes em 1 minuto descarta ou confirma; aqui as duas (pin do Streamlit + `@st.fragment`) não encostavam em banco.
 
+### 14-15/09/2026 — Aviso automático por webhook (`_alertar_dev_falha_banco`) tentado e revertido
+
+**O que foi tentado:** ligar o aviso da v20.1.3 a um bot do Telegram (`ALERTA_WEBHOOK_URL` = `https://api.telegram.org/bot<TOKEN>/sendMessage?chat_id=<ID>`). Como a Bot API do Telegram exige `chat_id` no corpo (o payload genérico `{"text":...}` usado por Teams/Slack/Discord não funciona), `_alertar_dev_falha_banco()` ganhou um ramo específico extraindo o `chat_id` da query string da URL.
+
+**Por que foi revertido (v20.2.0 → v20.2.1, mesmo dia):** o teste de ponta a ponta (POST direto pro token real) nunca pôde ser confirmado — a rede corporativa da MRS bloqueia `api.telegram.org` (página de bloqueio do **Netskope**, não erro do Telegram). Como o app roda no Streamlit Community Cloud (fora dessa rede), a chamada em produção provavelmente funcionaria, mas **não havia como confirmar isso sem esperar uma queda real**. Decisão do Julio: remover o aviso automático por completo — sem confirmação de que funciona, um aviso "silencioso" que pode nunca disparar é pior do que nenhum aviso (falsa sensação de estar coberto). Investigação volta a ser manual a cada queda (`Agente/09_APRENDIZADOS_E_ERROS.md` + painel do Neon).
+
+**O que ficou:** a tela de diagnóstico + botão "🔄 Tentar novamente" da v20.1.2/v20.1.3 (isso já resolvia o problema original — traceback cru pro técnico de campo) — só o POST pro webhook foi removido.
+
+**Aprendizado:**
+1. **Recurso "best-effort" sem confirmação de entrega é risco disfarçado de mitigação.** Um `try/except` que nunca levanta impede que a *falha do próprio alerta* apareça — sem teste de ponta a ponta, "parece configurado" e "está funcionando" são coisas diferentes, e a diferença só aparece no momento em que mais importa (o próximo incidente real).
+2. **Testar uma integração de rede saindo da própria rede corporativa não prova nada sobre o comportamento em produção (nuvem) — nem o contrário.** Bloqueio local (proxy/CASB) não significa bloqueio no destino real; só decide sem certeza mesmo, ou testa a partir de um ponto de rede equivalente ao de produção.
+
 ---
 
 ## Lições transversais (válidas pra qualquer mudança futura)

@@ -111,7 +111,6 @@ def init_connection_pool():
     raise RuntimeError("Falha ao inicializar o pool de conexões após todas as tentativas.")
 
 pool_conexoes = None
-_ALERTA_DEV_ULTIMO_ENVIO = 0.0  # epoch; segura o alerta pra não repetir a cada rerun
 
 def _diagnostico_falha_neon(texto_erro: str):
     """A partir do texto do erro do psycopg2, devolve (assunto, detalhe) legível.
@@ -138,59 +137,18 @@ def _diagnostico_falha_neon(texto_erro: str):
         "Pode também ser reinício ou manutenção do provedor.",
     )
 
-def _alertar_dev_falha_banco(assunto: str, detalhe: str) -> bool:
-    """Best-effort: avisa o desenvolvedor via webhook (Teams / Slack / Discord /
-    Power Automate — qualquer 'incoming webhook' que aceite POST JSON). Só dispara
-    se `st.secrets['ALERTA_WEBHOOK_URL']` estiver configurado, no máximo 1x a cada
-    30 min, e NUNCA levanta — uma falha aqui não pode piorar a tela de erro.
-    Devolve True só se o webhook respondeu 2xx."""
-    global _ALERTA_DEV_ULTIMO_ENVIO
-    try:
-        url = st.secrets.get("ALERTA_WEBHOOK_URL", "")
-    except Exception:
-        url = ""
-    if not url:
-        return False
-    agora = time.time()
-    if agora - _ALERTA_DEV_ULTIMO_ENVIO < 1800:
-        return False  # já avisou há menos de 30 min
-    msg = (
-        f"🚨 SGO Eletroeletronica MRS — {assunto}\n"
-        f"{detalhe}\n"
-        f"Painel: https://sgomrs.streamlit.app  ·  "
-        f"{time.strftime('%d/%m/%Y %H:%M', time.localtime(agora))}"
-    )
-    try:
-        if "api.telegram.org" in url:
-            # Telegram Bot API não aceita o payload genérico {"text":...} --
-            # exige "chat_id" no corpo. URL configurada no formato
-            # .../bot<TOKEN>/sendMessage?chat_id=<CHAT_ID>; extrai o chat_id
-            # da query string e reenvia como JSON. Sem parse_mode de
-            # propósito: o "detalhe" vem com **negrito** (Markdown do
-            # st.error), e o Markdown legado do Telegram não aceita
-            # "**" -- rejeitaria a mensagem inteira com 400 Bad Request.
-            from urllib.parse import urlsplit, parse_qs
-            partes = urlsplit(url)
-            chat_id = parse_qs(partes.query).get("chat_id", [None])[0]
-            url_base = f"{partes.scheme}://{partes.netloc}{partes.path}"
-            r = requests.post(url_base, json={"chat_id": chat_id, "text": msg}, timeout=5)
-        else:
-            # "text" cobre Teams/Slack/Power Automate; "content" cobre Discord.
-            r = requests.post(url, json={"text": msg, "content": msg}, timeout=5)
-        if 200 <= r.status_code < 300:
-            _ALERTA_DEV_ULTIMO_ENVIO = agora
-            return True
-    except Exception:
-        pass
-    return False
-
 def _abrir_pool_ou_tela_de_espera():
     """Chamada no topo do script. init_connection_pool() já tenta 10x/4s contra o
     Neon; se AINDA assim falhar (Neon suspenso por limite do plano Free, manutenção
     ou incidente -- mesma classe do incidente de 24/08/2026), mostra uma tela limpa
-    com o diagnóstico + botão de retry, aciona o desenvolvedor por webhook, e para
-    o script -- em vez de despejar o traceback do psycopg2 pro técnico de campo
-    (incidentes 08/09/2026). st.set_page_config já rodou na região 1.2."""
+    com o diagnóstico + botão de retry, e para o script -- em vez de despejar o
+    traceback do psycopg2 pro técnico de campo (incidentes 08/09/2026).
+    st.set_page_config já rodou na região 1.2.
+
+    Aviso automático por webhook (Telegram) tentado em 14-15/09/2026 e removido no
+    mesmo lote: a rede corporativa da MRS bloqueia api.telegram.org (Netskope), sem
+    como confirmar o envio de ponta a ponta; decisão do Julio foi voltar a investigar
+    manualmente cada queda em vez de manter um aviso automático não verificável."""
     global pool_conexoes
     try:
         pool_conexoes = init_connection_pool()
@@ -199,7 +157,6 @@ def _abrir_pool_ou_tela_de_espera():
         texto_erro = f"{type(e).__name__}: {e}"
         print(f"[BOOT] Pool de conexões Neon indisponível: {texto_erro}")
         assunto, detalhe = _diagnostico_falha_neon(str(e))
-        avisado = _alertar_dev_falha_banco(assunto, f"{detalhe}  (erro técnico: {texto_erro})")
 
         st.error(
             f"**{assunto}**\n\n"
@@ -210,10 +167,7 @@ def _abrir_pool_ou_tela_de_espera():
             "O **painel** só volta quando o banco for restabelecido. Aguarde cerca de "
             "1 minuto e toque em **Tentar novamente**."
         )
-        if avisado:
-            st.caption("✅ O desenvolvedor foi notificado automaticamente.")
-        else:
-            st.caption("⚠️ Avise a coordenação / o desenvolvedor (Julio).")
+        st.caption("⚠️ Avise a coordenação / o desenvolvedor (Julio).")
         if st.button("🔄 Tentar novamente", type="primary"):
             init_connection_pool.clear()  # limpa só o cache deste recurso, não o mapa
             st.rerun()
@@ -5114,7 +5068,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v20.2.0")
+st.sidebar.caption("SGO Eletroeletrônica • v20.2.1")
 st.sidebar.markdown(
     """
     <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">
