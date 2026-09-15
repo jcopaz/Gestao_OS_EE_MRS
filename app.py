@@ -161,8 +161,22 @@ def _alertar_dev_falha_banco(assunto: str, detalhe: str) -> bool:
         f"{time.strftime('%d/%m/%Y %H:%M', time.localtime(agora))}"
     )
     try:
-        # "text" cobre Teams/Slack/Power Automate; "content" cobre Discord.
-        r = requests.post(url, json={"text": msg, "content": msg}, timeout=5)
+        if "api.telegram.org" in url:
+            # Telegram Bot API não aceita o payload genérico {"text":...} --
+            # exige "chat_id" no corpo. URL configurada no formato
+            # .../bot<TOKEN>/sendMessage?chat_id=<CHAT_ID>; extrai o chat_id
+            # da query string e reenvia como JSON. Sem parse_mode de
+            # propósito: o "detalhe" vem com **negrito** (Markdown do
+            # st.error), e o Markdown legado do Telegram não aceita
+            # "**" -- rejeitaria a mensagem inteira com 400 Bad Request.
+            from urllib.parse import urlsplit, parse_qs
+            partes = urlsplit(url)
+            chat_id = parse_qs(partes.query).get("chat_id", [None])[0]
+            url_base = f"{partes.scheme}://{partes.netloc}{partes.path}"
+            r = requests.post(url_base, json={"chat_id": chat_id, "text": msg}, timeout=5)
+        else:
+            # "text" cobre Teams/Slack/Power Automate; "content" cobre Discord.
+            r = requests.post(url, json={"text": msg, "content": msg}, timeout=5)
         if 200 <= r.status_code < 300:
             _ALERTA_DEV_ULTIMO_ENVIO = agora
             return True
@@ -5100,7 +5114,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v20.1.3")
+st.sidebar.caption("SGO Eletroeletrônica • v20.2.0")
 st.sidebar.markdown(
     """
     <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">
