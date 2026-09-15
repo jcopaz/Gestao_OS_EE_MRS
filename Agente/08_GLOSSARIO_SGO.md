@@ -28,6 +28,7 @@
 | **Configurações Operacionais** | Tela admin (aba própria) para ajustar geofence, trava de prioridade, escopo de dados e ordem de critérios por coordenação, com vigência automática |
 | **Vigência (vigente_desde / vigente_ate)** | Janela de validade de um override de configuração — fora dela, volta ao padrão sozinho, sem cron |
 | **Rateio de HH** | Distribuição proporcional do tempo apontado entre OS baixadas juntas (mesmo horário), conforme o peso do HH planejado de cada uma |
+| **NRAV** (`ABER NRAV`) | Baixa administrativa de campo: ativo foi vistoriado, mas a atividade não pôde ser concluída (linha ocupada, chuva, falta de material etc. — ver `_JUSTIFICATIVAS_NRAV`). Conta como "Concluída" só para Meta/Dashboard e export SAP; continua "Aberta" para Roteirização/backlog. **Se vier herdado do Excel importado** (coluna `STATUS` crua de um ciclo anterior), **não é honrado** ao recarregar o plano — a OS volta a ser aberta comum, forçando reinspeção no ciclo vigente (decisão 15/09/2026, ver `05_PADROES_TECNICOS.md`) |
 
 ---
 

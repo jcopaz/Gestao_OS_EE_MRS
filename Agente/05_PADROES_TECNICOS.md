@@ -161,6 +161,14 @@ st.query_params.clear()
 - **Datas de programação/realização:** sempre parsear com `dayfirst=True`, mas **detectar strings ISO (`AAAA-MM-DD`) antes** e não inverter dia/mês nelas (`parse_data_programada`, sessão 3.1.3). Nunca usar `pd.to_datetime(..., dayfirst=True)` cego em coluna que pode ter vindo de CSV/ISO.
 - **SAP reaproveita o número de uma OS** quando ela é reprogramada em um novo ciclo. A tabela `baixas` é upsertada por `os` (chave única) — ao fazer overlay/merge de baixas com a base de OS programadas, **sempre validar que a baixa pertence ao ciclo vigente** (`realizado_em >= Data inicial programada` atual), senão uma baixa antiga (órfã) contamina a OS reprogramada e some do backlog (ver `aplicar_overlay_baixas`, sessão 5).
 
+### Padrão de Reingestão de Plano — Status `ABER NRAV` (decisão do Julio, 15/09/2026)
+
+- **Regra de negócio:** `ABER NRAV` na coluna `STATUS` crua do Excel importado (coluna G da Base de OS) **nunca é honrado** ao (re)carregar um plano — a OS entra como aberta comum (`Pendente`/`Atrasado`, conforme a data programada), igual a qualquer OS ainda não concluída.
+- **Por quê:** NRAV é sempre resultado de uma inspeção de campo de um **ciclo/mês anterior** (o ativo foi vistoriado, mas a atividade não pôde ser concluída — linha ocupada, desvio etc.). Se o plano novo ainda mostra `ABER NRAV`, é herança do ciclo passado, não confirmação de que já foi tratada agora. Deixar passar fazia a OS contar como "Concluída" em Meta/Dashboard (`_status_concluida_dashboard`) e sair no export SAP **sem nenhuma ação real neste período**.
+- **Onde:** `definir_status_cru()`, dentro de `tratar_df_os()` (ETL da Base de OS, sessão **5.1**, `app.py` ~4708). Reflete em toda a base sempre que ela é recarregada a partir de `os_programadas.dados_completos` (`carregar_base_sem_overlay`), não só no upload — mas na prática só muda quando um plano novo troca esse JSON.
+- **O que continua igual:** um NRAV lançado pelo **próprio técnico neste ciclo**, pelo app, passa por um caminho totalmente separado — grava em `baixas` (`status = 'ABER NRAV'`) e chega à tela via `aplicar_overlay_baixas()` (sessão 5), que sobrescreve o `Status da Operação` por cima do que a ETL calculou. Essa reingestão nunca apaga nem esconde um NRAV real do ciclo vigente.
+- **Fluxo esperado para o técnico:** a cada novo ciclo, uma OS que ficou NRAV no ciclo anterior volta pra fila de trabalho normal — ele reinspeciona o ativo e ou conclui (Realizado) ou lança NRAV de novo (agora referente a este ciclo).
+
 ---
 
 ## 🧮 Baixa em massa

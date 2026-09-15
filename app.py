@@ -4642,10 +4642,6 @@ def tratar_df_os(df: pd.DataFrame):
     col_hxh = pick_first_existing(df, ["HXH PLANO", "HXH_PLANO"])
     col_data_prog = pick_first_existing(df, ["DATA INICIAL PROGRAMADA", "DATA PROGRAMADA"])
     col_status = pick_first_existing(df, ["STATUS DA OPERAÇÃO", "STATUS", "STATUS_OPERACAO"])
-    # Coluna "STATUS" (crua, coluna G da Base de OS) carrega códigos como ABER/ABER NRAV/CONC.
-    # Em layouts que também têm "STATUS DA OPERAÇÃO" (sempre "Liberado" nesse formato), col_status
-    # acima resolve para essa coluna morta -- por isso lemos "STATUS" separadamente aqui.
-    col_status_raw = pick_first_existing(df, ["STATUS"])
     col_desc = pick_first_existing(df, ["DESCRIÇÃO LONGA", "DESCRICAO LONGA", "TEXTO LONGO"])
     # Cabeçalho real varia por coordenação ("ESPECIALIDADE IPA", "ESPECIALIDADE IPG", etc.) --
     # pega qualquer coluna que COMECE com "ESPECIALIDADE", em vez de exigir nome exato.
@@ -4708,12 +4704,19 @@ def tratar_df_os(df: pd.DataFrame):
 
     hoje_data = datetime.now().date()
     def definir_status_cru(row):
+        # ABER NRAV vindo da coluna "STATUS" crua do Excel (coluna G da Base de OS) NÃO é
+        # honrado aqui de propósito (decisão do Julio, 15/09/2026): esse valor é sempre
+        # herdado de uma inspeção de um ciclo/mês ANTERIOR (a OS "voltou" pendente) -- nunca
+        # reflete uma baixa NRAV deste ciclo, que chega por outro caminho (aplicar_overlay_baixas,
+        # sessão 5, a partir da tabela `baixas`) e sobrescreve normalmente por cima do que estiver
+        # aqui. Tratar como aberta comum força o técnico a reinspecionar o ativo neste ciclo, em
+        # vez de a OS continuar contando como "Concluída" em Meta/Dashboard (_status_concluida_
+        # dashboard) e saindo no export SAP sem ação real do período. Ver Agente/05_PADROES_
+        # TECNICOS.md ("Padrão de Reingestão de Plano — ABER NRAV").
         st_atual = str(row[col_status]).strip().upper() if pd.notna(row[col_status]) and col_status else ""
         if "REALIZADO" in st_atual:
             if "FORA" in st_atual or "ATRASO" in st_atual: return "Realizado Fora da Data de Programação"
             return "Realizado"
-        st_raw = str(row[col_status_raw]).strip().upper() if col_status_raw and pd.notna(row[col_status_raw]) else ""
-        if st_raw == "ABER NRAV": return "ABER NRAV"
         dp = row["DATA_PROG_CAN"]
         if pd.isna(dp): return "Pendente"
         if dp.date() >= hoje_data: return "Pendente"
@@ -5068,7 +5071,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v20.2.1")
+st.sidebar.caption("SGO Eletroeletrônica • v21.0.0")
 st.sidebar.markdown(
     """
     <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">
