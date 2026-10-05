@@ -1,0 +1,36 @@
+name: Migração de fotos Supabase -> R2
+
+# Migração única (05/10/2026) das evidências fotográficas do Supabase Storage
+# pro Cloudflare R2 -- ver storage_evidencias.py e migracao_r2/migrar_fotos_r2.py.
+# Roda aqui (e não no PC) porque a rede corporativa da MRS bloqueia a conexão
+# direta com o Neon (porta 5432). Disparo manual apenas, na ordem:
+#   copiar -> conferir -> (variáveis R2_* no Render/Streamlit) -> trocar-urls
+# reverter-urls = rollback (só antes de fotos novas irem pro R2).
+on:
+  workflow_dispatch:
+    inputs:
+      acao:
+        description: "Ação"
+        type: choice
+        options: [copiar, conferir, trocar-urls, reverter-urls]
+        default: conferir
+
+jobs:
+  migrar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install boto3 psycopg2-binary requests
+      - name: migrar_fotos_r2.py ${{ github.event.inputs.acao }}
+        env:
+          NEON_POSTGRES_URL: ${{ secrets.NEON_POSTGRES_URL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+        run: python migracao_r2/migrar_fotos_r2.py "${{ github.event.inputs.acao }}"

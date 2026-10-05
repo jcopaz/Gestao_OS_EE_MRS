@@ -17,6 +17,7 @@
 !.claude/
 !.vscode/
 !.github/
+!migracao_r2/
 
 # Configuracao local do Claude Code (permissoes por maquina/usuario) -- nao sobe
 .claude/settings.local.json
