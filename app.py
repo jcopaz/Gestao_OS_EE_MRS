@@ -577,6 +577,16 @@ def pick_first_existing(df: pd.DataFrame, candidates: list[str]) -> str | None:
     for c in candidates:
         if c in df.columns: return c
     return None
+
+def normalizar_numero_os(valor) -> str:
+    """Número de OS sempre como inteiro em texto: "23089830.0" -> "23089830".
+    Planilha com alguma célula vazia na coluna de OS é lida pelo pandas como float, e o
+    número ia pro banco com ".0" (incidente 04-05/10/2026) -- a mesma OS virava duas
+    chaves diferentes ("X" e "X.0") e não casava mais com baixas/evidências."""
+    texto = str(valor).strip()
+    if re.fullmatch(r"\d+\.0+", texto):
+        return texto.split(".", 1)[0]
+    return texto
 #endregion 3.1.1
 
 #region 3.1.2: Classificação de Atividades e Criticidade
@@ -810,7 +820,14 @@ def carregar_baixas_df() -> pd.DataFrame:
     finally: 
         release_connection(conn)
         
-    if not df.empty: df["os"] = df["os"].astype(str)
+    if not df.empty:
+        df["os"] = df["os"].map(normalizar_numero_os)
+        # "X" e "X.0" (baixas gravadas antes da normalização) viram a mesma OS -- fica a
+        # baixa mais recente; sem isso o merge por "Ordem servico" em aplicar_overlay_baixas
+        # duplicaria a linha da OS.
+        if df["os"].duplicated().any():
+            df["_dt_ord"] = pd.to_datetime(df["realizado_em"], dayfirst=True, errors="coerce")
+            df = df.sort_values("_dt_ord", na_position="first").drop_duplicates("os", keep="last").drop(columns="_dt_ord")
     return df
 #endregion
 
@@ -1482,9 +1499,11 @@ def render_tela_admin():
                         barra, registros_por_coord = st.progress(0, text="Preparando dados..."), {}
                         for idx, (_, row) in enumerate(df.iterrows()):
                             col_os_real = "Ordem servico" if "Ordem servico" in df.columns else df.columns[[str(c).upper() == "OS" for c in df.columns]][0]
-                            os_num, coord_linha = str(row[col_os_real]).strip(), row["_coord_auto"]
+                            os_num, coord_linha = normalizar_numero_os(row[col_os_real]), row["_coord_auto"]
                             if os_num and coord_linha:
-                                registros_por_coord.setdefault(coord_linha, []).append((os_num, mes_ref, coord_linha, json.dumps(row.drop(labels=["_coord_auto"], errors="ignore").to_dict(), default=lambda x: x.strftime('%d/%m/%Y') if isinstance(x, (pd.Timestamp, datetime)) else str(x))))
+                                _dados_linha = row.drop(labels=["_coord_auto"], errors="ignore").to_dict()
+                                _dados_linha[col_os_real] = os_num  # sem ".0" também no JSON (é de lá que a tela lê a OS)
+                                registros_por_coord.setdefault(coord_linha, []).append((os_num, mes_ref, coord_linha, json.dumps(_dados_linha, default=lambda x: x.strftime('%d/%m/%Y') if isinstance(x, (pd.Timestamp, datetime)) else str(x))))
                             if (idx + 1) % 200 == 0: barra.progress(min((idx + 1) / len(df), 0.5), text=f"Preparando... {idx + 1}/{len(df)} linhas")
 
                         barra.progress(0.5, text="Gravando no banco de dados...")
@@ -4770,7 +4789,7 @@ def tratar_df_os(df: pd.DataFrame):
     df["STATUS_CAN"] = df.apply(definir_status_cru, axis=1)
 
     df_out = pd.DataFrame({
-        "Ordem servico": df[col_os].astype(str).str.strip(),
+        "Ordem servico": df[col_os].map(normalizar_numero_os),
         "Patio": df["PATIO_CAN"], "Ativo": df["ATIVO_CAN"], "Atividade ativo": df["ATIVIDADE_CAN"],
         "Grupo_Ativo": df["GRUPO_ATIVO_CAN"],
         "Criticidade": df["Criticidade"], "Classificacao": df["Classificacao"], "Descrição Longa": df["DESC_LONGA_CAN"],
@@ -4809,6 +4828,18 @@ def carregar_base_sem_overlay(escopo_usuario: str, etl_version: str, lista_os_fi
     finally: release_connection(conn)
 
     if df_raw_db.empty: return pd.DataFrame()
+
+    # "X" (plano antigo) e "X.0" (upload com coluna de OS lida como float) são a MESMA OS --
+    # fica só a linha gravada por último (o plano mais recente), senão a OS aparece 2x
+    # na lista/pacote offline. Ver normalizar_numero_os.
+    df_raw_db["os"] = df_raw_db["os"].map(normalizar_numero_os)
+    if df_raw_db["os"].duplicated().any():
+        df_raw_db = (
+            df_raw_db.assign(_dt_ord=pd.to_datetime(df_raw_db["data_upload"], errors="coerce"))
+            .sort_values("_dt_ord", na_position="first")
+            .drop_duplicates("os", keep="last")
+            .drop(columns="_dt_ord")
+        )
 
     _mapa_depto_fallback = {"E.SP.IPA": "Paranapiacaba", "E.SP.IPG": "Piaçaguera"}
 
@@ -4867,7 +4898,7 @@ def carregar_base_sem_overlay(escopo_usuario: str, etl_version: str, lista_os_fi
     # pertence ao ciclo atual sem depender da "Data inicial programada" (que é a data-alvo
     # do serviço, não o momento de entrada do ciclo no sistema).
     _mapa_data_upload_ciclo = (
-        df_raw_db.assign(os=df_raw_db["os"].astype(str).str.strip())
+        df_raw_db.assign(os=df_raw_db["os"].map(normalizar_numero_os))
         .set_index("os")["data_upload"]
         .to_dict()
     )
@@ -4884,7 +4915,7 @@ def carregar_base_sem_overlay(escopo_usuario: str, etl_version: str, lista_os_fi
     # permitir filtrar a Visão Gerencial apenas pelas OS de uma planilha/ciclo específico,
     # independente do período de programação/execução selecionado nos filtros de data.
     _mapa_mes_referencia = (
-        df_raw_db.assign(os=df_raw_db["os"].astype(str).str.strip())
+        df_raw_db.assign(os=df_raw_db["os"].map(normalizar_numero_os))
         .set_index("os")["mes_referencia"]
         .to_dict()
     )
@@ -4996,9 +5027,11 @@ def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, bai
     except Exception:
         df_evid = pd.DataFrame()
     if not df_evid.empty and "os_referencia" in df_evid.columns:
+        # Normaliza ANTES do dedup: "X" e "X.0" são a mesma OS (ver normalizar_numero_os)
+        df_evid = df_evid.assign(os_referencia=df_evid["os_referencia"].map(normalizar_numero_os))
         df_evid = df_evid.drop_duplicates(subset=["os_referencia"], keep="last")
         df_evid = df_evid.rename(columns={"os_referencia": "_os_evid", "foto_url": "_foto_url_evid"})
-        df_base = df_base.merge(df_evid[["_os_evid", "_foto_url_evid"]].assign(_os_evid=lambda d: d["_os_evid"].astype(str).str.strip()),
+        df_base = df_base.merge(df_evid[["_os_evid", "_foto_url_evid"]],
                                  left_on="Ordem servico", right_on="_os_evid", how="left")
         df_base.drop(columns=["_os_evid"], inplace=True, errors="ignore")
     else:
@@ -5116,7 +5149,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v21.1.0")
+st.sidebar.caption("SGO Eletroeletrônica • v21.1.1")
 st.sidebar.markdown(
     """
     <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">
@@ -5806,7 +5839,7 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
             df_evidencias = carregar_evidencias_df()
             if not df_evidencias.empty and "OS" in df_lista.columns:
                 df_lista["OS_match"] = df_lista["OS"].astype(str).str.strip()
-                df_evidencias["os_ref_match"] = df_evidencias["os_referencia"].astype(str).str.strip()
+                df_evidencias["os_ref_match"] = df_evidencias["os_referencia"].map(normalizar_numero_os)
                 # Uma OS pode ter varias linhas em 'evidencias' (chave e ativo+atividade).
                 # Deduplica por OS antes do merge para NAO multiplicar linhas da lista (baixa duplicada).
                 df_evidencias = df_evidencias.drop_duplicates(subset=["os_ref_match"], keep="last")

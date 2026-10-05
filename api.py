@@ -409,6 +409,12 @@ async def sincronizar_baixa_offline(
     texto_confirmacao: str = Form(default=""),
     foto: UploadFile = File(...)
 ):
+    # OS sempre como inteiro em texto ("23089830.0" -> "23089830"), mesma regra de
+    # normalizar_numero_os em app.py -- pacote PWA gerado antes da correção ainda manda ".0".
+    os_id = str(os_id).strip()
+    if re.fullmatch(r"\d+\.0+", os_id):
+        os_id = os_id.split(".", 1)[0]
+
     # 1) Origem do GPS: SOMENTE o navegador (localizacao obrigatoria no app).
     #    Redundancia de leitura EXIF removida: o app agora exige a coleta do GPS
     #    (online e offline) antes de gravar a baixa, entao nao ha fallback por foto.
