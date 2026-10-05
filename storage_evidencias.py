@@ -32,12 +32,14 @@ _TIMEOUT = 30
 
 def _cfg(nome: str, padrao: str | None = None) -> str | None:
     """Variável de ambiente (Render) ou st.secrets (Streamlit Cloud)."""
-    valor = os.environ.get(nome)
+    # .strip(): segredo colado com Enter no final quebra o endpoint do R2
+    valor = (os.environ.get(nome) or "").strip()
     if valor:
         return valor
     try:
         import streamlit as st
-        return st.secrets.get(nome, padrao)
+        valor = st.secrets.get(nome, padrao)
+        return valor.strip() if isinstance(valor, str) else valor
     except Exception:
         return padrao
 

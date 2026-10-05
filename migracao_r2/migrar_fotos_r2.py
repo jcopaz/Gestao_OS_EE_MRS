@@ -28,10 +28,19 @@ import psycopg2
 import requests
 from botocore.exceptions import ClientError
 
-NEON_POSTGRES_URL = os.environ["NEON_POSTGRES_URL"]
-SUPABASE_URL = os.environ["SUPABASE_URL"].rstrip("/")
-R2_BUCKET = os.environ.get("R2_BUCKET", "evidencias")
-R2_PUBLIC_URL = os.environ["R2_PUBLIC_URL"].rstrip("/")
+def _env(nome: str, padrao: str | None = None) -> str:
+    # .strip(): segredo colado com Enter no final (GitHub/Render) quebrava o
+    # endpoint do R2 ("Invalid endpoint: https://<id>\n.r2.cloudflarestorage.com").
+    valor = os.environ.get(nome, padrao)
+    if valor is None:
+        sys.exit(f"Variável de ambiente {nome} não configurada.")
+    return valor.strip()
+
+
+NEON_POSTGRES_URL = _env("NEON_POSTGRES_URL")
+SUPABASE_URL = _env("SUPABASE_URL").rstrip("/")
+R2_BUCKET = _env("R2_BUCKET", "evidencias")
+R2_PUBLIC_URL = _env("R2_PUBLIC_URL").rstrip("/")
 
 PREFIXO_SUPABASE = f"{SUPABASE_URL}/storage/v1/object/public/evidencias/"
 PREFIXO_R2 = f"{R2_PUBLIC_URL}/"
@@ -41,9 +50,9 @@ COLUNAS_URL = [("evidencias", "foto_url"), ("baixas", "foto_evidencia")]
 
 r2 = boto3.client(
     "s3",
-    endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
-    aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
-    aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+    endpoint_url=f"https://{_env('R2_ACCOUNT_ID')}.r2.cloudflarestorage.com",
+    aws_access_key_id=_env("R2_ACCESS_KEY_ID"),
+    aws_secret_access_key=_env("R2_SECRET_ACCESS_KEY"),
     region_name="auto",
 )
 
