@@ -34,6 +34,8 @@ from datetime import datetime, timezone, timedelta
 from streamlit_calendar import calendar
 from psycopg2.extras import execute_values
 from psycopg2 import pool
+
+import storage_evidencias
 #endregion 1.1
 
 #region 1.2: Configurações Globais e Estilo Corporativo (Com Imagem)
@@ -824,10 +826,9 @@ def _sanear_nome_arquivo(texto: str) -> str:
 
 def upload_foto_supabase(arquivo_bytes: bytes, nome_arquivo: str) -> str:
     """Faz compressão com PIL antes de enviar ao Supabase e corrige a orientação (EXIF)."""
-    url_base = st.secrets["SUPABASE_URL"]
-    chave = st.secrets["SUPABASE_KEY"]
-    upload_url = f"{url_base}/storage/v1/object/evidencias/{nome_arquivo}"
-    
+    # Nome mantido por compatibilidade -- o destino real (Cloudflare R2 ou
+    # Supabase) é decidido em storage_evidencias.py.
+
     # Compressão Inteligente da Imagem e Correção de Orientação
     try:
         img = Image.open(io.BytesIO(arquivo_bytes))
@@ -843,13 +844,7 @@ def upload_foto_supabase(arquivo_bytes: bytes, nome_arquivo: str) -> str:
     except Exception:
         bytes_comprimidos = arquivo_bytes  # Fallback em caso de erro
 
-    headers = {
-        "Authorization": f"Bearer {chave}", "apikey": chave,
-        "Content-Type": "image/jpeg", "x-upsert": "true"
-    }
-    resp = requests.post(upload_url, headers=headers, data=bytes_comprimidos)
-    if resp.status_code in (200, 201): return f"{url_base}/storage/v1/object/public/evidencias/{nome_arquivo}"
-    else: raise Exception(f"Erro Supabase ({resp.status_code}): {resp.text}")
+    return storage_evidencias.enviar(bytes_comprimidos, nome_arquivo)
 
 def upsert_evidencia(ativo: str, atividade: str, foto_url: str, os_referencia: str, concluido_por: str, geolocalizacao: str):
     conn = get_connection()
@@ -1425,12 +1420,26 @@ def render_tela_admin():
     if tem_upload_dados:
     #region 3.8.1: Upload e Processamento de OS Programadas
         st.markdown("### 📥 Carga de OS Programadas")
-        col_up1, col_up2 = st.columns(2)
-        with col_up1: mes_ref = st.text_input("Mês de Referência (ex: Junho/2026)", placeholder="Mês/Ano")
+        # Mês/Ano por seleção (05/10/2026): era text_input livre e um "Outubeo/2026"
+        # digitado errado virou um Plano separado no filtro "Plano (Mês de Referência)".
+        # Formato gravado continua "Mês/AAAA" (ex.: "Outubro/2026"), igual às cargas antigas.
+        _meses_pt = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+                     "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
+        _hoje_br = datetime.now(timezone(timedelta(hours=-3)))
+        _anos = [_hoje_br.year - 1, _hoje_br.year, _hoje_br.year + 1]
+        col_up_mes, col_up_ano, col_up2 = st.columns([2, 1, 2])
+        with col_up_mes: _mes_sel = st.selectbox("Mês de Referência", _meses_pt, index=_hoje_br.month - 1, key="upload_os_mes")
+        with col_up_ano: _ano_sel = st.selectbox("Ano", _anos, index=1, key="upload_os_ano")
+        mes_ref = f"{_mes_sel}/{_ano_sel}"
         with col_up2: coord_upload_fallback = st.selectbox("Coordenação (fallback caso a planilha não informe)", ["Paranapiacaba", "Piaçaguera"])
 
         arquivo_upload = st.file_uploader("Selecione a planilha Excel ou CSV", type=["csv", "xlsx"], key="upload_os_prog")
         if arquivo_upload is not None and mes_ref:
+            st.caption(
+                f"♻️ Este upload **substitui** o plano **{mes_ref}** de cada coordenação presente na "
+                "planilha: OS desse plano que não estiverem no arquivo saem do plano (exceto as que já "
+                "têm baixa, que são mantidas). Suba o plano do mês **completo**, num arquivo só."
+            )
             if st.button("🚀 Processar e Salvar no Banco", use_container_width=True, type="primary"):
                 escopo_user = st.session_state.get("escopo", "Todas")
                 with st.spinner("Lendo e processando dados..."):
@@ -1486,10 +1495,46 @@ def render_tela_admin():
                             for i in range(0, len(todos_registros), 500):
                                 execute_values(cur, "INSERT INTO os_programadas (os, mes_referencia, coordenacao, dados_completos) VALUES %s ON CONFLICT (os) DO UPDATE SET mes_referencia = EXCLUDED.mes_referencia, coordenacao = EXCLUDED.coordenacao, dados_completos = EXCLUDED.dados_completos", todos_registros[i:i + 500], page_size=500)
                                 barra.progress(min(0.5 + (i + 500) / len(todos_registros) * 0.5, 1.0), text=f"Gravando... {min(i + 500, len(todos_registros))}/{len(todos_registros)} registros")
+
+                            # "Vale o último upload" (05/10/2026, incidente Outubeo/Outubro em
+                            # Paranapiacaba): o upload SUBSTITUI o plano mes_ref da coordenação --
+                            # antes só somava, e OS de uma carga anterior do mesmo mês que não
+                            # vinham na planilha nova ficavam no plano pra sempre. OS com baixa
+                            # nunca saem (é trabalho já executado). Mesma transação do INSERT:
+                            # se algo falhar, nada é removido.
+                            removidas, mantidas_baixa = 0, 0
+                            for coord_linha, regs in registros_por_coord.items():
+                                os_do_arquivo = [r[0] for r in regs]
+                                cur.execute(
+                                    """
+                                    DELETE FROM os_programadas op
+                                    WHERE op.coordenacao = %s
+                                      AND TRIM(op.mes_referencia) = %s
+                                      AND NOT (op.os = ANY(%s))
+                                      AND NOT EXISTS (SELECT 1 FROM baixas b WHERE TRIM(b.os) = TRIM(op.os))
+                                    """,
+                                    (coord_linha, mes_ref, os_do_arquivo),
+                                )
+                                removidas += cur.rowcount
+                                cur.execute(
+                                    """
+                                    SELECT COUNT(*) FROM os_programadas op
+                                    WHERE op.coordenacao = %s
+                                      AND TRIM(op.mes_referencia) = %s
+                                      AND NOT (op.os = ANY(%s))
+                                    """,
+                                    (coord_linha, mes_ref, os_do_arquivo),
+                                )
+                                mantidas_baixa += cur.fetchone()[0]
                             conn.commit(); cur.close()
                         finally: release_connection(conn)
 
-                        st.session_state["msg_upload_os"] = f"✅ Sucesso! {len(todos_registros)} OS processadas."
+                        _msg = f"✅ Sucesso! {len(todos_registros)} OS processadas."
+                        if removidas:
+                            _msg += f" {removidas} OS que não estavam na planilha saíram do plano {mes_ref}."
+                        if mantidas_baixa:
+                            _msg += f" {mantidas_baixa} OS fora da planilha foram mantidas no plano por já terem baixa."
+                        st.session_state["msg_upload_os"] = _msg
                         st.cache_data.clear(); st.rerun()
                     except Exception as e: st.error(f"❌ Erro ao processar o arquivo: {e}")
     #endregion 3.8.1
@@ -5071,7 +5116,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v21.0.0")
+st.sidebar.caption("SGO Eletroeletrônica • v21.1.0")
 st.sidebar.markdown(
     """
     <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">

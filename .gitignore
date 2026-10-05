@@ -4,6 +4,7 @@
 # Arquivos que SOBEM
 !app.py
 !api.py
+!storage_evidencias.py
 !requirements.txt
 !logo_mrs.png
 !malha_mrs.kml

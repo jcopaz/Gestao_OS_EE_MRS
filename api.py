@@ -26,12 +26,13 @@ from PIL import Image, ImageOps
 from PIL.ExifTags import TAGS, GPSTAGS
 import requests
 
+import storage_evidencias
+
 # ==============================================================================
 # CONFIGURAÇÕES DE AMBIENTE (PRODUÇÃO)
 # ==============================================================================
 NEON_POSTGRES_URL = os.environ.get("NEON_POSTGRES_URL")
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+# Storage das fotos (R2 ou Supabase): variáveis lidas em storage_evidencias.py
 API_KEY_SECRET = os.environ.get("API_KEY_SECRET")
 
 if not NEON_POSTGRES_URL:
@@ -171,9 +172,10 @@ def _sanear_nome_arquivo(texto: str) -> str:
     return re.sub(r"[^\w\-.]", "_", texto, flags=re.ASCII)
 
 def upload_foto_supabase(arquivo_bytes: bytes, nome_arquivo: str) -> str:
-    if not SUPABASE_URL or not SUPABASE_KEY:
+    # Nome mantido por compatibilidade -- o destino real (Cloudflare R2 ou
+    # Supabase) é decidido em storage_evidencias.py.
+    if not storage_evidencias.configurado():
         return ""
-    upload_url = f"{SUPABASE_URL}/storage/v1/object/evidencias/{nome_arquivo}"
     try:
         img = Image.open(io.BytesIO(arquivo_bytes))
         img = ImageOps.exif_transpose(img)
@@ -185,19 +187,11 @@ def upload_foto_supabase(arquivo_bytes: bytes, nome_arquivo: str) -> str:
         bytes_comprimidos = out.getvalue()
     except Exception:
         bytes_comprimidos = arquivo_bytes
-    headers = {
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "apikey": SUPABASE_KEY,
-        "Content-Type": "image/jpeg",
-        "x-upsert": "true"
-    }
     try:
-        resp = requests.post(upload_url, headers=headers, data=bytes_comprimidos, timeout=30)
-        if resp.status_code in (200, 201):
-            return f"{SUPABASE_URL}/storage/v1/object/public/evidencias/{nome_arquivo}"
-    except requests.RequestException:
-        pass
-    return ""
+        return storage_evidencias.enviar(bytes_comprimidos, nome_arquivo)
+    except Exception as e:
+        print(f"[STORAGE] Falha no upload de {nome_arquivo}: {e}")
+        return ""
 
 def upsert_evidencia(ativo: str, atividade: str, foto_url: str, os_referencia: str, concluido_por: str, geolocalizacao: str):
     conn = get_connection()
@@ -477,7 +471,10 @@ async def sincronizar_baixa_offline(
     geo_string = f"Offline Sync - {fonte_gps} (Lat: {lat_final:.6f}, Lon: {lon_final:.6f})"
 
     # 6) Upload ao Supabase e Gestão de Evidência
-    nome_foto = _sanear_nome_arquivo(f"{ativo_id}_OS{os_id}_{int(time.time())}.jpg")
+    # Nome fixo por OS (sem timestamp): reenvio da mesma baixa SOBRESCREVE a
+    # foto em vez de criar arquivo novo. Com timestamp, cada reenvio virava um
+    # órfão no bucket (~500 em out/2026) -- evidencias guarda 1 foto por OS.
+    nome_foto = _sanear_nome_arquivo(f"{ativo_id}_OS{os_id}.jpg")
     url_supabase = upload_foto_supabase(foto_bytes, nome_foto)
 
     if url_supabase:
@@ -555,7 +552,7 @@ async def limpar_evidencias_expiradas(
             WHERE ev.foto_url LIKE %s
             """,
             conn,
-            params=(f"{SUPABASE_URL}/storage/v1/object/public/evidencias/%",),
+            params=(f"{storage_evidencias.prefixo_url_publica()}%",),
         )
     finally:
         release_connection(conn)
@@ -576,28 +573,21 @@ async def limpar_evidencias_expiradas(
         if agora_naive < expira_em:
             continue  # ainda dentro da janela de retencao
 
-        nome_arquivo = str(row["foto_url"]).rsplit("/evidencias/", 1)[-1]
+        nome_arquivo = storage_evidencias.nome_da_url(row["foto_url"])
         candidatas.append({"os": row["os_referencia"], "arquivo": nome_arquivo, "expirou_em": str(expira_em)})
 
         if not dry_run:
             try:
-                resp = requests.delete(
-                    f"{SUPABASE_URL}/storage/v1/object/evidencias/{nome_arquivo}",
-                    headers={"Authorization": f"Bearer {SUPABASE_KEY}", "apikey": SUPABASE_KEY},
-                    timeout=30,
-                )
-                if resp.status_code in (200, 204):
-                    conn2 = get_connection()
-                    try:
-                        cur = conn2.cursor()
-                        cur.execute("UPDATE evidencias SET foto_url = '' WHERE id = %s", (int(row["id"]),))
-                        conn2.commit()
-                        cur.close()
-                    finally:
-                        release_connection(conn2)
-                    apagadas.append(row["os_referencia"])
-                else:
-                    erros.append(f"OS {row['os_referencia']}: Supabase {resp.status_code} - {resp.text}")
+                storage_evidencias.apagar(nome_arquivo)
+                conn2 = get_connection()
+                try:
+                    cur = conn2.cursor()
+                    cur.execute("UPDATE evidencias SET foto_url = '' WHERE id = %s", (int(row["id"]),))
+                    conn2.commit()
+                    cur.close()
+                finally:
+                    release_connection(conn2)
+                apagadas.append(row["os_referencia"])
             except Exception as e:
                 erros.append(f"OS {row['os_referencia']}: {e}")
 
@@ -643,13 +633,13 @@ async def limpar_evidencias_orfas(
         df_ref = pd.read_sql_query(
             "SELECT foto_url, os_referencia FROM evidencias WHERE foto_url LIKE %s",
             conn,
-            params=(f"{SUPABASE_URL}/storage/v1/object/public/evidencias/%",),
+            params=(f"{storage_evidencias.prefixo_url_publica()}%",),
         )
     finally:
         release_connection(conn)
 
     arquivos_referenciados = set(
-        df_ref["foto_url"].astype(str).apply(lambda u: u.rsplit("/evidencias/", 1)[-1])
+        df_ref["foto_url"].astype(str).apply(storage_evidencias.nome_da_url)
     )
     # OS que ja tem QUALQUER evidencia hoje (mesmo que aponte pra outro arquivo) --
     # decide se um orfao foi substituido com seguranca ou e risco real.
@@ -663,24 +653,7 @@ async def limpar_evidencias_orfas(
         df_ref["foto_url"].astype(str),
     ))
 
-    todos_arquivos = []
-    offset = 0
-    pagina_tam = 1000
-    while True:
-        resp_list = requests.post(
-            f"{SUPABASE_URL}/storage/v1/object/list/evidencias",
-            headers={"Authorization": f"Bearer {SUPABASE_KEY}", "apikey": SUPABASE_KEY},
-            json={"prefix": "", "limit": pagina_tam, "offset": offset, "sortBy": {"column": "name", "order": "asc"}},
-            timeout=30,
-        )
-        resp_list.raise_for_status()
-        pagina = resp_list.json()
-        if not pagina:
-            break
-        todos_arquivos.extend(pagina)
-        if len(pagina) < pagina_tam:
-            break
-        offset += pagina_tam
+    todos_arquivos = storage_evidencias.listar()
 
     agora_utc = datetime.now(timezone.utc)
     # Sem exigir "_" depois do numero: revisao manual da amostra em 27/07/2026
@@ -724,15 +697,8 @@ async def limpar_evidencias_orfas(
         for item in seguro_apagar:
             nome = item["arquivo_orfao"]
             try:
-                resp_del = requests.delete(
-                    f"{SUPABASE_URL}/storage/v1/object/evidencias/{nome}",
-                    headers={"Authorization": f"Bearer {SUPABASE_KEY}", "apikey": SUPABASE_KEY},
-                    timeout=30,
-                )
-                if resp_del.status_code in (200, 204):
-                    apagadas.append(nome)
-                else:
-                    erros.append(f"{nome}: Supabase {resp_del.status_code} - {resp_del.text}")
+                storage_evidencias.apagar(nome)
+                apagadas.append(nome)
             except Exception as e:
                 erros.append(f"{nome}: {e}")
 
