@@ -126,14 +126,36 @@ def copiar() -> None:
         sys.exit("Rode 'copiar' de novo -- ele retoma só o que faltou.")
 
 
+def existe_no_supabase(nome: str) -> bool | None:
+    """True/False = existe ou não na origem; None = não deu pra saber (timeout etc.)."""
+    try:
+        resp = requests.head(PREFIXO_SUPABASE + nome, timeout=60)
+    except requests.RequestException:
+        return None
+    if resp.status_code == 200:
+        return True
+    if resp.status_code in (400, 404):  # Supabase responde 400 pra objeto inexistente
+        return False
+    return None
+
+
 def conferir() -> bool:
     nomes = nomes_referenciados(PREFIXO_SUPABASE) | nomes_referenciados(PREFIXO_R2)
     with ThreadPoolExecutor(max_workers=16) as pool:
         faltando = [n for n, ok in zip(nomes, pool.map(existe_no_r2, nomes)) if not ok]
-    print(f"{len(nomes)} fotos referenciadas | faltando no R2: {len(faltando)}")
-    for n in faltando[:50]:
+        origem = list(pool.map(existe_no_supabase, faltando))
+    # Foto que o Neon referencia mas que JÁ não existia no Supabase (link quebrado
+    # antes da migração, ex.: convenção de nome antiga) não tem como ser copiada --
+    # não bloqueia a virada; a URL continua quebrada, igual a hoje.
+    quebradas = [n for n, o in zip(faltando, origem) if o is False]
+    pendentes = [n for n, o in zip(faltando, origem) if o is not False]
+    print(f"{len(nomes)} fotos referenciadas | faltando no R2: {len(pendentes)} | "
+          f"já quebradas na origem (ignoradas): {len(quebradas)}")
+    for n in quebradas[:50]:
+        print("  QUEBRADA NA ORIGEM", n)
+    for n in pendentes[:50]:
         print("  FALTA", n)
-    return not faltando
+    return not pendentes
 
 
 def trocar(de: str, para: str) -> None:
