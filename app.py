@@ -1454,8 +1454,9 @@ def render_tela_admin():
         if arquivo_upload is not None and mes_ref:
             st.caption(
                 f"♻️ Este upload **substitui** o plano **{mes_ref}** de cada coordenação presente na "
-                "planilha: OS desse plano que não estiverem no arquivo saem do plano (exceto as que já "
-                "têm baixa, que são mantidas). Suba o plano do mês **completo**, num arquivo só."
+                "planilha: OS desse plano que não estiverem no arquivo saem do plano, exceto as já "
+                f"baixadas a partir de 01/{_meses_pt.index(_mes_sel) + 1:02d}/{_ano_sel}. Suba o plano "
+                "do mês **completo**, num arquivo só."
             )
             if st.button("🚀 Processar e Salvar no Banco", use_container_width=True, type="primary"):
                 escopo_user = st.session_state.get("escopo", "Todas")
@@ -1518,21 +1519,33 @@ def render_tela_admin():
                             # "Vale o último upload" (05/10/2026, incidente Outubeo/Outubro em
                             # Paranapiacaba): o upload SUBSTITUI o plano mes_ref da coordenação --
                             # antes só somava, e OS de uma carga anterior do mesmo mês que não
-                            # vinham na planilha nova ficavam no plano pra sempre. OS com baixa
-                            # nunca saem (é trabalho já executado). Mesma transação do INSERT:
-                            # se algo falhar, nada é removido.
+                            # vinham na planilha nova ficavam no plano pra sempre. Mesma transação
+                            # do INSERT: se algo falhar, nada é removido.
+                            # 06/10/2026 (Julio): só segura no plano a OS fora do arquivo que teve
+                            # baixa NESTE ciclo (realizado_em a partir do dia 1º do mês de
+                            # referência) -- trabalho já executado no mês, com foto/evidência,
+                            # continua aparecendo. Antes valia baixa de QUALQUER ciclo e, como as
+                            # OS se repetem entre ciclos, baixas de jul/ago seguravam 1.298 OS fora
+                            # do último upload no plano de Outubro/Paranapiacaba (só 2 eram do mês).
+                            # Tabelas baixas/evidencias nunca são tocadas.
+                            _inicio_ciclo = datetime(int(_ano_sel), _meses_pt.index(_mes_sel) + 1, 1).date()
                             removidas, mantidas_baixa = 0, 0
                             for coord_linha, regs in registros_por_coord.items():
                                 os_do_arquivo = [r[0] for r in regs]
                                 cur.execute(
-                                    """
+                                    r"""
                                     DELETE FROM os_programadas op
                                     WHERE op.coordenacao = %s
                                       AND TRIM(op.mes_referencia) = %s
                                       AND NOT (op.os = ANY(%s))
-                                      AND NOT EXISTS (SELECT 1 FROM baixas b WHERE TRIM(b.os) = TRIM(op.os))
+                                      AND NOT EXISTS (
+                                          SELECT 1 FROM baixas b
+                                          WHERE TRIM(b.os) = TRIM(op.os)
+                                            AND b.realizado_em ~ '^\d{2}/\d{2}/\d{4}'
+                                            AND TO_DATE(LEFT(b.realizado_em, 10), 'DD/MM/YYYY') >= %s
+                                      )
                                     """,
-                                    (coord_linha, mes_ref, os_do_arquivo),
+                                    (coord_linha, mes_ref, os_do_arquivo, _inicio_ciclo),
                                 )
                                 removidas += cur.rowcount
                                 cur.execute(
@@ -1552,7 +1565,7 @@ def render_tela_admin():
                         if removidas:
                             _msg += f" {removidas} OS que não estavam na planilha saíram do plano {mes_ref}."
                         if mantidas_baixa:
-                            _msg += f" {mantidas_baixa} OS fora da planilha foram mantidas no plano por já terem baixa."
+                            _msg += f" {mantidas_baixa} OS fora da planilha foram mantidas por já terem baixa neste ciclo."
                         st.session_state["msg_upload_os"] = _msg
                         st.cache_data.clear(); st.rerun()
                     except Exception as e: st.error(f"❌ Erro ao processar o arquivo: {e}")
@@ -5149,7 +5162,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v21.1.1")
+st.sidebar.caption("SGO Eletroeletrônica • v21.1.2")
 st.sidebar.markdown(
     """
     <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">
