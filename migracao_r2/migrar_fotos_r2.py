@@ -26,6 +26,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import boto3
 import psycopg2
 import requests
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 def _env(nome: str, padrao: str | None = None) -> str:
@@ -54,6 +55,10 @@ r2 = boto3.client(
     aws_access_key_id=_env("R2_ACCESS_KEY_ID"),
     aws_secret_access_key=_env("R2_SECRET_ACCESS_KEY"),
     region_name="auto",
+    # 1ª execução estourou 1h: pool padrão (10) < 16 threads e sem timeout de
+    # leitura uma chamada travada segurava a thread indefinidamente.
+    config=Config(max_pool_connections=32, connect_timeout=15, read_timeout=60,
+                  retries={"max_attempts": 3, "mode": "standard"}),
 )
 
 
@@ -103,8 +108,8 @@ def copiar() -> None:
                     copiadas += 1
             except Exception as e:
                 erros.append(f"{futuros[fut]}: {e}")
-            if i % 500 == 0:
-                print(f"  {i}/{len(nomes)}...")
+            if i % 250 == 0:
+                print(f"  {i}/{len(nomes)} processadas -- copiadas agora: {copiadas}, erros: {len(erros)}")
     print(f"Copiadas agora: {copiadas} | já estavam no R2: {len(nomes) - copiadas - len(erros)} | erros: {len(erros)}")
     for e in erros[:50]:
         print("  ERRO", e)
