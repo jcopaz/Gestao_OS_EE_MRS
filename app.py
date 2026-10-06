@@ -578,6 +578,19 @@ def pick_first_existing(df: pd.DataFrame, candidates: list[str]) -> str | None:
         if c in df.columns: return c
     return None
 
+_MESES_PT_IDX = {m: i for i, m in enumerate(
+    ["JANEIRO", "FEVEREIRO", "MARCO", "ABRIL", "MAIO", "JUNHO",
+     "JULHO", "AGOSTO", "SETEMBRO", "OUTUBRO", "NOVEMBRO", "DEZEMBRO"], start=1)}
+
+def _inicio_mes_referencia(mes_ref):
+    """"Outubro/2026" -> Timestamp(2026-10-01); qualquer outra coisa -> NaT."""
+    try:
+        mes_txt, ano_txt = str(mes_ref).strip().split("/")
+        mes = _MESES_PT_IDX.get(mes_txt.strip().upper().replace("Ç", "C"))
+        return pd.Timestamp(int(ano_txt), mes, 1) if mes else pd.NaT
+    except Exception:
+        return pd.NaT
+
 def normalizar_numero_os(valor) -> str:
     """Número de OS sempre como inteiro em texto: "23089830.0" -> "23089830".
     Planilha com alguma célula vazia na coluna de OS é lida pelo pandas como float, e o
@@ -4995,6 +5008,16 @@ def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, bai
         _dt_upload_ciclo = pd.to_datetime(df_base["_data_upload_ciclo"], errors="coerce")
     else:
         _dt_upload_ciclo = pd.Series(pd.NaT, index=df_base.index)
+    # Início do ciclo = o que vier PRIMEIRO entre data_upload e o dia 1º do mês do plano
+    # (06/10/2026): plano de Outubro subido em 06/10 com OS executadas em 01/10 -- a baixa
+    # retroativa (gravada normalmente, date_input só bloqueia data futura) era tratada como
+    # "de ciclo anterior" e a OS seguia pendente. Baixa de setembro continua não valendo
+    # pro plano de outubro (a proteção contra OS reaproveitada entre ciclos se mantém).
+    if "Plano_Mes_Referencia" in df_base.columns:
+        if getattr(_dt_upload_ciclo.dt, "tz", None) is not None:
+            _dt_upload_ciclo = _dt_upload_ciclo.dt.tz_localize(None)
+        _inicio_mes_plano = df_base["Plano_Mes_Referencia"].map(_inicio_mes_referencia)
+        _dt_upload_ciclo = pd.concat([_dt_upload_ciclo, pd.to_datetime(_inicio_mes_plano, errors="coerce")], axis=1).min(axis=1)
     _dt_realizado_baixa = df_base["Data/Hora Realizado_baixado"].apply(parse_datahora_realizado)  # pyright: ignore[reportCallIssue, reportArgumentType]
     # Baixa é válida quando: tem data de realização E (não há timestamp de importação do ciclo atual
     # para comparar OU a baixa ocorreu depois que o ciclo vigente foi importado do SAP). Usamos
@@ -5162,7 +5185,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v21.1.2")
+st.sidebar.caption("SGO Eletroeletrônica • v21.1.3")
 st.sidebar.markdown(
     """
     <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">
