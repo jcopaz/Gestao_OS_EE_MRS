@@ -24,6 +24,7 @@
 # ==============================================================================
 
 import os
+import re
 
 import requests
 
@@ -45,6 +46,12 @@ def _cfg(nome: str, padrao: str | None = None) -> str | None:
 
 
 R2_ACCOUNT_ID = _cfg("R2_ACCOUNT_ID")
+# Aceita só o Account ID ou o endpoint inteiro colado na variável
+# ("https://<id>.r2.cloudflarestorage.com") -- fica só o ID de 32 hex.
+if R2_ACCOUNT_ID:
+    _m = re.search(r"[0-9a-f]{32}", R2_ACCOUNT_ID)
+    if _m:
+        R2_ACCOUNT_ID = _m.group(0)
 R2_ACCESS_KEY_ID = _cfg("R2_ACCESS_KEY_ID")
 R2_SECRET_ACCESS_KEY = _cfg("R2_SECRET_ACCESS_KEY")
 R2_BUCKET = _cfg("R2_BUCKET", "evidencias")

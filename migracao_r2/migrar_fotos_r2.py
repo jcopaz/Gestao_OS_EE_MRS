@@ -20,6 +20,7 @@
 # ==============================================================================
 
 import os
+import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -38,6 +39,14 @@ def _env(nome: str, padrao: str | None = None) -> str:
     return valor.strip()
 
 
+def _account_id() -> str:
+    # Aceita só o Account ID ou o endpoint inteiro colado no segredo
+    # ("https://<id>.r2.cloudflarestorage.com" virava "https://https:/<id>...").
+    valor = _env("R2_ACCOUNT_ID")
+    m = re.search(r"[0-9a-f]{32}", valor)
+    return m.group(0) if m else valor
+
+
 NEON_POSTGRES_URL = _env("NEON_POSTGRES_URL")
 SUPABASE_URL = _env("SUPABASE_URL").rstrip("/")
 R2_BUCKET = _env("R2_BUCKET", "evidencias")
@@ -51,7 +60,7 @@ COLUNAS_URL = [("evidencias", "foto_url"), ("baixas", "foto_evidencia")]
 
 r2 = boto3.client(
     "s3",
-    endpoint_url=f"https://{_env('R2_ACCOUNT_ID')}.r2.cloudflarestorage.com",
+    endpoint_url=f"https://{_account_id()}.r2.cloudflarestorage.com",
     aws_access_key_id=_env("R2_ACCESS_KEY_ID"),
     aws_secret_access_key=_env("R2_SECRET_ACCESS_KEY"),
     region_name="auto",
