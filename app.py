@@ -2431,6 +2431,8 @@ def render_tela_admin():
         return
     st.markdown("---")
     st.subheader("📥 Baixa Manual — NAPL")
+    if "msg_napl_resultado" in st.session_state:
+        st.success(st.session_state.pop("msg_napl_resultado"))
 
     with st.expander("📋 Formato da planilha exigido (colunas + exemplo de linha)", expanded=False):
         st.markdown(
@@ -2595,6 +2597,31 @@ def render_tela_admin():
                             )
                             mapa_coord_napl = {str(os_): coord for os_, coord in cur.fetchall()}
 
+                            # Classifica ANTES de gravar o que já existe em baixas pra cada OS --
+                            # o resultado do upsert não diz quais linhas o WHERE pulou, e a
+                            # mensagem antiga contava a planilha inteira como "processada".
+                            cur.execute(
+                                """
+                                SELECT TRIM(b.os), COALESCE(b.status, ''), COALESCE(b.geolocalizacao_baixa, ''),
+                                       (COALESCE(b.foto_evidencia, '') <> '' OR EXISTS (
+                                           SELECT 1 FROM evidencias ev
+                                           WHERE TRIM(CAST(ev.os_referencia AS TEXT)) = TRIM(b.os)))
+                                FROM baixas b WHERE TRIM(b.os) = ANY(%s)
+                                """,
+                                ([r["os"] for r in lista_napl_final],),
+                            )
+                            _geo_admin_napl = {"", "Baixa IW47", "Importação IW47", "Baixa Manual", "Baixa NAPL Manual"}
+                            napl_sobre_nrav, napl_sobre_admin, napl_bloqueadas = 0, 0, []
+                            _existentes_napl = cur.fetchall()
+                            for _os_b, _status_b, _geo_b, _tem_foto_b in _existentes_napl:
+                                if "NRAV" in _status_b.upper():
+                                    napl_sobre_nrav += 1
+                                elif _geo_b in _geo_admin_napl and not _tem_foto_b:
+                                    napl_sobre_admin += 1
+                                else:
+                                    napl_bloqueadas.append(_os_b)
+                            napl_novas = len(lista_napl_final) - len(_existentes_napl)
+
                             agora_napl = datetime.now()
                             lote_napl = []
                             for r in lista_napl_final:
@@ -2631,13 +2658,20 @@ def render_tela_admin():
                                     texto_confirmacao = EXCLUDED.texto_confirmacao,
                                     atualizado_em = EXCLUDED.atualizado_em
                                 WHERE
-                                    COALESCE(baixas.foto_evidencia, '') = ''
-                                    AND COALESCE(baixas.geolocalizacao_baixa, '') IN (
-                                        '', 'Baixa IW47', 'Importação IW47', 'Baixa Manual', 'Baixa NAPL Manual'
-                                    )
-                                    AND NOT EXISTS (
-                                        SELECT 1 FROM evidencias ev
-                                        WHERE TRIM(CAST(ev.os_referencia AS TEXT)) = TRIM(CAST(EXCLUDED.os AS TEXT))
+                                    -- 07/10/2026 (Julio): NAPL (ativo inativado/remodelado, lançada
+                                    -- só pelo admin) substitui NRAV de campo -- a foto/GPS do técnico
+                                    -- continua em evidencias. Conclusão de campo "Realizado" com
+                                    -- foto/GPS segue protegida (listada como bloqueada na tela).
+                                    COALESCE(baixas.status, '') ILIKE '%%NRAV%%'
+                                    OR (
+                                        COALESCE(baixas.foto_evidencia, '') = ''
+                                        AND COALESCE(baixas.geolocalizacao_baixa, '') IN (
+                                            '', 'Baixa IW47', 'Importação IW47', 'Baixa Manual', 'Baixa NAPL Manual'
+                                        )
+                                        AND NOT EXISTS (
+                                            SELECT 1 FROM evidencias ev
+                                            WHERE TRIM(CAST(ev.os_referencia AS TEXT)) = TRIM(CAST(EXCLUDED.os AS TEXT))
+                                        )
                                     );
                                 """,
                                 lote_napl,
@@ -2653,7 +2687,14 @@ def render_tela_admin():
                         finally:
                             release_connection(conn)
 
-                        st.success(f"✅ {len(lote_napl)} OS processada(s) como Baixa NAPL Manual.")
+                        st.session_state["msg_napl_resultado"] = (
+                            f"✅ Baixa NAPL: {napl_novas} nova(s), {napl_sobre_nrav} substituindo NRAV, "
+                            f"{napl_sobre_admin} substituindo baixa administrativa (IW47/Manual/NAPL anterior)."
+                            + (f" ⚠️ {len(napl_bloqueadas)} NÃO gravada(s) -- já têm conclusão de campo com "
+                               f"foto/GPS: {', '.join(napl_bloqueadas[:50])}"
+                               + (" ..." if len(napl_bloqueadas) > 50 else "")
+                               if napl_bloqueadas else "")
+                        )
                         st.cache_data.clear()
                         st.rerun()
     #endregion 3.8.6
@@ -5035,7 +5076,11 @@ def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, bai
     # já são protegidas contra sobrescrita pelo IW47 por uma trava separada no INSERT (upsert_baixa
     # só atualiza se ainda não houver foto/evidência/geolocalização real registrada para a OS).
     _geo_baixado = df_base.get("Geolocalização de Baixa_baixado", pd.Series("", index=df_base.index)).astype(str).str.strip()
-    _baixa_administrativa = _geo_baixado.isin({"Baixa IW47", "Importação IW47", "Baixa Manual"})
+    # "Baixa NAPL Manual" incluída em 07/10/2026: estava fora desta lista (mas dentro da
+    # equivalente em 1.267) -- NAPL lançada em ago/set (ativo inativado/pátio remodelado)
+    # era descartada como "ciclo anterior" e a OS voltava pendente no plano de outubro.
+    # NAPL de ativo inativado vale pra qualquer ciclo em que a OS reaparecer.
+    _baixa_administrativa = _geo_baixado.isin({"Baixa IW47", "Importação IW47", "Baixa Manual", "Baixa NAPL Manual"})
     baixa_do_ciclo_atual = _dt_realizado_baixa.notna() & (
         _baixa_administrativa
         | _dt_upload_ciclo.isna()
@@ -5185,7 +5230,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v21.1.3")
+st.sidebar.caption("SGO Eletroeletrônica • v21.1.4")
 st.sidebar.markdown(
     """
     <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">
