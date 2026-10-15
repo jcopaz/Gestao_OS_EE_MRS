@@ -15,6 +15,7 @@ import re
 import os
 import hashlib
 import json
+import threading  # lock dos caches incrementais de baixas/evidencias (regiões 3.2/3.3, 15/10/2026)
 import psycopg2
 import requests
 import streamlit as st
@@ -189,7 +190,12 @@ def get_connection():
         return conn
     except (psycopg2.OperationalError, psycopg2.InterfaceError, AttributeError):
         print("🔄 Conexão perdida ou inválida. Recriando conexão com o banco...")
-        st.cache_resource.clear()
+        # 15/10/2026: era st.cache_resource.clear() -- limpava TODOS os cache_resource do
+        # processo, inclusive o estado dos caches incrementais de baixas/evidencias (regiões
+        # 3.2/3.3) e o flag do init_db. O Neon suspende a conexão após ~5 min ocioso, então
+        # isso acontecia várias vezes por dia e cada vez forçava releitura completa das
+        # tabelas (egress). Só o pool precisa ser recriado.
+        init_connection_pool.clear()
         pool_conexoes = init_connection_pool()
         return pool_conexoes.getconn()
 
@@ -322,6 +328,18 @@ def init_db():
         try: cur.execute("ALTER TABLE os_programadas ADD COLUMN IF NOT EXISTS coordenacao VARCHAR(100);")
         except Exception: conn.rollback()
 
+        # atualizado_em em os_programadas (15/10/2026, redução de egress do Neon): o upsert do
+        # upload (região 3.8.1) não mexe em data_upload, então COUNT/MAX(data_upload) não
+        # enxergavam um plano re-subido com o mesmo conjunto de OS. Com esta coluna (setada
+        # no DO UPDATE), a impressão digital da região 7.2 detecta qualquer mudança e a base
+        # (JSON pesado, ~15 MB por leitura) só é relida quando de fato mudou.
+        # commit logo em seguida: um rollback() de bloco mais abaixo desfaria este ALTER
+        # (mesma transação) e o upsert do upload passaria a falhar por coluna inexistente.
+        try:
+            cur.execute("ALTER TABLE os_programadas ADD COLUMN IF NOT EXISTS atualizado_em TIMESTAMP DEFAULT NOW();")
+            conn.commit()
+        except Exception: conn.rollback()
+
         try:
             # UNIQUE(ativo, atividade) fazia a foto de uma OS sobrescrever a de outra sempre que
             # duas execucoes caiam no mesmo ativo+atividade (comum em inspecoes recorrentes, e
@@ -371,6 +389,23 @@ def init_db():
             # de coluna nova acima.
             cur.execute("ALTER TABLE baixas ALTER COLUMN texto_confirmacao TYPE VARCHAR(40);")
         except Exception: conn.rollback()
+
+        # Índices das colunas da impressão digital / delta (revisão 15/10/2026): a query da região
+        # 7.2 roda a cada rerun (MAX de cada tabela) e o delta filtra por essas colunas -- sem
+        # índice era varredura completa das 3 tabelas a cada clique (compute do Neon, que estourou
+        # em 10/10). Tabelas pequenas (<40 mil linhas): CREATE INDEX normal é rápido; CONCURRENTLY
+        # não pode rodar dentro de transação. Fica DEPOIS dos ALTERs que criam baixas.atualizado_em
+        # e os_programadas.atualizado_em; um índice por vez, com commit, pra falha de um não
+        # desfazer os outros.
+        for _sql_idx in (
+            "CREATE INDEX IF NOT EXISTS idx_baixas_atualizado_em ON baixas (atualizado_em);",
+            "CREATE INDEX IF NOT EXISTS idx_evidencias_data_upload ON evidencias (data_upload);",
+            "CREATE INDEX IF NOT EXISTS idx_os_programadas_atualizado_em ON os_programadas (atualizado_em);",
+        ):
+            try:
+                cur.execute(_sql_idx)
+                conn.commit()
+            except Exception: conn.rollback()
         
         # Criar o admin mestre se não existir
         cur.execute("SELECT COUNT(*) FROM usuarios")
@@ -382,12 +417,31 @@ def init_db():
             
         conn.commit()
         cur.close()
+        return True
     except Exception as e:
         import logging
         logging.warning(f"[init_db] Erro na inicialização do banco: {e}")
+        return False
     finally:
         if conn is not None: release_connection(conn)
-init_db()
+
+# init_db() 1x por processo (15/10/2026): antes rodava a cada rerun de cada usuário --
+# ~20 DDLs + o DELETE self-join em evidencias, tudo contra o Neon a cada clique (compute e
+# rede à toa: a estrutura só muda quando sobe código novo, e todo deploy reinicia o
+# processo). cache_resource sem argumento = 1 entrada só por processo. Se init_db falhar
+# (Neon acordando), "ok" fica False e o próximo rerun tenta de novo -- igual a antes.
+@st.cache_resource(show_spinner=False)
+def _estado_init_db() -> dict:
+    return {"ok": False, "lock": threading.Lock()}
+
+def _init_db_uma_vez():
+    _est = _estado_init_db()
+    if _est["ok"]: return
+    with _est["lock"]:
+        if not _est["ok"]:
+            _est["ok"] = bool(init_db())
+
+_init_db_uma_vez()
 #endregion 1.4
 
 #region 1.5: Inicialização Centralizada do Session State
@@ -819,20 +873,57 @@ def upsert_baixa(os_id: str, status: str, realizado_em_str: str, coordenacao: st
         cur.close()
     finally: release_connection(conn)
 
-def carregar_baixas_df() -> pd.DataFrame:
-    conn = get_connection()
-    try: 
-        # CORREÇÃO: Adicionamos a foto_evidencia na leitura do Neon!
-        df = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, foto_evidencia FROM baixas", conn)
+#region 3.2.1: Cache incremental compartilhado de baixas (redução de egress, 15/10/2026)
+# Medição de 15/10/2026: ~820 MB/dia de egress do Neon (plano Free). A tabela baixas inteira
+# (~3,7 MB, 35 mil linhas) era relida a cada mudança da impressão digital -- ou seja, a cada
+# baixa de qualquer técnico -- e de novo pela Governança. Agora o processo guarda UMA cópia
+# (cache_resource sem argumento = 1 entrada, compartilhada entre sessões) e, quando a
+# impressão digital (região 7.2) muda, puxa só as linhas com atualizado_em recente (delta).
+# Carga completa só no boot, a cada 6 h, se o COUNT cair ou se o delta ficar inconsistente.
+# Regras: o DataFrame publicado nunca é mutado (troca de referência) e quem lê recebe .copy().
+_COLS_BAIXAS = ("os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, foto_evidencia, "
+                "equipe, data_inicio, hora_inicio, data_fim, hora_fim, atualizado_em")
+# Fallback caso foto_evidencia não exista em algum ambiente (mesmo fallback que carregar_baixas_df já tinha)
+_COLS_BAIXAS_SEM_FOTO = ("os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, "
+                         "equipe, data_inicio, hora_inicio, data_fim, hora_fim, atualizado_em")
+# Colunas que o overlay usa (o que carregar_baixas_df sempre devolveu). A versão normalizada
+# guarda só estas -- a cópia com as 13 colunas dobrava a RAM do estado à toa.
+_COLS_BAIXAS_OVERLAY = ["os", "status", "realizado_em", "coordenacao", "concluido_por", "geolocalizacao_baixa", "foto_evidencia"]
+_CACHE_INCR_FULL_S = 6 * 3600          # recarga completa de segurança
+_CACHE_INCR_FOLGA = pd.Timedelta(minutes=10)  # NOW() = início da transação: folga p/ commit lento
+_CACHE_INCR_ESPERA_FRIA_S = 60         # carga fria: quanto uma sessão espera outra terminar a 1ª leitura
+_STATEMENT_TIMEOUT_S = 30              # teto de cada query de carga/delta (não segura lock pra sempre)
+
+def _definir_statement_timeout(conn, segundos: int = _STATEMENT_TIMEOUT_S):
+    """SET LOCAL statement_timeout na transação corrente da conexão (vale só até o commit/
+    rollback -- release_connection faz rollback, então não vaza pra próxima sessão do pool).
+    Revisão 15/10/2026: com o Neon lento, a carga de baixas/evidencias/os_programadas não
+    pode ficar pendurada indefinidamente."""
+    try:
+        cur = conn.cursor()
+        cur.execute(f"SET LOCAL statement_timeout = '{int(segundos)}s'")
+        cur.close()
     except Exception:
-        # Fallback caso a coluna ainda não exista em algum ambiente. Sem o rollback, a
-        # transacao seguia ABORTADA depois do erro acima -- essa segunda query tambem
-        # falharia ("current transaction is aborted"), estourando pra fora da funcao.
         conn.rollback()
-        df = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa FROM baixas", conn)
-    finally: 
-        release_connection(conn)
-        
+
+def _tamanho_mb(df) -> float:
+    try: return float(df.memory_usage(deep=True).sum()) / 1e6
+    except Exception: return -1.0
+
+def _parse_ts_digital(valor):
+    """MAX(...)::text da impressão digital -> Timestamp (ou None se vazio/ilegível)."""
+    if valor is None or str(valor).strip() == "": return None
+    ts = pd.to_datetime(str(valor), errors="coerce")
+    return None if pd.isna(ts) else ts
+
+@st.cache_resource(show_spinner=False)
+def _estado_cache_baixas() -> dict:
+    return {"lock": threading.Lock(), "df_raw": None, "df_norm": None, "fp": None, "ultimo": None,
+            "completa_em": 0.0, "versao": "", "seq": 0, "cols": _COLS_BAIXAS}
+
+def _normalizar_baixas(df: pd.DataFrame) -> pd.DataFrame:
+    # Mesma normalização/dedup que carregar_baixas_df fazia a cada leitura (agora 1x por versão).
+    df = df[[c for c in _COLS_BAIXAS_OVERLAY if c in df.columns]].copy()
     if not df.empty:
         df["os"] = df["os"].map(normalizar_numero_os)
         # "X" e "X.0" (baixas gravadas antes da normalização) viram a mesma OS -- fica a
@@ -842,6 +933,126 @@ def carregar_baixas_df() -> pd.DataFrame:
             df["_dt_ord"] = pd.to_datetime(df["realizado_em"], dayfirst=True, errors="coerce")
             df = df.sort_values("_dt_ord", na_position="first").drop_duplicates("os", keep="last").drop(columns="_dt_ord")
     return df
+
+def _ler_baixas_sql(est: dict, desde=None) -> pd.DataFrame:
+    conn = get_connection()
+    try:
+        _where = " WHERE atualizado_em >= %s" if desde is not None else ""
+        _params = (desde.to_pydatetime(),) if desde is not None else None
+        _definir_statement_timeout(conn)
+        try:
+            return pd.read_sql_query(f"SELECT {est['cols']} FROM baixas{_where}", conn, params=_params)
+        except Exception:
+            # Fallback caso a coluna foto_evidencia ainda não exista em algum ambiente. Sem o
+            # rollback, a transacao seguia ABORTADA depois do erro acima -- essa segunda query
+            # tambem falharia ("current transaction is aborted").
+            if est["cols"] == _COLS_BAIXAS_SEM_FOTO: raise
+            conn.rollback()
+            est["cols"] = _COLS_BAIXAS_SEM_FOTO
+            _definir_statement_timeout(conn)  # o rollback desfez o SET LOCAL
+            return pd.read_sql_query(f"SELECT {est['cols']} FROM baixas{_where}", conn, params=_params)
+    finally:
+        release_connection(conn)
+
+def _publicar_baixas(est: dict, df_raw: pd.DataFrame, fp, modo: str):
+    # df_norm antes de df_raw: obter_baixas_df lê sem lock e usa df_raw como "já carregou".
+    est["df_norm"] = _normalizar_baixas(df_raw)
+    est["df_raw"] = df_raw
+    est["fp"] = fp
+    est["seq"] += 1
+    _fp_txt = f"{fp[0]}_{fp[1]}" if fp else "sem_digital"
+    est["versao"] = f"{_fp_txt}#{est['seq']}"
+    print(f"[EGRESS] baixas {modo} linhas={len(df_raw)} mem_raw={_tamanho_mb(df_raw):.1f}MB "
+          f"mem_norm={_tamanho_mb(est['df_norm']):.1f}MB versao={est['versao']}")
+
+def sincronizar_baixas(fp_count=None, fp_max=None) -> str:
+    """Atualiza o cache compartilhado de baixas conforme a impressão digital (COUNT, MAX
+    (atualizado_em)::text) lida na região 7.2 e devolve a versão dos dados. fp_count=None
+    (impressão digital indisponível) = não consulta o banco se já houver dado."""
+    est = _estado_cache_baixas()
+    fp = (int(fp_count), str(fp_max or "")) if fp_count is not None else None
+    # Lock NÃO bloqueante quando já há dado (revisão 15/10/2026): antes o lock ficava
+    # preso durante a query no Neon e, com o banco lento, TODAS as sessões esperavam.
+    # Agora, se outra sessão já está sincronizando, esta segue com a versão atual (dado
+    # no máximo um rerun atrasado). Só a carga fria (sem nada em memória) espera, até
+    # 60 s -- estourou = banco indisponível (exceção, tratada na região 7.2).
+    if est["df_raw"] is not None:
+        if fp is None:
+            return est["versao"]
+        if not est["lock"].acquire(blocking=False):
+            return est["versao"]
+    elif not est["lock"].acquire(timeout=_CACHE_INCR_ESPERA_FRIA_S):
+        raise TimeoutError("baixas: carga inicial em andamento há mais de {} s".format(_CACHE_INCR_ESPERA_FRIA_S))
+    try:
+        return _sincronizar_baixas_com_lock(est, fp)
+    finally:
+        est["lock"].release()
+
+def _sincronizar_baixas_com_lock(est: dict, fp) -> str:
+    # Corpo da sincronização; chamado só com est["lock"] adquirido.
+    tem_dado = est["df_raw"] is not None
+    if tem_dado and fp is None:
+        return est["versao"]
+    vencida = (time.monotonic() - est["completa_em"]) > _CACHE_INCR_FULL_S
+    if tem_dado and not vencida and fp == est["fp"]:
+        return est["versao"]  # nada mudou: zero query
+
+    precisa_completa = (not tem_dado) or vencida or est["ultimo"] is None or (
+        fp is not None and est["fp"] is not None and fp[0] < est["fp"][0])
+    if not precisa_completa:
+        try:
+            delta = _ler_baixas_sql(est, desde=est["ultimo"] - _CACHE_INCR_FOLGA)
+            antigo = est["df_raw"]
+            novo = pd.concat([antigo[~antigo["os"].isin(delta["os"])], delta], ignore_index=True) if not delta.empty else antigo
+            if fp is not None and len(novo) < fp[0]:
+                # Linha que entrou com atualizado_em "velho" (transação longa) escapou do delta.
+                print(f"[EGRESS] baixas delta inconsistente ({len(novo)} < COUNT {fp[0]}) -> carga completa")
+                precisa_completa = True
+            else:
+                if not delta.empty:
+                    _publicar_baixas(est, novo, fp, f"delta(+{len(delta)})")
+                else:
+                    est["fp"] = fp  # só a digital mudou de texto; dado igual, versão mantida
+                _ult = _parse_ts_digital(fp[1]) if fp else None
+                if _ult is not None: est["ultimo"] = _ult
+                return est["versao"]
+        except Exception as e:
+            # Mantém o dado antigo e NÃO avança "ultimo"/"fp": o próximo rerun tenta de novo.
+            print(f"[EGRESS] baixas delta falhou, mantendo cache anterior: {type(e).__name__}: {e}")
+            return est["versao"]
+
+    try:
+        df_full = _ler_baixas_sql(est)
+    except Exception as e:
+        if tem_dado:
+            print(f"[EGRESS] baixas carga completa falhou, mantendo cache anterior: {type(e).__name__}: {e}")
+            return est["versao"]
+        raise  # sem nenhum dado em memória: mesmo comportamento de antes (erro sobe)
+    _publicar_baixas(est, df_full, fp, "full")
+    est["completa_em"] = time.monotonic()
+    _ult = _parse_ts_digital(fp[1]) if fp else None
+    if _ult is None and "atualizado_em" in df_full.columns and not df_full.empty:
+        _mx = pd.to_datetime(df_full["atualizado_em"], errors="coerce").max()
+        _ult = None if pd.isna(_mx) else _mx
+    est["ultimo"] = _ult
+    return est["versao"]
+
+def obter_baixas_df(normalizado: bool = True) -> pd.DataFrame:
+    """Sem rede (a não ser na 1ª chamada do processo): devolve CÓPIA do cache de baixas.
+    normalizado=True -> OS normalizada + dedup "X"/"X.0", só as colunas do overlay (o que
+    carregar_baixas_df devolvia); False -> linhas cruas, todas as colunas (Governança)."""
+    est = _estado_cache_baixas()
+    df = est["df_norm"] if normalizado else est["df_raw"]
+    if df is None:
+        sincronizar_baixas()
+        df = est["df_norm"] if normalizado else est["df_raw"]
+    return df.copy()
+
+def carregar_baixas_df() -> pd.DataFrame:
+    # Mesmo nome/colunas de antes (os, status, realizado_em, coordenacao, concluido_por,
+    # geolocalizacao_baixa, foto_evidencia), mas lendo do cache incremental (região 3.2.1).
+    return obter_baixas_df(normalizado=True)
+#endregion 3.2.1
 #endregion
 
 #region 3.3: Storage Cloudflare R2 (Evidências Fotográficas com Compressão)
@@ -893,15 +1104,130 @@ def upsert_evidencia(ativo: str, atividade: str, foto_url: str, os_referencia: s
         cur.close()
     finally: release_connection(conn)
 
-@st.cache_data(show_spinner=False, ttl=300)
-def carregar_evidencias_df() -> pd.DataFrame:
-    # Cache adicionado em 22/07/2026 -- plano Neon Free (Network transfer perto do teto de
-    # 5GB/mes). Sem cache, essa tabela inteira era relida do banco a cada rerun da Lista
-    # Detalhada de OS. TTL curto (5min) pra não deixar link de evidência muito desatualizado.
+# Cache incremental compartilhado de evidencias (15/10/2026) -- mesmo padrão de baixas
+# (região 3.2.1). Antes: @st.cache_data(ttl=300) relia a tabela inteira a cada 5 min,
+# ~6 MB por leitura, dos quais ~4 MB eram 8 fotos antigas gravadas em base64 dentro de
+# foto_url (fallback emergencial removido em 15/10). O SQL agora troca qualquer "data:..."
+# pelo marcador 'data:embutida': continua não vazio (filtro "Com/Sem Evidência" da sidebar,
+# região 3.6, conta igual) e a Lista Detalhada (10.1b) só mostra link quando começa com
+# "http" -- base64 nunca virava link. ativo/atividade saíram do SELECT: nenhum leitor usa
+# depois do merge. Chave do merge do delta = id (os_referencia pode ser NULL e repetir).
+# Sem timestamp nos casos UPDATE foto_url='' (retenção, api.py) e DELETEs (init_db): a
+# impressão digital pega por COUNT e COUNT-com-foto -> carga completa.
+_SQL_EVIDENCIAS = ("SELECT id, os_referencia, data_upload, "
+                   "CASE WHEN LEFT(foto_url, 5) = 'data:' THEN 'data:embutida' ELSE foto_url END AS foto_url "
+                   "FROM evidencias")
+
+@st.cache_resource(show_spinner=False)
+def _estado_cache_evidencias() -> dict:
+    return {"lock": threading.Lock(), "df": None, "fp": None, "ultimo": None,
+            "completa_em": 0.0, "versao": "", "seq": 0}
+
+def _contar_com_foto(df: pd.DataFrame) -> int:
+    if df is None or df.empty or "foto_url" not in df.columns: return 0
+    return int((df["foto_url"].notna() & (df["foto_url"].astype(str) != "")).sum())
+
+def _ler_evidencias_sql(desde=None) -> pd.DataFrame:
     conn = get_connection()
-    try: df = pd.read_sql_query("SELECT ativo, atividade, foto_url, os_referencia, data_upload FROM evidencias", conn)
-    finally: release_connection(conn)
-    return df
+    try:
+        _definir_statement_timeout(conn)
+        if desde is not None:
+            return pd.read_sql_query(_SQL_EVIDENCIAS + " WHERE data_upload >= %s", conn, params=(desde.to_pydatetime(),))
+        return pd.read_sql_query(_SQL_EVIDENCIAS, conn)
+    finally:
+        release_connection(conn)
+
+def _publicar_evidencias(est: dict, df: pd.DataFrame, fp, modo: str):
+    est["df"] = df
+    est["fp"] = fp
+    est["seq"] += 1
+    _fp_txt = f"{fp[0]}_{fp[1]}_{fp[2]}" if fp else "sem_digital"
+    est["versao"] = f"{_fp_txt}#{est['seq']}"
+    print(f"[EGRESS] evidencias {modo} linhas={len(df)} mem={_tamanho_mb(df):.1f}MB versao={est['versao']}")
+
+def sincronizar_evidencias(fp_count=None, fp_max=None, fp_com_foto=None) -> str:
+    """Mesmo contrato de sincronizar_baixas; impressão digital = (COUNT, MAX(data_upload)::text,
+    COUNT com foto_url não vazia)."""
+    est = _estado_cache_evidencias()
+    fp = (int(fp_count), str(fp_max or ""), int(fp_com_foto or 0)) if fp_count is not None else None
+    # Lock NÃO bloqueante quando já há dado (revisão 15/10/2026): antes o lock ficava
+    # preso durante a query no Neon e, com o banco lento, TODAS as sessões esperavam.
+    # Agora, se outra sessão já está sincronizando, esta segue com a versão atual (dado
+    # no máximo um rerun atrasado). Só a carga fria (sem nada em memória) espera, até
+    # 60 s -- estourou = banco indisponível (exceção, tratada na região 7.2).
+    if est["df"] is not None:
+        if fp is None:
+            return est["versao"]
+        if not est["lock"].acquire(blocking=False):
+            return est["versao"]
+    elif not est["lock"].acquire(timeout=_CACHE_INCR_ESPERA_FRIA_S):
+        raise TimeoutError("evidencias: carga inicial em andamento há mais de {} s".format(_CACHE_INCR_ESPERA_FRIA_S))
+    try:
+        return _sincronizar_evidencias_com_lock(est, fp)
+    finally:
+        est["lock"].release()
+
+def _sincronizar_evidencias_com_lock(est: dict, fp) -> str:
+    # Corpo da sincronização; chamado só com est["lock"] adquirido.
+    tem_dado = est["df"] is not None
+    if tem_dado and fp is None:
+        return est["versao"]
+    vencida = (time.monotonic() - est["completa_em"]) > _CACHE_INCR_FULL_S
+    if tem_dado and not vencida and fp == est["fp"]:
+        return est["versao"]
+
+    precisa_completa = (not tem_dado) or vencida or est["ultimo"] is None or (
+        fp is not None and est["fp"] is not None and (fp[0] < est["fp"][0] or fp[2] < est["fp"][2]))
+    if not precisa_completa:
+        try:
+            delta = _ler_evidencias_sql(desde=est["ultimo"] - _CACHE_INCR_FOLGA)
+            antigo = est["df"]
+            novo = pd.concat([antigo[~antigo["id"].isin(delta["id"])], delta], ignore_index=True) if not delta.empty else antigo
+            if fp is not None and (len(novo) < fp[0] or _contar_com_foto(novo) > fp[2]):
+                # Linha que escapou do delta, ou foto apagada sem mexer em data_upload.
+                print(f"[EGRESS] evidencias delta inconsistente (linhas {len(novo)}/{fp[0]}, "
+                      f"com foto {_contar_com_foto(novo)}/{fp[2]}) -> carga completa")
+                precisa_completa = True
+            else:
+                if not delta.empty:
+                    _publicar_evidencias(est, novo, fp, f"delta(+{len(delta)})")
+                else:
+                    est["fp"] = fp
+                _ult = _parse_ts_digital(fp[1]) if fp else None
+                if _ult is not None: est["ultimo"] = _ult
+                return est["versao"]
+        except Exception as e:
+            print(f"[EGRESS] evidencias delta falhou, mantendo cache anterior: {type(e).__name__}: {e}")
+            return est["versao"]
+
+    try:
+        df_full = _ler_evidencias_sql()
+    except Exception as e:
+        if tem_dado:
+            print(f"[EGRESS] evidencias carga completa falhou, mantendo cache anterior: {type(e).__name__}: {e}")
+            return est["versao"]
+        raise
+    _publicar_evidencias(est, df_full, fp, "full")
+    est["completa_em"] = time.monotonic()
+    _ult = _parse_ts_digital(fp[1]) if fp else None
+    if _ult is None and not df_full.empty:
+        _mx = pd.to_datetime(df_full["data_upload"], errors="coerce").max()
+        _ult = None if pd.isna(_mx) else _mx
+    est["ultimo"] = _ult
+    return est["versao"]
+
+def obter_evidencias_df() -> pd.DataFrame:
+    est = _estado_cache_evidencias()
+    df = est["df"]
+    if df is None:
+        sincronizar_evidencias()
+        df = est["df"]
+    return df.copy()
+
+def carregar_evidencias_df() -> pd.DataFrame:
+    # Mesmo nome de antes; agora sem rede (cache incremental acima). Devolve CÓPIA -- a Lista
+    # Detalhada (10.1b) adiciona coluna no DataFrame recebido.
+    return obter_evidencias_df()[["foto_url", "os_referencia", "data_upload"]].copy()
 
 @st.cache_data(show_spinner=False, ttl=600)
 def carregar_mapeamento_patios() -> dict:
@@ -1527,8 +1853,12 @@ def render_tela_admin():
                         try:
                             cur = conn.cursor()
                             todos_registros = [r for regs in registros_por_coord.values() for r in regs]
+                            # atualizado_em = NOW() no DO UPDATE (15/10/2026): é o que a impressão
+                            # digital da região 7.2 usa pra saber que a base mudou (INSERT novo já
+                            # pega o DEFAULT NOW()). O DELETE abaixo é na mesma transação: ou o
+                            # COUNT cai ou o MAX(atualizado_em) sobe.
                             for i in range(0, len(todos_registros), 500):
-                                execute_values(cur, "INSERT INTO os_programadas (os, mes_referencia, coordenacao, dados_completos) VALUES %s ON CONFLICT (os) DO UPDATE SET mes_referencia = EXCLUDED.mes_referencia, coordenacao = EXCLUDED.coordenacao, dados_completos = EXCLUDED.dados_completos", todos_registros[i:i + 500], page_size=500)
+                                execute_values(cur, "INSERT INTO os_programadas (os, mes_referencia, coordenacao, dados_completos) VALUES %s ON CONFLICT (os) DO UPDATE SET mes_referencia = EXCLUDED.mes_referencia, coordenacao = EXCLUDED.coordenacao, dados_completos = EXCLUDED.dados_completos, atualizado_em = NOW()", todos_registros[i:i + 500], page_size=500)
                                 barra.progress(min(0.5 + (i + 500) / len(todos_registros) * 0.5, 1.0), text=f"Gravando... {min(i + 500, len(todos_registros))}/{len(todos_registros)} registros")
 
                             # "Vale o último upload" (05/10/2026, incidente Outubeo/Outubro em
@@ -2372,7 +2702,11 @@ def render_tela_admin():
                             data_inicio = EXCLUDED.data_inicio,
                             hora_inicio = EXCLUDED.hora_inicio,
                             data_fim = EXCLUDED.data_fim,
-                            hora_fim = EXCLUDED.hora_fim
+                            hora_fim = EXCLUDED.hora_fim,
+                            -- 15/10/2026: sem isto, OS re-baixada pela IW47 não mudava
+                            -- MAX(atualizado_em) e o cache incremental de baixas (3.2.1)
+                            -- nunca puxava a linha atualizada (INSERT novo já usa o DEFAULT NOW()).
+                            atualizado_em = NOW()
                         WHERE
                             COALESCE(baixas.foto_evidencia, '') = ''
                             AND COALESCE(baixas.geolocalizacao_baixa, '') IN (
@@ -2414,7 +2748,11 @@ def render_tela_admin():
                     "OS com evidência/foto/GPS operacional foram preservadas pela trava SQL."
                 )
 
-                st.cache_data.clear()
+                # 15/10/2026: era st.cache_data.clear() global -- jogava fora também a base de OS
+                # (os_programadas, ~15 MB de JSON relidos do Neon) que a IW47 não altera. A baixa
+                # nova chega pelo cache incremental (3.2.1) quando a impressão digital muda; aqui
+                # só descarta o overlay já montado.
+                aplicar_overlay_baixas.clear()
                 st.rerun()
 
             except Exception as e:
@@ -2624,7 +2962,11 @@ def render_tela_admin():
                                     napl_bloqueadas.append(_os_b)
                             napl_novas = len(lista_napl_final) - len(_existentes_napl)
 
-                            agora_napl = datetime.now()
+                            # atualizado_em agora sai do relógio do BANCO (DEFAULT NOW() no INSERT,
+                            # NOW() no DO UPDATE) -- antes era datetime.now() do Python (15/10/2026).
+                            # O cache incremental de baixas (3.2.1) compara com MAX(atualizado_em)
+                            # do banco; relógio/fuso diferente do servidor do app podia deixar a
+                            # linha fora da janela do delta.
                             lote_napl = []
                             for r in lista_napl_final:
                                 coordenacao_napl = mapa_coord_napl.get(r["os"], coord_baixa_napl_fallback)
@@ -2633,7 +2975,7 @@ def render_tela_admin():
                                     r["os"], "Realizado", realizado_em_napl, coordenacao_napl, r["matricula"],
                                     "Baixa NAPL Manual", "Sozinho",
                                     r["data_txt"], r["hora_txt"], r["data_txt"], r["hora_txt"],
-                                    r["causa"], r["texto"], agora_napl,
+                                    r["causa"], r["texto"],
                                 ))
 
                             execute_values(
@@ -2642,7 +2984,7 @@ def render_tela_admin():
                                 INSERT INTO baixas (
                                     os, status, realizado_em, coordenacao, concluido_por,
                                     geolocalizacao_baixa, equipe, data_inicio, hora_inicio,
-                                    data_fim, hora_fim, causa_nrav, texto_confirmacao, atualizado_em
+                                    data_fim, hora_fim, causa_nrav, texto_confirmacao
                                 )
                                 VALUES %s
                                 ON CONFLICT (os) DO UPDATE SET
@@ -2658,7 +3000,7 @@ def render_tela_admin():
                                     hora_fim = EXCLUDED.hora_fim,
                                     causa_nrav = EXCLUDED.causa_nrav,
                                     texto_confirmacao = EXCLUDED.texto_confirmacao,
-                                    atualizado_em = EXCLUDED.atualizado_em
+                                    atualizado_em = NOW()
                                 WHERE
                                     -- 07/10/2026 (Julio): NAPL (ativo inativado/remodelado, lançada
                                     -- só pelo admin) substitui NRAV de campo -- a foto/GPS do técnico
@@ -2697,7 +3039,9 @@ def render_tela_admin():
                                + (" ..." if len(napl_bloqueadas) > 50 else "")
                                if napl_bloqueadas else "")
                         )
-                        st.cache_data.clear()
+                        # Só o overlay (15/10/2026) -- mesmo motivo da IW47 (3.8.5): NAPL não mexe
+                        # em os_programadas, e o cache global derrubado relia ~15 MB do Neon.
+                        aplicar_overlay_baixas.clear()
                         st.rerun()
     #endregion 3.8.6
 
@@ -4927,33 +5271,20 @@ def tratar_df_os(df: pd.DataFrame):
     })
     return df_out
 
-# ttl/max_entries adicionados em 21/08/2026 -- app caiu por estouro de memoria no
-# Streamlit Cloud (sgomrs.streamlit.app). Sem limite, cada combinacao nova de
-# escopo_usuario/etl_version/lista_os_filtro (ex.: cada exportacao SAP por periodo, que
-# varia a lista de OS) ficava para sempre na RAM do processo, sem nunca liberar a
-# entrada anterior -- e essa base inclui a coluna dados_completos (JSONB), a mais pesada.
-# ttl elevado pra 1800s em 24/08/2026 -- app caiu de novo, agora por estouro do limite
-# do plano Neon Free (rede/compute). Essa e a unica funcao cacheada aqui que de fato
-# consulta o Neon (as demais operam em cima do DataFrame ja carregado); ttl curto forcava
-# reconsulta da base inteira (com o JSONB pesado) a cada 10min mesmo sem dado novo.
-# max_entries continua sendo quem prende a memoria (nao depende do ttl), entao subir o
-# ttl reduz consulta ao Neon sem voltar a arriscar o estouro de RAM original.
-@st.cache_data(ttl=1800, max_entries=16)
-def carregar_base_sem_overlay(escopo_usuario: str, etl_version: str, lista_os_filtro: tuple | None = None) -> pd.DataFrame:
-    conn = get_connection()
-    try:
-        # lista_os_filtro (opcional): restringe a consulta a um conjunto pequeno de OS --
-        # usado pela Exportação SAP por período (região 3.8.4) pra não puxar dados_completos
-        # (JSONB, o que mais pesa em transferência) da base inteira a cada exportação.
-        if lista_os_filtro:
-            placeholders = ",".join(["%s"] * len(lista_os_filtro))
-            query_prog = f"SELECT os, coordenacao, dados_completos, data_upload, mes_referencia FROM os_programadas WHERE os IN ({placeholders})"
-            df_raw_db = pd.read_sql_query(query_prog, conn, params=tuple(lista_os_filtro))
-        else:
-            df_raw_db = pd.read_sql_query("SELECT os, coordenacao, dados_completos, data_upload, mes_referencia FROM os_programadas", conn)
-    except Exception: df_raw_db = pd.DataFrame()
-    finally: release_connection(conn)
+# Normalização de nome de coordenação usada no ETL e no recorte por escopo (antes era um
+# dict local de carregar_base_sem_overlay; virou constante em 15/10/2026 porque o recorte
+# por escopo agora é feito fora do ETL, em _recortar_base_escopo).
+_MAPA_NORM_COORD_BASE = {
+    "PARANAPIACABA": "Paranapiacaba", "PIAÇAGUERA": "Piaçaguera", "PIACAGUERA": "Piaçaguera",
+    "IPG": "Piaçaguera", "IPA": "Paranapiacaba", "E.SP.IPG": "Piaçaguera", "E.SP.IPA": "Paranapiacaba",
+}
 
+_SQL_OS_PROGRAMADAS = "SELECT os, coordenacao, dados_completos, data_upload, mes_referencia FROM os_programadas"
+
+def _etl_os_programadas(df_raw_db: pd.DataFrame) -> pd.DataFrame:
+    """Linhas cruas de os_programadas -> base tratada com TODAS as coordenações. Corpo
+    idêntico ao que ficava dentro de carregar_base_sem_overlay até 15/10/2026 (o recorte
+    por escopo saiu para _recortar_base_escopo)."""
     if df_raw_db.empty: return pd.DataFrame()
 
     # "X" (plano antigo) e "X.0" (upload com coluna de OS lida como float) são a MESMA OS --
@@ -4987,10 +5318,7 @@ def carregar_base_sem_overlay(escopo_usuario: str, etl_version: str, lista_os_fi
 
     df_raw_db["coordenacao"] = df_raw_db.apply(_resolver_coord_null, axis=1)
 
-    _mapa_norm = {
-        "PARANAPIACABA": "Paranapiacaba", "PIAÇAGUERA": "Piaçaguera", "PIACAGUERA": "Piaçaguera",
-        "IPG": "Piaçaguera", "IPA": "Paranapiacaba", "E.SP.IPG": "Piaçaguera", "E.SP.IPA": "Paranapiacaba",
-    }
+    _mapa_norm = _MAPA_NORM_COORD_BASE
     df_raw_db["coordenacao"] = df_raw_db["coordenacao"].apply(
         lambda v: _mapa_norm.get(re.sub(r'\s+', ' ', str(v)).strip().upper(), str(v).strip()) if pd.notna(v) and str(v).strip() != "" else "N/D"
     )
@@ -5050,19 +5378,89 @@ def carregar_base_sem_overlay(escopo_usuario: str, etl_version: str, lista_os_fi
         df_base_final["Ordem servico"].astype(str).str.strip().map(_mapa_mes_referencia)
     )
 
-    if escopo_usuario != "Todas":
+    return df_base_final
+
+def _recortar_base_escopo(df_base_final: pd.DataFrame, escopo_usuario: str) -> pd.DataFrame:
+    # Mesmo filtro que ficava no fim de carregar_base_sem_overlay.
+    if escopo_usuario != "Todas" and "Coordenacao" in df_base_final.columns:
+        _mapa_norm = _MAPA_NORM_COORD_BASE
         escopo_norm = _mapa_norm.get(escopo_usuario.strip().upper(), escopo_usuario.strip())
         df_base_final = df_base_final[df_base_final["Coordenacao"].apply(lambda x: str(x).strip().upper() == escopo_norm.upper() if pd.notna(x) else False)]
-
     return df_base_final
+
+# ttl/max_entries adicionados em 21/08/2026 -- app caiu por estouro de memoria no
+# Streamlit Cloud (sgomrs.streamlit.app). Sem limite, cada combinacao nova de
+# escopo_usuario/etl_version/lista_os_filtro (ex.: cada exportacao SAP por periodo, que
+# varia a lista de OS) ficava para sempre na RAM do processo, sem nunca liberar a
+# entrada anterior -- e essa base inclui a coluna dados_completos (JSONB), a mais pesada.
+# ttl elevado pra 1800s em 24/08/2026 -- app caiu de novo, agora por estouro do limite
+# do plano Neon Free (rede/compute). Essa e a unica funcao cacheada aqui que de fato
+# consulta o Neon (as demais operam em cima do DataFrame ja carregado); ttl curto forcava
+# reconsulta da base inteira (com o JSONB pesado) a cada 10min mesmo sem dado novo.
+# max_entries continua sendo quem prende a memoria (nao depende do ttl), entao subir o
+# ttl reduz consulta ao Neon sem voltar a arriscar o estouro de RAM original.
+# 15/10/2026 (egress do Neon, ~820 MB/dia): a base inteira (JSON ~15 MB por leitura) era
+# relida a cada 30 min POR ESCOPO (Todas, Paranapiacaba, Piaçaguera = até 3 leituras
+# iguais) e a cada st.cache_data.clear() de IW47/NAPL. Agora: 1 leitura ("Todas") por
+# impressão digital fp_os (COUNT + MAX(atualizado_em) de os_programadas, lida na região
+# 7.2), e cada escopo é recortado dessa mesma leitura. Como a chave muda quando a tabela
+# muda, o ttl pode ser longo (12 h); max_entries segue limitando a RAM.
+@st.cache_data(ttl=43200, max_entries=2)
+def _carregar_os_programadas_todas(etl_version: str, fp_os: str) -> pd.DataFrame:
+    # Sem try/except de propósito: falha de leitura NÃO pode ficar cacheada (antes um erro
+    # momentâneo virava base vazia guardada por 30 min; com ttl de 12 h seria pior). Quem
+    # trata o erro é carregar_base_sem_overlay, fora do cache.
+    conn = get_connection()
+    try:
+        _definir_statement_timeout(conn)
+        df_raw_db = pd.read_sql_query(_SQL_OS_PROGRAMADAS, conn)
+    finally: release_connection(conn)
+    df = _etl_os_programadas(df_raw_db)
+    print(f"[EGRESS] os_programadas full linhas={len(df_raw_db)} base={len(df)} mem={_tamanho_mb(df):.1f}MB fp={fp_os}")
+    return df
+
+@st.cache_data(ttl=43200, max_entries=8)
+def _carregar_base_escopo(escopo_usuario: str, etl_version: str, fp_os: str) -> pd.DataFrame:
+    return _recortar_base_escopo(_carregar_os_programadas_todas(etl_version, fp_os), escopo_usuario)
+
+# Caminho da Exportação SAP por período (lista_os_filtro) -- igual a antes: consulta direta
+# só das OS pedidas, cache próprio com o mesmo ttl/max_entries de antes.
+@st.cache_data(ttl=1800, max_entries=16)
+def _carregar_base_lista_os(escopo_usuario: str, etl_version: str, lista_os_filtro: tuple) -> pd.DataFrame:
+    conn = get_connection()
+    try:
+        # lista_os_filtro: restringe a consulta a um conjunto pequeno de OS -- usado pela
+        # Exportação SAP por período (região 3.8.4) pra não puxar dados_completos (JSONB, o
+        # que mais pesa em transferência) da base inteira a cada exportação.
+        placeholders = ",".join(["%s"] * len(lista_os_filtro))
+        query_prog = f"{_SQL_OS_PROGRAMADAS} WHERE os IN ({placeholders})"
+        df_raw_db = pd.read_sql_query(query_prog, conn, params=tuple(lista_os_filtro))
+    except Exception: df_raw_db = pd.DataFrame()
+    finally: release_connection(conn)
+    return _recortar_base_escopo(_etl_os_programadas(df_raw_db), escopo_usuario)
+
+def carregar_base_sem_overlay(escopo_usuario: str, etl_version: str, fp_os: str = "", lista_os_filtro: tuple | None = None) -> pd.DataFrame:
+    # Mesmo nome/retorno de antes. fp_os = impressão digital de os_programadas (região 7.2);
+    # chamadas sem ela ("") continuam funcionando, só ficam presas ao ttl.
+    if lista_os_filtro:
+        return _carregar_base_lista_os(escopo_usuario, etl_version, tuple(lista_os_filtro))
+    try:
+        return _carregar_base_escopo(escopo_usuario, etl_version, fp_os)
+    except Exception as e:
+        # Antes: except -> base vazia ("Nenhuma OS encontrada"); mantido, mas sem cachear o erro.
+        print(f"[EGRESS] os_programadas leitura falhou: {type(e).__name__}: {e}")
+        return pd.DataFrame()
 
 # ttl/max_entries adicionados em 21/08/2026 (mesmo incidente de estouro de memoria da
 # funcao acima) -- baixas_mtime muda a cada baixa de OS registrada por qualquer usuario,
 # entao toda baixa criava uma copia inteira nova do DataFrame combinado na RAM, e a
 # anterior nunca era liberada. max_entries pequeno porque so importa o mtime mais recente
 # por escopo -- entradas antigas nunca mais sao reaproveitadas (o mtime nao repete).
+# 15/10/2026: baixas_mtime virou versao_dados = "<versão baixas>|<versão evidencias>" dos
+# caches incrementais (3.2.1/3.3). Baixas/evidências agora vêm da memória do processo (sem
+# rede), então recalcular depois do ttl é só CPU.
 @st.cache_data(show_spinner=False, ttl=600, max_entries=8)
-def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, baixas_mtime: str) -> pd.DataFrame:
+def aplicar_overlay_baixas(df_base_bruto: pd.DataFrame, escopo_usuario: str, versao_dados: str) -> pd.DataFrame:
     df_base = df_base_bruto.copy()
     if df_base.empty: return df_base
 
@@ -5290,7 +5688,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v21.3.0")
+st.sidebar.caption("SGO Eletroeletrônica • v21.4.0")
 st.sidebar.markdown(
     """
     <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">
@@ -5367,24 +5765,93 @@ else:
 #endregion 7.1
 
 #region 7.2: Carregamento da Base Operacional
-def _hash_baixas():
-    conn = get_connection()
+# 15/10/2026 (egress do Neon): era _hash_baixas() -- COUNT/MAX(os)/MAX(atualizado_em) de
+# baixas, e a cada mudança a tabela baixas INTEIRA era relida dentro do overlay. Agora uma
+# única query por rerun traz a impressão digital das 3 tabelas e decide o que reler:
+#   baixas         -> COUNT + MAX(atualizado_em). ON CONFLICT DO UPDATE não muda o COUNT;
+#                     MAX(atualizado_em) (TIMESTAMP real) pega qualquer INSERT/UPDATE --
+#                     MAX(realizado_em), VARCHAR "DD/MM/AAAA HH:MM", comparava em ordem
+#                     alfabética e podia não mudar (13/07/2026).
+#   evidencias     -> COUNT + MAX(data_upload) + COUNT com foto (UPDATE foto_url='' da
+#                     retenção no api.py não mexe em data_upload; só aparece por essa contagem)
+#   os_programadas -> COUNT + MAX(atualizado_em) (coluna criada no init_db de 15/10/2026)
+# Se a query falhar (Neon caiu no meio da sessão), segue com o último estado conhecido em
+# memória em vez de derrubar a tela.
+_SQL_DIGITAIS = """
+    SELECT (SELECT COUNT(*) FROM baixas),
+           (SELECT COALESCE(MAX(atualizado_em)::text, '') FROM baixas),
+           (SELECT COUNT(*) FROM evidencias),
+           (SELECT COALESCE(MAX(data_upload)::text, '') FROM evidencias),
+           (SELECT COUNT(*) FROM evidencias WHERE COALESCE(foto_url, '') <> ''),
+           (SELECT COUNT(*) FROM os_programadas),
+           (SELECT COALESCE(MAX({col_os})::text, '') FROM os_programadas)
+"""
+
+@st.cache_resource(show_spinner=False)
+def _estado_digitais() -> dict:
+    return {"fp_os": ""}
+
+def _impressoes_digitais():
+    """Uma query, 7 valores. Devolve a tupla, ou None se o banco não respondeu."""
+    conn = None
     try:
+        conn = get_connection()
         cur = conn.cursor()
-        # ON CONFLICT (os) DO UPDATE NAO altera COUNT nem MAX(os): re-baixa de uma OS ja
-        # existente mantinha o hash igual -> cache do overlay ficava velho -> a OS baixada
-        # continuava aparecendo como disponivel. MAX(atualizado_em) (TIMESTAMP real, nao texto)
-        # detecta qualquer INSERT/UPDATE de forma cronologicamente confiavel -- MAX(realizado_em)
-        # (VARCHAR "DD/MM/AAAA HH:MM") comparava alfabeticamente e podia nao mudar (13/07/2026).
-        cur.execute("SELECT COUNT(*), COALESCE(MAX(os),''), COALESCE(MAX(atualizado_em)::text,'') FROM baixas")
+        try:
+            cur.execute(_SQL_DIGITAIS.format(col_os="atualizado_em"))
+        except Exception:
+            # os_programadas.atualizado_em ainda não existe (ALTER do init_db falhou): cai pra
+            # MAX(data_upload) -- pega upload com OS nova; o upload ainda limpa o cache de dados.
+            conn.rollback()
+            cur = conn.cursor()
+            cur.execute(_SQL_DIGITAIS.format(col_os="data_upload"))
         row = cur.fetchone()
         cur.close()
-        return f"{row[0]}_{row[1]}_{row[2]}"
-    finally: release_connection(conn)
+        return row
+    except Exception as e:
+        print(f"[EGRESS] impressão digital indisponível, usando último estado: {type(e).__name__}: {e}")
+        return None
+    finally:
+        if conn is not None: release_connection(conn)
 
-baixas_mtime = _hash_baixas()
-df_base_bruto = carregar_base_sem_overlay(escopo_usuario=st.session_state["escopo"], etl_version=ETL_VERSION)
-df_base = aplicar_overlay_baixas(df_base_bruto=df_base_bruto, escopo_usuario=st.session_state["escopo"], baixas_mtime=baixas_mtime)
+def _tela_banco_indisponivel(e):
+    # Revisão 15/10/2026: na carga fria (processo recém-iniciado, nada em memória) com o Neon
+    # fora, sincronizar_baixas levantava e o traceback ia pra tela. Mesma linha do incidente
+    # 08/09/2026: mensagem limpa + botão de nova tentativa + st.stop. Com dado em memória
+    # isso nunca acontece -- o painel segue com o último estado.
+    print(f"[EGRESS] baixas indisponíveis na carga inicial: {type(e).__name__}: {e}")
+    st.error(
+        "**🔌 Banco de dados sem resposta no momento.**\n\n"
+        "O painel não conseguiu carregar as baixas de OS. Aguarde cerca de 1 minuto e toque "
+        "em **Tentar novamente**.\n\n"
+        "**O trabalho de campo NÃO para:** quem já abriu a Rota PWA continua fazendo baixa "
+        "offline normalmente — a fila sincroniza sozinha quando o banco voltar."
+    )
+    if st.button("🔄 Tentar novamente", type="primary", key="btn_retry_banco_baixas"):
+        st.rerun()
+    st.stop()
+
+_digitais = _impressoes_digitais()
+_est_digitais = _estado_digitais()
+if _digitais is not None:
+    try: _v_baixas = sincronizar_baixas(_digitais[0], _digitais[1])
+    except Exception as e: _tela_banco_indisponivel(e)
+    try:
+        _v_evid = sincronizar_evidencias(_digitais[2], _digitais[3], _digitais[4])
+    except Exception as e:
+        # Igual a antes: evidência indisponível não derruba o painel (overlay seguia sem fotos).
+        print(f"[EGRESS] evidencias indisponíveis: {type(e).__name__}: {e}")
+        _v_evid = "indisponivel"
+    _est_digitais["fp_os"] = f"{_digitais[5]}_{_digitais[6]}"
+else:
+    try: _v_baixas = sincronizar_baixas()  # com dado em memória: zero query
+    except Exception as e: _tela_banco_indisponivel(e)
+    try: _v_evid = sincronizar_evidencias()
+    except Exception: _v_evid = "indisponivel"
+fp_os = _est_digitais["fp_os"]
+
+df_base_bruto = carregar_base_sem_overlay(escopo_usuario=st.session_state["escopo"], etl_version=ETL_VERSION, fp_os=fp_os)
+df_base = aplicar_overlay_baixas(df_base_bruto=df_base_bruto, escopo_usuario=st.session_state["escopo"], versao_dados=f"{_v_baixas}|{_v_evid}")
 
 st.session_state["df_os"] = df_base
 df_visao = preparar_df_visao(df_base, filtro_visao)
@@ -8893,18 +9360,23 @@ if st.session_state.get("tela_atual") == "governanca":
 
 #region 11.2: Carregamento de dados de auditoria
     @st.cache_data(show_spinner=False, ttl=300)
-    def _carregar_baixas_logs_governanca():
+    def _carregar_logs_governanca():
         # Cache adicionado em 22/07/2026 -- plano Neon Free perto do teto de Network transfer
-        # (5GB/mes). Sem cache, a tabela "baixas" inteira era relida a cada rerun (inclusive ao
-        # clicar em "Aplicar Filtros" na sidebar, que forca rerun completo do app). TTL de 5min
+        # (5GB/mes). Sem cache, a tabela inteira era relida a cada rerun (inclusive ao clicar
+        # em "Aplicar Filtros" na sidebar, que forca rerun completo do app). TTL de 5min
         # é aceitável pra uma tela de auditoria/governança.
         conn = get_connection()
-        try:
-            df_b = pd.read_sql_query("SELECT os, status, realizado_em, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim FROM baixas", conn)
-            df_l = pd.read_sql_query("SELECT username, data_hora_login, geolocalizacao_login FROM logs_acesso", conn)
-        finally:
-            release_connection(conn)
-        return df_b, df_l
+        try: return pd.read_sql_query("SELECT username, data_hora_login, geolocalizacao_login FROM logs_acesso", conn)
+        finally: release_connection(conn)
+
+    def _carregar_baixas_logs_governanca():
+        # 15/10/2026: baixas não são mais relidas do Neon aqui -- vêm do cache incremental
+        # compartilhado (região 3.2.1, já sincronizado na região 7.2 deste rerun), linhas
+        # cruas (sem normalizar OS), com as mesmas colunas de antes. logs_acesso segue no
+        # cache próprio acima.
+        df_b = obter_baixas_df(normalizado=False)
+        df_b = df_b[["os", "status", "realizado_em", "coordenacao", "concluido_por", "geolocalizacao_baixa", "equipe", "data_inicio", "hora_inicio", "data_fim", "hora_fim"]]
+        return df_b, _carregar_logs_governanca()
 
     @st.cache_data(show_spinner=False, ttl=300)
     def _carregar_usuarios_nome_governanca():

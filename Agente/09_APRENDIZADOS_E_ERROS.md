@@ -506,6 +506,26 @@ Primeira execução real do `/limpar_evidencias_orfas` (endpoint criado nesta me
 
 ---
 
+## 15/10/2026 — Neon "Network transfer" 4,11 GB em 5 dias (v21.4.0)
+
+**O que aconteceu:** o painel do Neon mostrou **4,11 GB de Network transfer em 5 dias** (~820 MB/dia, ~25 GB/mês contra 5 GB do plano free). O usuário vinha pagando o plano Launch todo mês por causa disso.
+
+**Causa raiz (egress por releitura de tabela inteira):**
+- O overlay de baixas, cacheado por `baixas_mtime`, relia a tabela `baixas` inteira (3,7 MB) a cada baixa de qualquer usuário, **por escopo**, e a cada TTL de 10 min.
+- `os_programadas` (~15 MB) era relida por escopo a cada 30 min.
+- `evidencias` (6 MB, 4 MB só de fotos em base64 gravadas pelo fallback antigo do PWA) era relida a cada 5 min.
+- `get_connection` limpava `st.cache_resource` inteiro quando a conexão caía (o Neon suspende após 5 min ocioso), derrubando também os demais caches; `init_db` rodava a cada rerun.
+
+**Correção (v21.4.0):** cache incremental **compartilhado** (todos os escopos/usuários) de `baixas` e `evidencias` por impressão digital (`COUNT`/`MAX`) + leitura só do delta por `atualizado_em`/`data_upload`; `os_programadas` lida 1x para todos os escopos e relida só quando a impressão digital muda; clears globais trocados por clears específicos; `init_db` 1x por processo; base64 das 8 linhas antigas migrado para o R2 (`migracao_r2/migrar_fotos_base64.py`).
+
+**Aprendizado:**
+1. Tabela que cresce = **cache incremental com impressão digital** (`COUNT`/`MAX`) e leitura de delta, compartilhado entre escopos — não releitura completa.
+2. **Nunca TTL curto em leitura de tabela inteira**: o custo é egress do provedor (cobrado por byte), não só latência.
+3. **Nunca `st.cache_*.clear()` global em caminho de erro/reconexão**: limpar só o que de fato ficou inválido.
+4. Binário (base64) em coluna de tabela lida com frequência multiplica o egress a cada leitura.
+
+---
+
 ## Lições transversais (válidas pra qualquer mudança futura)
 
 - **Verificar causa raiz com dado real (SQL/log) antes de aplicar patch** — não assumir, não adivinhar. Vale tanto pra bug de dado quanto pra bug de infraestrutura.

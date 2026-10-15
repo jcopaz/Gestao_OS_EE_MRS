@@ -127,6 +127,14 @@ Dentro de cada rank: `Criticidade → Atraso ao vencimento → Proximidade`. Ord
 
 ---
 
+## ⚡ Padrão de cache / performance (egress do Neon)
+
+- **Tabela que cresce (`baixas`, `evidencias`, `os_programadas`) = cache incremental compartilhado por impressão digital** (`COUNT`/`MAX` de `atualizado_em`/`data_upload`) + leitura só do delta. Nunca relê a tabela inteira por escopo/usuário, e **nunca com TTL curto** (o plano free cobra por byte transferido: 4,11 GB em 5 dias em 15/10/2026).
+- **Nunca `st.cache_data.clear()`/`st.cache_resource.clear()` global** (principalmente em caminho de erro/reconexão): limpar só o cache específico. `init_db` roda 1x por processo, não por rerun.
+- Binário (foto/base64) nunca em coluna de tabela lida com frequência — foto vai pro R2, o banco guarda só a URL.
+
+---
+
 ## 📴 Padrão Offline / PWA
 
 - Sessões **3.9–3.13** geram HTML/JS em **f-strings** → escapar chaves JS (`{{` / `}}`).
