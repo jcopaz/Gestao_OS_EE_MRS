@@ -3205,6 +3205,15 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 
     df_export = df_pendentes[colunas_export].fillna("")
 
+    # Coordenacao vai no os_json/OS_DATA para o PWA enviar `coordenacao` no sync (a API usa
+    # para escolher a configuracao/regras da coordenacao certa). Gravada so em df_export:
+    # df_pendentes e colunas_export ficam intactos porque coordenacao_pacote (trava de
+    # prioridade, mais abaixo) depende de df_pendentes["Coordenacao"] existir ou nao.
+    if "Coordenacao" in df_pendentes.columns:
+        df_export["Coordenacao"] = df_pendentes["Coordenacao"].fillna("").astype(str).str.strip()
+    else:
+        df_export["Coordenacao"] = ""
+
     # BLINDAGEM DA FILA OFFLINE (05/09/2026): não deixa entrar no pacote OS sem número ou
     # OS repetida. A partir da v3 a fila usa keyPath "uid" (não colide mais), mas card
     # duplicado ainda é ruim (o técnico baixaria a mesma OS 2x) e OS sem número não pode
@@ -4148,6 +4157,9 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             selecionadas.push({{
                 uid: gerarUid(),
                 os_id: _osIdLote,
+                // Coordenacao da OS gravada junto: se o pacote for republicado antes do
+                // sync, o item antigo ainda sabe a qual coordenacao pertence (fallback).
+                coordenacao: String(osItem["Coordenacao"] || "").trim(),
                 ativo_id: String(osItem["Ativo"] || "").trim(),
                 usuario: USUARIO_LOGADO,
                 acompanhante: acompanhanteGlobal,
@@ -4254,6 +4266,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             selecionadas.push({{
                 uid: gerarUid(),
                 os_id: _osIdNrav,
+                // Mesmo motivo da Conclusao: guarda a coordenacao no registro (fallback do sync).
+                coordenacao: String(osItem["Coordenacao"] || "").trim(),
                 ativo_id: String(osItem["Ativo"] || "").trim(),
                 usuario: USUARIO_LOGADO,
                 acompanhante: acompanhanteGlobal,
@@ -4352,6 +4366,11 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
 
 #region 3.13: Gerador Offline - Lógica JS de Sincronização e Fechamento
     js_sync = f"""
+    // Normaliza o numero da OS para casar item da fila com OS_DATA ("123.0" do Excel/pandas == "123").
+    function normOs(s) {{
+        return String(s || "").trim().replace(/\\.0+$/, "");
+    }}
+
     async function sincronizarFila() {{
         // Trava contra clique duplo/multiplo: sem isso, tocar "Sincronizar" de novo antes da
         // primeira chamada terminar iniciava uma segunda passagem que lia a MESMA fila de
@@ -4404,6 +4423,22 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         let sucesso = 0;
         let falha = 0;
         const detalhesFalha = [];
+        let interrompido503 = null;
+        const detalhes422 = [];
+
+        // Coordenacao vigente de cada OS segundo o pacote atual (montado uma vez por sync).
+        // Vale mais que o valor salvo no item, pois o pacote e a fonte mais recente.
+        const coordPorOs = new Map();
+        for (const o of OS_DATA) {{
+            coordPorOs.set(normOs(o["Ordem servico"]), o["Coordenacao"]);
+        }}
+        const coordValida = (v) => {{
+            const t = String(v || "").trim();
+            return t && t.toUpperCase() !== "N/D" ? t : "";
+        }};
+        const coordenacaoDaOS = (osId, fallback) => {{
+            return coordValida(coordPorOs.get(normOs(osId))) || coordValida(fallback) || "";
+        }};
 
         try {{
             for (let i = 0; i < pendentes.length; i++) {{
@@ -4427,6 +4462,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                     formData.append("tipo_baixa", item.tipo_baixa || "CONCLUSAO");
                     formData.append("causa_nrav", item.causa_nrav || "");
                     formData.append("texto_confirmacao", item.texto_confirmacao || "");
+                    // Sempre enviado (pode ser ""): a API trata vazio como "nao informado".
+                    formData.append("coordenacao", coordenacaoDaOS(item.os_id, item.coordenacao));
                     formData.append("foto", item.foto_blob, item.foto_nome || "evidencia.jpg");
 
                     const resp = await fetch(apiUrl, {{
@@ -4438,18 +4475,27 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                     }});
 
                     if (!resp.ok) {{
-                        let msgErro = "Falha na comunicação com o servidor.";
+                        // Le o corpo UMA vez como texto (resp.json() seguido de resp.text()
+                        // falhava com "body already used") e tenta interpretar como JSON.
+                        const bruto = await resp.text();
+                        let msgErro = "";
                         try {{
-                            const errJson = await resp.json();
-                            if (errJson.detail) {{
-                                msgErro = errJson.detail;
+                            const j = JSON.parse(bruto);
+                            if (j && j.detail !== undefined && j.detail !== null) {{
+                                msgErro = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
                             }} else {{
-                                msgErro = JSON.stringify(errJson);
+                                msgErro = bruto.slice(0, 300);
                             }}
                         }} catch (parseErr) {{
-                            msgErro = await resp.text() || `Erro no servidor (Código ${{resp.status}})`;
+                            msgErro = bruto.slice(0, 300);
                         }}
-                        throw new Error(msgErro);
+                        if (!msgErro) {{
+                            msgErro = `Erro no servidor (Código ${{resp.status}})`;
+                        }}
+                        // status vai no erro: 422 = erro do item (segue o loop); 503 = servidor/banco fora (para o loop).
+                        const err = new Error(msgErro);
+                        err.status = resp.status;
+                        throw err;
                     }}
 
                     await new Promise((resolve, reject) => {{
@@ -4467,20 +4513,32 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                     console.error("Falha na sincronização da OS", item.os_id, e);
                     falha += 1;
                     detalhesFalha.push(`OS ${{item.os_id}}: ${{e.message || "Erro desconhecido"}}`);
+                    if (e.status === 503) {{
+                        interrompido503 = e.message || "Servidor indisponível";
+                    }}
+                    if (e.status === 422) {{
+                        detalhes422.push(`OS ${{item.os_id}}: ${{e.message}}`);
+                    }}
                 }}
 
                 const concluidas = i + 1;
                 const pct = Math.round((concluidas / total) * 100);
                 progressFill.style.width = `${{pct}}%`;
                 progressLabel.textContent = `Enviando ${{concluidas}} de ${{total}}...`;
+                // Servidor/banco fora: insistir nas demais so geraria mais falhas; elas seguem pendentes.
+                if (interrompido503) break;
             }}
 
-            await atualizarFila();
+            const restantes = await atualizarFila();
 
-            if (falha === 0) {{
+            if (interrompido503) {{
+                setSyncMsg(`Servidor indisponível — envio interrompido. ${{sucesso}} enviada(s); ${{restantes}} continuam salvas no aparelho. Tente novamente em alguns minutos. Motivo: ${{interrompido503}}`, "yellow");
+            }} else if (falha === 0) {{
                 setSyncMsg(`Sincronização concluída com sucesso. ${{sucesso}} OS enviada(s).`, "blue");
             }} else {{
-                const detalhe = detalhesFalha.length ? ` Motivo: ${{detalhesFalha[0]}}` : "";
+                // Erro 422 exige acao do tecnico, entao aparece primeiro.
+                const primeiro = detalhes422.length ? detalhes422[0] : detalhesFalha[0];
+                const detalhe = primeiro ? ` Motivo: ${{primeiro}}` : "";
                 setSyncMsg(`Sincronização parcial. ${{sucesso}} enviada(s) e ${{falha}} falha(s).${{detalhe}}`, "yellow");
             }}
         }} finally {{
@@ -5232,7 +5290,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v21.2.0")
+st.sidebar.caption("SGO Eletroeletrônica • v21.3.0")
 st.sidebar.markdown(
     """
     <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">

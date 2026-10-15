@@ -305,64 +305,78 @@ def upload_foto_storage(arquivo_bytes: bytes, nome_arquivo: str) -> str:
 # Alias do nome antigo (pre-R2), caso algum script/import externo ainda use.
 upload_foto_supabase = upload_foto_storage
 
-def upsert_evidencia(ativo: str, atividade: str, foto_url: str, os_referencia: str, concluido_por: str, geolocalizacao: str):
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO evidencias (
-                ativo, atividade, foto_url, os_referencia, concluido_por, geolocalizacao, data_upload
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-            ON CONFLICT (os_referencia) DO UPDATE SET
-                ativo = EXCLUDED.ativo,
-                atividade = EXCLUDED.atividade,
-                foto_url = EXCLUDED.foto_url,
-                concluido_por = EXCLUDED.concluido_por,
-                geolocalizacao = EXCLUDED.geolocalizacao,
-                data_upload = CURRENT_TIMESTAMP;
-            """,
-            (str(ativo), str(atividade), str(foto_url), str(os_referencia), str(concluido_por), str(geolocalizacao))
+# Versoes "_cur" (15/10/2026): executam o SQL num cursor recebido e NAO fazem commit.
+# A baixa offline grava evidencia + baixa na MESMA transacao (um commit so): antes eram
+# duas conexoes/commits separados e uma falha entre eles deixava evidencia sem baixa
+# (OS com foto mas fora da Meta/backlog). As publicas abaixo continuam com a mesma
+# assinatura e commit proprio para quem chama uma so (scripts/imports externos).
+def _upsert_evidencia_cur(cur, ativo: str, atividade: str, foto_url: str, os_referencia: str, concluido_por: str, geolocalizacao: str):
+    cur.execute(
+        """
+        INSERT INTO evidencias (
+            ativo, atividade, foto_url, os_referencia, concluido_por, geolocalizacao, data_upload
         )
-        conn.commit()
-        cur.close()
-    finally:
-        release_connection(conn)
+        VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+        ON CONFLICT (os_referencia) DO UPDATE SET
+            ativo = EXCLUDED.ativo,
+            atividade = EXCLUDED.atividade,
+            foto_url = EXCLUDED.foto_url,
+            concluido_por = EXCLUDED.concluido_por,
+            geolocalizacao = EXCLUDED.geolocalizacao,
+            data_upload = CURRENT_TIMESTAMP;
+        """,
+        (str(ativo), str(atividade), str(foto_url), str(os_referencia), str(concluido_por), str(geolocalizacao))
+    )
 
-def upsert_baixa(os_id, status, realizado_em_str, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim, causa_nrav="", texto_confirmacao=""):
+
+def _upsert_baixa_cur(cur, os_id, status, realizado_em_str, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim, causa_nrav="", texto_confirmacao=""):
     # causa_nrav/texto_confirmacao sempre entram no UPDATE (nao so no INSERT), mesmo vazios --
     # mesma logica do upsert_baixa espelhado em app.py: limpa resquicio de NRAV anterior quando
     # a OS e concluida de verdade depois.
+    cur.execute(
+        """
+        INSERT INTO baixas (
+            os, status, realizado_em, coordenacao, concluido_por,
+            geolocalizacao_baixa, equipe, data_inicio, hora_inicio,
+            data_fim, hora_fim, causa_nrav, texto_confirmacao, atualizado_em
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+        ON CONFLICT (os) DO UPDATE SET
+            status = EXCLUDED.status,
+            realizado_em = EXCLUDED.realizado_em,
+            concluido_por = EXCLUDED.concluido_por,
+            geolocalizacao_baixa = EXCLUDED.geolocalizacao_baixa,
+            equipe = EXCLUDED.equipe,
+            data_inicio = EXCLUDED.data_inicio,
+            hora_inicio = EXCLUDED.hora_inicio,
+            data_fim = EXCLUDED.data_fim,
+            hora_fim = EXCLUDED.hora_fim,
+            causa_nrav = EXCLUDED.causa_nrav,
+            texto_confirmacao = EXCLUDED.texto_confirmacao,
+            atualizado_em = NOW();
+        """,
+        (str(os_id), str(status), str(realizado_em_str), str(coordenacao), str(concluido_por), str(geolocalizacao_baixa), str(equipe), str(data_inicio), str(hora_inicio), str(data_fim), str(hora_fim), str(causa_nrav), str(texto_confirmacao))
+    )
+
+
+def upsert_evidencia(ativo: str, atividade: str, foto_url: str, os_referencia: str, concluido_por: str, geolocalizacao: str):
     conn = get_connection()
     try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO baixas (
-                os, status, realizado_em, coordenacao, concluido_por,
-                geolocalizacao_baixa, equipe, data_inicio, hora_inicio,
-                data_fim, hora_fim, causa_nrav, texto_confirmacao, atualizado_em
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-            ON CONFLICT (os) DO UPDATE SET
-                status = EXCLUDED.status,
-                realizado_em = EXCLUDED.realizado_em,
-                concluido_por = EXCLUDED.concluido_por,
-                geolocalizacao_baixa = EXCLUDED.geolocalizacao_baixa,
-                equipe = EXCLUDED.equipe,
-                data_inicio = EXCLUDED.data_inicio,
-                hora_inicio = EXCLUDED.hora_inicio,
-                data_fim = EXCLUDED.data_fim,
-                hora_fim = EXCLUDED.hora_fim,
-                causa_nrav = EXCLUDED.causa_nrav,
-                texto_confirmacao = EXCLUDED.texto_confirmacao,
-                atualizado_em = NOW();
-            """,
-            (str(os_id), str(status), str(realizado_em_str), str(coordenacao), str(concluido_por), str(geolocalizacao_baixa), str(equipe), str(data_inicio), str(hora_inicio), str(data_fim), str(hora_fim), str(causa_nrav), str(texto_confirmacao))
-        )
+        with conn.cursor() as cur:
+            _upsert_evidencia_cur(cur, ativo, atividade, foto_url, os_referencia, concluido_por, geolocalizacao)
         conn.commit()
-        cur.close()
+    finally:
+        # release_connection faz rollback antes de devolver: se o execute falhou, a
+        # conexao nao volta ao pool com transacao abortada.
+        release_connection(conn)
+
+
+def upsert_baixa(os_id, status, realizado_em_str, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim, causa_nrav="", texto_confirmacao=""):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            _upsert_baixa_cur(cur, os_id, status, realizado_em_str, coordenacao, concluido_por, geolocalizacao_baixa, equipe, data_inicio, hora_inicio, data_fim, hora_fim, causa_nrav, texto_confirmacao)
+        conn.commit()
     finally:
         release_connection(conn)
 
@@ -463,7 +477,29 @@ def carregar_config_operacional(coordenacao: str) -> dict:
     return {"geofence_km": float(geofence_km), "trava_prioridade_ativa": bool(trava_ativa)}
 
 
-def obter_coordenacao_da_os(os_id: str) -> str:
+# Valores que o pacote/planilha manda quando a coordenacao nao existe de fato (celula
+# vazia virando "nan" no pandas, "N/D" do gerador do pacote etc.). Comparados em
+# maiusculas depois do strip -- nunca podem virar nome de coordenacao gravado na baixa.
+_COORDENACAO_AUSENTE = {"", "N/D", "NAN", "NONE", "NULL"}
+
+
+def _coordenacao_valida(v) -> str | None:
+    # Nao-str (None, ou o FieldInfo do Form quando a funcao e chamada direto em teste)
+    # conta como ausente. Limite de 100 chars: campo vem do cliente (FormData), nao
+    # deixa texto arbitrario gigante ir pra coluna coordenacao.
+    if not isinstance(v, str):
+        return None
+    v = v.strip()
+    if v.upper() in _COORDENACAO_AUSENTE:
+        return None
+    return v[:100]
+
+
+def obter_coordenacao_da_os(os_id: str) -> str | None:
+    # Devolve None quando o banco RESPONDEU e a OS nao esta em os_programadas (15/10/2026):
+    # antes caia em "Paranapiacaba" fixo e a baixa de OS de outra coordenacao (plano
+    # trocado depois do pacote publicado) era gravada e validada (geofence/config) como
+    # se fosse de Paranapiacaba. Quem chama decide o fallback (campo do pacote) ou 422.
     conn = None
     try:
         conn = get_connection()
@@ -472,17 +508,16 @@ def obter_coordenacao_da_os(os_id: str) -> str:
         row = cur.fetchone()
         cur.close()
     except Exception as e:
-        # Mesmo motivo de carregar_config_operacional: banco fora NAO pode virar
-        # "Paranapiacaba" -- gravaria a baixa na coordenacao errada e validaria o
-        # geofence com a config de outra coordenacao. "OS nao encontrada" (row None,
-        # banco respondeu) continua caindo no default de negocio abaixo.
+        # Mesmo motivo de carregar_config_operacional: banco fora NAO pode virar "OS fora
+        # do plano" (None) -- o chamador cairia no campo do pacote ou num 422 indevido.
+        # Falha de banco = 503 (handler global) e o PWA reenvia depois.
         raise BancoIndisponivel("falha ao ler coordenacao da OS") from e
     finally:
         if conn is not None: release_connection(conn)
 
     if row and row[0]:
         return str(row[0]).strip()
-    return "Paranapiacaba"
+    return None
 
 
 # ==============================================================================
@@ -566,6 +601,9 @@ async def sincronizar_baixa_offline(
     tipo_baixa: str = Form(default="CONCLUSAO"),
     causa_nrav: str = Form(default=""),
     texto_confirmacao: str = Form(default=""),
+    # Coordenacao embutida no pacote PWA na publicacao (15/10/2026). Fallback quando a OS
+    # ja nao esta em os_programadas; pacotes antigos nao mandam (default "").
+    coordenacao: str = Form(default=""),
     foto: UploadFile = File(...)
 ):
     # OS sempre como inteiro em texto ("23089830.0" -> "23089830"), mesma regra de
@@ -603,7 +641,17 @@ async def sincronizar_baixa_offline(
     # Falha de banco aqui = BancoIndisponivel -> 503 ANTES do upload da foto (nao gasta
     # storage nem grava evidencia sem baixa). NUNCA cair em default de coordenacao/
     # geofence por falha de banco: validaria a baixa com a regra errada.
-    coordenacao_os = obter_coordenacao_da_os(os_id)
+    # Prioridade (15/10/2026): os_programadas (fonte oficial) -> campo do pacote -> 422.
+    # Sem nenhuma das duas NAO existe mais default fixo ("Paranapiacaba"): a baixa iria
+    # pra coordenacao errada. 422 (nao 503) porque reenviar sozinho nao resolve -- precisa
+    # republicar a rota; o PWA mostra o detail ao tecnico.
+    coordenacao_banco = _coordenacao_valida(obter_coordenacao_da_os(os_id))
+    coordenacao_os = coordenacao_banco or _coordenacao_valida(coordenacao)
+    if coordenacao_os is None:
+        raise HTTPException(status_code=422, detail=f"OS {os_id} não está no plano atual — republique a rota ou fale com o supervisor.")
+    if coordenacao_banco is None:
+        # Auditoria: rastrear baixas aceitas so com a coordenacao informada pelo cliente.
+        print(f"[COORD] OS {os_id} fora de os_programadas; usando coordenacao do pacote: {coordenacao_os!r}")
     config_op = carregar_config_operacional(coordenacao_os)
     geofence_limite_km = config_op["geofence_km"]
 
@@ -660,8 +708,6 @@ async def sincronizar_baixa_offline(
             detail="Falha ao salvar a foto da evidência; a baixa NÃO foi gravada e continua salva no aparelho. Tente sincronizar novamente em alguns minutos.",
         )
 
-    upsert_evidencia(ativo=ativo_id, atividade="Baixa Offline", foto_url=url_foto, os_referencia=os_id, concluido_por=usuario, geolocalizacao=geo_string)
-
     # 7) Persistência da baixa (Sem a coluna de foto, respeitando o schema do banco)
     # NRAV: status "ABER NRAV" (conta como Concluída na Meta, mas fica Aberta pro Backlog --
     # já tratado em app.py, região 1.3); Hora Início/Fim Real fixas em "00:00:00" (formato
@@ -681,21 +727,44 @@ async def sincronizar_baixa_offline(
         causa_final = ""
         texto_final = ""
 
-    upsert_baixa(
-        os_id=os_id,
-        status=status_final,
-        realizado_em_str=formatar_dt_br(hora_apontamento),
-        coordenacao=coordenacao_os,
-        concluido_por=usuario,
-        geolocalizacao_baixa=geo_string,
-        equipe=equipe_formatada,
-        data_inicio=data_ref_str,
-        hora_inicio=hora_inicio_final,
-        data_fim=data_ref_str,
-        hora_fim=hora_fim_final,
-        causa_nrav=causa_final,
-        texto_confirmacao=texto_final,
-    )
+    # 8) Evidencia + baixa numa TRANSACAO UNICA (15/10/2026): antes eram dois commits em
+    # conexoes separadas -- se a baixa falhasse depois da evidencia, ficava foto gravada
+    # sem baixa. Agora ou grava as duas ou nenhuma; o PWA so marca "sincronizado" em 200
+    # e reenvia (UPSERT por OS, idempotente). A foto ja subiu ao R2 com nome fixo por OS,
+    # entao o reenvio so sobrescreve o mesmo arquivo, sem orfao.
+    # O except relanca a excecao ORIGINAL (sem virar HTTPException generico): erro de
+    # conexao (OperationalError/InterfaceError) tem que chegar ao handler global -> 503.
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            _upsert_evidencia_cur(cur, ativo=ativo_id, atividade="Baixa Offline", foto_url=url_foto, os_referencia=os_id, concluido_por=usuario, geolocalizacao=geo_string)
+            _upsert_baixa_cur(
+                cur,
+                os_id=os_id,
+                status=status_final,
+                realizado_em_str=formatar_dt_br(hora_apontamento),
+                coordenacao=coordenacao_os,
+                concluido_por=usuario,
+                geolocalizacao_baixa=geo_string,
+                equipe=equipe_formatada,
+                data_inicio=data_ref_str,
+                hora_inicio=hora_inicio_final,
+                data_fim=data_ref_str,
+                hora_fim=hora_fim_final,
+                causa_nrav=causa_final,
+                texto_confirmacao=texto_final,
+            )
+        conn.commit()
+    except Exception:
+        # Rollback explicito antes de devolver; se a conexao morreu o rollback tambem
+        # falha -- engole so ESSE erro pra nao mascarar o original.
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        release_connection(conn)
 
     return {"status": "sucesso", "os_id": os_id, "dist_km": round(float(dist_km), 2), "fonte_gps": fonte_gps, "auditoria": "OK"}
 
