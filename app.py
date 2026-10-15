@@ -844,20 +844,22 @@ def carregar_baixas_df() -> pd.DataFrame:
     return df
 #endregion
 
-#region 3.3: Supabase Storage (Evidências Fotográficas com Compressão)
+#region 3.3: Storage Cloudflare R2 (Evidências Fotográficas com Compressão)
 def _sanear_nome_arquivo(texto: str) -> str:
     """Remove acentos (NFKD) e força ASCII puro -- \\w do Python é Unicode-aware por
-    padrão e deixa letras acentuadas passarem (ex.: "RELÉ"), que o Supabase Storage
-    rejeita na chave do objeto com 400 InvalidKey. Mesma técnica de _normalizar_nome_coluna."""
+    padrão e deixa letras acentuadas passarem (ex.: "RELÉ"), que o storage (Supabase na
+    época, hoje R2) rejeitava na chave do objeto com 400 InvalidKey -- mantido pra chave
+    e URL pública ficarem ASCII e estáveis. Mesma técnica de _normalizar_nome_coluna."""
     import unicodedata
     texto = unicodedata.normalize("NFKD", str(texto))
     texto = "".join(ch for ch in texto if not unicodedata.combining(ch))
     return re.sub(r"[^\w\-.]", "_", texto, flags=re.ASCII)
 
 def upload_foto_supabase(arquivo_bytes: bytes, nome_arquivo: str) -> str:
-    """Faz compressão com PIL antes de enviar ao Supabase e corrige a orientação (EXIF)."""
-    # Nome mantido por compatibilidade -- o destino real (Cloudflare R2 ou
-    # Supabase) é decidido em storage_evidencias.py.
+    """Faz compressão com PIL antes de enviar ao Cloudflare R2 e corrige a orientação (EXIF)."""
+    # Nome mantido por compatibilidade (pré-R2) -- o destino é só o Cloudflare R2
+    # (storage_evidencias.py; ramo Supabase removido em 15/10/2026). Falha de envio
+    # PROPAGA de propósito: a tela de baixa mostra o erro em vez de gravar sem foto.
 
     # Compressão Inteligente da Imagem e Correção de Orientação
     try:
@@ -5230,7 +5232,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v21.1.4")
+st.sidebar.caption("SGO Eletroeletrônica • v21.2.0")
 st.sidebar.markdown(
     """
     <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">
@@ -7445,28 +7447,70 @@ if st.session_state.get("tela_atual", "dashboard") == "dashboard":
                     if st.button("🌐 Publicar Rota PWA (abrir online 1x no celular)", use_container_width=True, type="primary"):
                         try:
                             usuario_pwa = st.session_state.get("username", "tecnico")
-                            # Pré-ping: acorda a API (cold start do Render) antes de publicar
-                            with st.spinner("Acordando o servidor..."):
+                            # Espera ativa pela API (cold start do Render free: dorme após 15 min e o
+                            # proxy devolve 503 até acordar). Antes era um ping cego e o POST seguia
+                            # mesmo com o servidor fora; agora só publicamos depois de um 200 do
+                            # /ready (SELECT 1 no banco) -- ou do /health, se o deploy da API ainda
+                            # for o antigo (sem /ready, devolve 404).
+                            _prazo_acordar = time.time() + 120
+                            _api_pronta = False
+                            _tentativa = 0
+                            _ph_acordar = st.empty()
+                            while time.time() < _prazo_acordar:
+                                _tentativa += 1
+                                _ph_acordar.info(f"⏳ Servidor acordando… tentativa {_tentativa}")
                                 try:
-                                    requests.get(f"{base_api}/health", timeout=30)
-                                except Exception:
-                                    pass
-                            resp_pub = requests.post(
-                                f"{base_api}/publicar_pacote",
-                                data={"usuario": usuario_pwa},
-                                # "html" vai como arquivo (nao campo de formulario) -- campos de
-                                # formulario comuns tem teto de 1MB no Starlette; sem o limite de
-                                # 100 OS por pacote, o HTML pode passar disso facilmente.
-                                files={"html": ("pacote.html", pacote_html_bytes, "text/html")},
-                                headers={"x-api-key": st.secrets.get("OFFLINE_API_KEY", "")},
-                                timeout=30,
-                            )
-                            if resp_pub.status_code == 200:
-                                rota = resp_pub.json().get("url", "")
-                                st.session_state["rota_pwa_url"] = f"{base_api}{rota}"
-                            else:
+                                    _r_ready = requests.get(f"{base_api}/ready", timeout=10)
+                                    if _r_ready.status_code == 404:
+                                        _r_ready = requests.get(f"{base_api}/health", timeout=10)
+                                    if _r_ready.status_code == 200:
+                                        _api_pronta = True
+                                        break
+                                except requests.RequestException:
+                                    pass  # ainda dormindo/sem rede: tenta de novo após o intervalo
+                                time.sleep(5)
+                            _ph_acordar.empty()
+
+                            if not _api_pronta:
                                 st.session_state.pop("rota_pwa_url", None)
-                                st.error(f"Falha ao publicar ({resp_pub.status_code}): {resp_pub.text}")
+                                st.error("Servidor indisponível no momento — tente novamente em 1-2 minutos.")
+                            else:
+                                _url_pub = f"{base_api}/publicar_pacote"
+                                _hdr_pub = {"x-api-key": st.secrets.get("OFFLINE_API_KEY", "")}
+                                resp_pub = None
+                                # Até 2 tentativas: o proxy do Render pode devolver 502/503/504 se a
+                                # instância ainda está subindo, mesmo após o /ready (ou cair a conexão).
+                                for _n_post in (1, 2):
+                                    try:
+                                        resp_pub = requests.post(
+                                            _url_pub,
+                                            data={"usuario": usuario_pwa},
+                                            # "html" vai como arquivo (nao campo de formulario) -- campos de
+                                            # formulario comuns tem teto de 1MB no Starlette; sem o limite de
+                                            # 100 OS por pacote, o HTML pode passar disso facilmente.
+                                            files={"html": ("pacote.html", pacote_html_bytes, "text/html")},
+                                            headers=_hdr_pub,
+                                            timeout=(10, 90),
+                                        )
+                                        if resp_pub.status_code not in (502, 503, 504):
+                                            break
+                                    except (requests.ConnectionError, requests.Timeout):
+                                        resp_pub = None
+                                        if _n_post == 2:
+                                            raise
+                                    if _n_post == 1:
+                                        time.sleep(8)
+
+                                if resp_pub is not None and resp_pub.status_code == 200:
+                                    rota = resp_pub.json().get("url", "")
+                                    st.session_state["rota_pwa_url"] = f"{base_api}{rota}"
+                                else:
+                                    st.session_state.pop("rota_pwa_url", None)
+                                    if resp_pub is not None and resp_pub.status_code == 413:
+                                        st.error("Rota grande demais para publicar — reduza o raio de busca.")
+                                    elif resp_pub is not None:
+                                        # Corta o corpo: no 5xx o texto é o HTML do proxy do Render.
+                                        st.error(f"Falha ao publicar (HTTP {resp_pub.status_code}): {resp_pub.text[:200]}")
                         except Exception as e:
                             st.session_state.pop("rota_pwa_url", None)
                             st.error(f"Erro ao publicar rota: {e}")

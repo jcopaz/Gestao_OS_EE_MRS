@@ -6,7 +6,7 @@
 
 ## 🚫 Regras inegociáveis (app.py / api.py)
 
-1. **Estrutura por `#region` / `#endregion`** — `#endregion` é a **última linha** do bloco. **Mapa de regiões vivo:** `grep -nE "#region" app.py` (SESSÃO 1 imports/config/DB · 2 login · 3 funções [3.3 = Supabase Storage/evidências, 3.9–3.13 = gerador do pacote offline] · 4 coordenadas fixas · 5 ETL · 7 sidebar/navegação · 9+ dashboard/telas). `api.py` é linear, sem regiões — navegar pelos `@app_api.*` e pelos comentários de bloco `# ===`.
+1. **Estrutura por `#region` / `#endregion`** — `#endregion` é a **última linha** do bloco. **Mapa de regiões vivo:** `grep -nE "#region" app.py` (SESSÃO 1 imports/config/DB · 2 login · 3 funções [3.3 = Storage Cloudflare R2/evidências, 3.9–3.13 = gerador do pacote offline] · 4 coordenadas fixas · 5 ETL · 7 sidebar/navegação · 9+ dashboard/telas). `api.py` é linear, sem regiões — navegar pelos `@app_api.*` e pelos comentários de bloco `# ===`.
 2. **Apenas um `with tab1:` e um `with tab2:`** por caminho de execução.
    - Blocos `10.3.x` usam guard `if tab2 is not None:`.
    - `tab1 = None; tab2 = None` inicializados **ANTES** do roteamento (sessão `10.1`).
@@ -117,7 +117,9 @@ Dentro de cada rank: `Criticidade → Atraso ao vencimento → Proximidade`. Ord
 
 ## 🗂️ Padrão de evidência fotográfica / Storage
 
-- **Compressão no servidor** (`upload_foto_supabase`): 1280 px máx. + JPEG q75. **Duplicada em `app.py` (região ~762) e `api.py` (~173)** — editar as duas, mesmo padrão de `COORDENADAS_FIXAS`. Ajuste de parâmetro afeta **só fotos novas**, não recupera espaço do que já subiu.
+- **Destino único: Cloudflare R2** via `storage_evidencias.py` (variáveis `R2_*`, mesmos nomes no Render/Streamlit/GitHub). Ramo Supabase removido em 15/10/2026 — sem R2 configurado, o import não cai, mas qualquer envio levanta `RuntimeError` com os nomes das variáveis ausentes.
+- **Falha de upload nunca vira base64 no banco:** na baixa offline (`api.py`) falha do storage = **HTTP 503 antes de gravar evidência/baixa**; o PWA mantém o item pendente e reenvia. Nada de "fallback emergencial" gravando a foto em `foto_url`.
+- **Compressão no servidor** (`upload_foto_supabase` no `app.py`, região 3.3; `upload_foto_storage` no `api.py`, com alias `upload_foto_supabase`): 1280 px máx. + JPEG q75. **Duplicada nos dois arquivos** — editar as duas, mesmo padrão de `COORDENADAS_FIXAS`. Ajuste de parâmetro afeta **só fotos novas**, não recupera espaço do que já subiu.
   - Isso **não** contradiz "não reencodar a foto no cliente" (Padrão GPS acima): a compressão é **no servidor, depois** do GPS já ter sido validado pelas coordenadas do navegador.
 - **Nunca apagar evidência (arquivo OU linha) sem cruzar com `baixas` primeiro.** O grupo `revisar_manualmente` do `/limpar_evidencias_orfas` já se provou ser evidência de auditoria real que só perdeu o vínculo (incidente 27/07/2026). Rodar **sempre `dry_run=true`** antes; só o grupo `seguro_apagar` (que tem foto atual substituindo) pode ir com `dry_run=false`.
 - **Cron de expiradas força `dry_run=false`; disparo manual assume `true`.** Não inverter — o `if github.event_name == 'schedule'` em `.github/workflows/limpeza-evidencias-expiradas.yml` existe de propósito (bug de 27/07: sem ele, o cron nunca apagava nada de verdade).

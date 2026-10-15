@@ -490,6 +490,22 @@ Primeira execução real do `/limpar_evidencias_orfas` (endpoint criado nesta me
 
 ---
 
+## 10/10/2026 — API do Render fora (boot em loop) por cota do Neon + 15/10 remoção do Supabase/base64
+
+**O que aconteceu:** em 10/10 o Neon free estourou a cota (`exceeded the compute time quota`). No `api.py`, `init_connection_pool()` rodava **no import** e relançava o erro → uvicorn saía com exit 1 → Render reiniciava em loop → **tudo 503, inclusive `/health`** (o `app.py` nem conseguia distinguir "API fora" de "banco fora"). Em paralelo, o projeto Supabase "SGO EE" foi **suspenso por limite até 19/11** — e o `api.py` ainda tinha o "fallback emergencial" que, se o upload falhasse, gravava a foto em **base64 dentro de `evidencias.foto_url` no Neon** (o mesmo banco que estava estourando cota).
+
+**Correção:**
+- **Pool preguiçoso:** o pool só nasce na primeira requisição que precisa de banco (`_obter_pool`), com **1 tentativa** + **cooldown** (`DB_COOLDOWN_S`, padrão 30 s) depois de falha; `BancoIndisponivel` + handlers globais devolvem **503 com mensagem clara**; `/health` responde sem banco e `/ready` checa o banco. Mensagens de erro passam por `_msg_segura` (DSN mascarado).
+- **15/10:** `storage_evidencias.py` ficou **só R2** (ramo Supabase removido; 8.958 URLs no Neon já 100% no R2, uploads novos de App e PWA idem). Sem `R2_*` o import não cai (não derruba o Render); só o envio levanta `RuntimeError` com os **nomes** das variáveis ausentes. Na baixa offline, falha de upload = **HTTP 503 antes de gravar evidência e baixa** (fallback base64 removido); o PWA só marca "sincronizado" com 200, então a baixa continua salva no aparelho e é reenviada. Workflow/script da migração R2 (`migracao-fotos-r2.yml`, `migracao_r2/`) removidos — já cumpriram o papel.
+
+**Aprendizado:**
+1. **Nada de conexão a serviço externo no import de um servidor.** Dependência fora = rota degradada (503), nunca processo morto — senão até o health check some e o diagnóstico fica cego.
+2. **Retry sem cooldown contra provedor com cota estourada só piora** (cada técnico × retries do PWA = mais compute gasto e threads presas).
+3. **Fallback que grava binário no banco "pra não perder" esconde a falha e transfere o problema pro recurso mais escasso.** Melhor falhar alto com a baixa preservada no cliente do que "dar certo" inchando o Neon free.
+4. **Destino que não é mais viável sai do código** — manter o ramo morto só cria a ilusão de redundância (`configurado()` dava `True` com um backend suspenso).
+
+---
+
 ## Lições transversais (válidas pra qualquer mudança futura)
 
 - **Verificar causa raiz com dado real (SQL/log) antes de aplicar patch** — não assumir, não adivinhar. Vale tanto pra bug de dado quanto pra bug de infraestrutura.

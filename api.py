@@ -9,7 +9,7 @@ import io
 import os
 import re
 import time
-import base64
+import threading
 import unicodedata
 from datetime import datetime, timezone, timedelta
 
@@ -20,7 +20,7 @@ from psycopg2 import pool
 from fastapi import FastAPI, Form, HTTPException, UploadFile, File, Security
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 import uuid
 from PIL import Image, ImageOps
 from PIL.ExifTags import TAGS, GPSTAGS
@@ -32,7 +32,7 @@ import storage_evidencias
 # CONFIGURAÇÕES DE AMBIENTE (PRODUÇÃO)
 # ==============================================================================
 NEON_POSTGRES_URL = os.environ.get("NEON_POSTGRES_URL")
-# Storage das fotos (R2 ou Supabase): variáveis lidas em storage_evidencias.py
+# Storage das fotos (Cloudflare R2): variáveis R2_* lidas em storage_evidencias.py
 API_KEY_SECRET = os.environ.get("API_KEY_SECRET")
 
 if not NEON_POSTGRES_URL:
@@ -41,47 +41,149 @@ if not NEON_POSTGRES_URL:
 if not API_KEY_SECRET:
     raise RuntimeError("Variável de ambiente API_KEY_SECRET não configurada.")
 
+
+def _env_int_positivo(nome, padrao):
+    # Env var mal preenchida no painel do Render (vazia, "30d", "-5") nao pode quebrar
+    # o boot nem virar SQL estranho -- cai no padrao e avisa no log. Fica aqui em cima
+    # (e nao junto do bloco PWA) porque o cooldown do banco logo abaixo tambem usa.
+    try:
+        valor = int(os.environ.get(nome, padrao))
+        if valor > 0:
+            return valor
+    except (TypeError, ValueError):
+        pass
+    print(f"[ENV] {nome} invalido; usando padrao {padrao}.")
+    return padrao
+
+
 # ==============================================================================
-# POOL DE CONEXÕES (THREAD-SAFE PARA PRODUÇÃO)
+# POOL DE CONEXÕES (THREAD-SAFE PARA PRODUÇÃO, CRIADO SOB DEMANDA)
+# Incidente 10/10/2026: o Neon free estourou a cota ("exceeded the compute time
+# quota"), init_connection_pool() rodava no import e relancava o erro -> uvicorn
+# saia com exit 1 -> Render reiniciava em loop -> TUDO 503, inclusive /health (o
+# app.py nem conseguia distinguir "API fora" de "banco fora"). Agora o pool so e
+# criado na primeira requisicao que precisa de banco; sem banco, a API sobe, /health
+# responde e as rotas de banco devolvem 503 com mensagem clara.
+# Cooldown: depois de uma falha de conexao, as proximas requisicoes NAO tentam o
+# Neon de novo por COOLDOWN_BANCO_S segundos -- com cota estourada, cada tentativa
+# (x tecnicos sincronizando x retries do PWA) so piora a situacao e prende thread
+# por ate connect_timeout. Falha rapida sem tocar no Neon e mais barato pra todos.
 # ==============================================================================
 pool_conexoes = None
+_pool_lock = threading.Lock()
+# time.monotonic(): imune a ajuste de relogio do servidor (NTP), que poderia
+# prolongar ou zerar o cooldown sem querer.
+_banco_indisponivel_ate = 0.0
+COOLDOWN_BANCO_S = _env_int_positivo("DB_COOLDOWN_S", 30)
+
+
+class BancoIndisponivel(Exception):
+    """Banco (Neon) fora ou em cooldown. Vira HTTP 503 no handler global -- nunca
+    deve ser engolida para cair num default de validacao (geofence, coordenacao)."""
+
+
+def _msg_segura(e) -> str:
+    # Mensagem do psycopg2 pode conter o DSN inteiro (com senha) -- e o log do Render
+    # e visto por mais gente que o painel de env vars. Mascara antes de imprimir.
+    try:
+        msg = str(e)
+    except Exception:
+        msg = repr(type(e))
+    if NEON_POSTGRES_URL:
+        msg = msg.replace(NEON_POSTGRES_URL, "<dsn>")
+    msg = re.sub(r"postgres(ql)?://\S+", "<dsn>", msg)
+    msg = re.sub(r"password=\S+", "password=***", msg)
+    msg = " ".join(msg.split())
+    return msg[:300]
+
+
+def _marcar_banco_indisponivel(e) -> None:
+    global _banco_indisponivel_ate
+    _banco_indisponivel_ate = time.monotonic() + COOLDOWN_BANCO_S
+    print(f"[DB] Banco indisponivel (cooldown {COOLDOWN_BANCO_S}s): {_msg_segura(e)}")
+
+
+def _verificar_cooldown() -> None:
+    # Checagem barata, sem rede: durante o cooldown nem chega a tocar no Neon.
+    if time.monotonic() < _banco_indisponivel_ate:
+        raise BancoIndisponivel("cooldown")
+
+
+def _obter_pool():
+    global pool_conexoes
+    _verificar_cooldown()
+    if pool_conexoes is not None:
+        return pool_conexoes
+    with _pool_lock:
+        # Double-check: varias requisicoes podem chegar juntas no boot frio; so a
+        # primeira cria o pool, as outras esperam o lock e reaproveitam (ou pegam o
+        # cooldown que a primeira acabou de marcar, sem nova tentativa no Neon).
+        _verificar_cooldown()
+        if pool_conexoes is not None:
+            return pool_conexoes
+        # UMA tentativa so (antes eram 3 com sleep): quem tenta de novo e a proxima
+        # requisicao depois do cooldown, nao um loop prendendo a thread do request.
+        try:
+            pool_conexoes = psycopg2.pool.ThreadedConnectionPool(
+                1,
+                20,
+                dsn=NEON_POSTGRES_URL,
+                connect_timeout=10
+            )
+        except psycopg2.OperationalError as e:
+            _marcar_banco_indisponivel(e)
+            raise BancoIndisponivel("falha ao criar pool") from e
+        return pool_conexoes
+
 
 def init_connection_pool():
-    global pool_conexoes
-    if pool_conexoes is None:
-        max_retries = 3
-        for tentativa in range(max_retries):
-            try:
-                pool_conexoes = psycopg2.pool.ThreadedConnectionPool(
-                    1,
-                    20,
-                    dsn=NEON_POSTGRES_URL,
-                    connect_timeout=10
-                )
-                break
-            except psycopg2.OperationalError as e:
-                if tentativa == max_retries - 1:
-                    raise e
-                time.sleep(2)
+    # Mantido por compatibilidade (nome antigo); NAO e mais chamado no import.
+    return _obter_pool()
 
 
 def get_connection():
-    if pool_conexoes is None:
-        init_connection_pool()
-    conn = pool_conexoes.getconn()
+    p = _obter_pool()
+    try:
+        conn = p.getconn()
+    except psycopg2.pool.PoolError as e:
+        # Pool esgotado (20 conexoes em uso) e saturacao momentanea da API, nao banco
+        # fora -- 503 sem cooldown, senao um pico de uso travaria todo mundo por 30s.
+        raise BancoIndisponivel("pool esgotado") from e
+    except psycopg2.OperationalError as e:
+        _marcar_banco_indisponivel(e)
+        raise BancoIndisponivel("falha ao conectar") from e
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT 1")
         return conn
     except Exception:
+        # Conexao velha (Neon suspende por ociosidade e derruba o socket): descarta e
+        # tenta UMA conexao nova. Se a nova tambem falhar, e o banco que esta fora.
         try:
-            pool_conexoes.putconn(conn, close=True)
+            p.putconn(conn, close=True)
         except Exception:
             pass
-        conn = pool_conexoes.getconn()
+    try:
+        conn = p.getconn()
+    except psycopg2.pool.PoolError as e:
+        raise BancoIndisponivel("pool esgotado") from e
+    except psycopg2.OperationalError as e:
+        _marcar_banco_indisponivel(e)
+        raise BancoIndisponivel("falha ao conectar") from e
+    try:
         with conn.cursor() as cur:
             cur.execute("SELECT 1")
         return conn
+    except Exception as e:
+        # Fecha sempre (nao vaza o slot do pool); so erro de conexao vira cooldown.
+        try:
+            p.putconn(conn, close=True)
+        except Exception:
+            pass
+        if isinstance(e, (psycopg2.OperationalError, psycopg2.InterfaceError)):
+            _marcar_banco_indisponivel(e)
+            raise BancoIndisponivel("conexao sem resposta") from e
+        raise
 
 
 def release_connection(conn):
@@ -94,8 +196,15 @@ def release_connection(conn):
             # com o erro original. rollback() em conexao sem transacao pendente e no-op seguro.
             conn.rollback()
             pool_conexoes.putconn(conn)
-        except Exception:
-            pass
+        except Exception as e:
+            # rollback falhou = conexao morta. Antes o except engolia e a conexao nunca
+            # voltava ao pool (vazava 1 slot dos 20 por falha). Fecha e devolve o slot.
+            # Nunca relanca: release roda em finally e nao pode mascarar o erro original.
+            print(f"[DB] Falha ao devolver conexao ao pool; descartando: {_msg_segura(e)}")
+            try:
+                pool_conexoes.putconn(conn, close=True)
+            except Exception as e2:
+                print(f"[DB] Falha ao descartar conexao: {_msg_segura(e2)}")
 
 
 # ==============================================================================
@@ -165,17 +274,18 @@ def extrair_gps_exif(imagem_pil: Image.Image):
 
 def _sanear_nome_arquivo(texto: str) -> str:
     """Remove acentos (NFKD) e forca ASCII puro -- \\w do Python e Unicode-aware por
-    padrao e deixa letras acentuadas passarem (ex.: "RELE"), que o Supabase Storage
-    rejeita na chave do objeto com 400 InvalidKey. Mesmo criterio usado em app.py."""
+    padrao e deixa letras acentuadas passarem (ex.: "RELE"), que o storage (Supabase na
+    epoca, hoje R2) rejeitava na chave do objeto com 400 InvalidKey -- mantido no R2 pra
+    chave/URL publica ficarem ASCII e estaveis. Mesmo criterio usado em app.py."""
     texto = unicodedata.normalize("NFKD", str(texto))
     texto = "".join(ch for ch in texto if not unicodedata.combining(ch))
     return re.sub(r"[^\w\-.]", "_", texto, flags=re.ASCII)
 
-def upload_foto_supabase(arquivo_bytes: bytes, nome_arquivo: str) -> str:
-    # Nome mantido por compatibilidade -- o destino real (Cloudflare R2 ou
-    # Supabase) é decidido em storage_evidencias.py.
-    if not storage_evidencias.configurado():
-        return ""
+def upload_foto_storage(arquivo_bytes: bytes, nome_arquivo: str) -> str:
+    # Comprime e envia ao Cloudflare R2 (storage_evidencias.py). Falha de ENVIO ou
+    # storage nao configurado PROPAGA a excecao (15/10/2026): antes devolvia "" e o
+    # chamador gravava a foto em base64 direto no Neon -- inchava o banco (plano free,
+    # incidente de cota de 10/10) e escondia a falha do storage. Quem chama decide.
     try:
         img = Image.open(io.BytesIO(arquivo_bytes))
         img = ImageOps.exif_transpose(img)
@@ -186,12 +296,14 @@ def upload_foto_supabase(arquivo_bytes: bytes, nome_arquivo: str) -> str:
         img.save(out, format="JPEG", quality=75, optimize=True)
         bytes_comprimidos = out.getvalue()
     except Exception:
+        # Compressao e otimizacao, nao requisito: foto que o PIL nao abre (formato
+        # raro, arquivo truncado) sobe como veio em vez de perder a evidencia.
         bytes_comprimidos = arquivo_bytes
-    try:
-        return storage_evidencias.enviar(bytes_comprimidos, nome_arquivo)
-    except Exception as e:
-        print(f"[STORAGE] Falha no upload de {nome_arquivo}: {e}")
-        return ""
+    return storage_evidencias.enviar(bytes_comprimidos, nome_arquivo)
+
+
+# Alias do nome antigo (pre-R2), caso algum script/import externo ainda use.
+upload_foto_supabase = upload_foto_storage
 
 def upsert_evidencia(ativo: str, atividade: str, foto_url: str, os_referencia: str, concluido_por: str, geolocalizacao: str):
     conn = get_connection()
@@ -330,8 +442,13 @@ def carregar_config_operacional(coordenacao: str) -> dict:
         )
         row = cur.fetchone()
         cur.close()
-    except Exception:
-        row = None
+    except Exception as e:
+        # Antes: except engolia e caia no DEFAULT (geofence 2 km) -- com o banco fora, a
+        # coordenacao que tem override (ex.: geofence maior) era validada com o limite
+        # errado e o tecnico levava "Bloqueio Geografico" falso (ou o contrario). Falha de
+        # banco agora vira 503 (handler global): o PWA mantem a baixa e tenta de novo.
+        # Default so quando o banco RESPONDEU que nao ha config vigente (abaixo).
+        raise BancoIndisponivel("falha ao ler configuracoes_operacionais") from e
     finally:
         if conn is not None: release_connection(conn)
 
@@ -354,8 +471,12 @@ def obter_coordenacao_da_os(os_id: str) -> str:
         cur.execute("SELECT coordenacao FROM os_programadas WHERE os = %s", (str(os_id).strip(),))
         row = cur.fetchone()
         cur.close()
-    except Exception:
-        row = None
+    except Exception as e:
+        # Mesmo motivo de carregar_config_operacional: banco fora NAO pode virar
+        # "Paranapiacaba" -- gravaria a baixa na coordenacao errada e validaria o
+        # geofence com a config de outra coordenacao. "OS nao encontrada" (row None,
+        # banco respondeu) continua caindo no default de negocio abaixo.
+        raise BancoIndisponivel("falha ao ler coordenacao da OS") from e
     finally:
         if conn is not None: release_connection(conn)
 
@@ -380,6 +501,42 @@ app_api.add_middleware(
     allow_headers=["*"]
 )
 
+
+# ==============================================================================
+# BANCO FORA -> 503 PADRONIZADO (em vez de 500 generico / processo morto)
+# Chave "detail" de proposito: o PWA offline mostra errJson.detail ao tecnico. 503 +
+# Retry-After diz ao cliente "tente de novo depois" -- a baixa fica na fila local do
+# aparelho (IndexedDB) e nada se perde.
+# ==============================================================================
+_MSG_503 = "Banco de dados indisponível no momento. A baixa continua salva no aparelho; tente sincronizar novamente em alguns minutos."
+
+
+async def _handler_banco_indisponivel(request, exc):
+    # Erro de conexao que escapou do get_connection (ex.: Neon caiu no meio da query)
+    # tambem arma o cooldown, senao a proxima requisicao martelaria o Neon de novo.
+    if isinstance(exc, (psycopg2.OperationalError, psycopg2.InterfaceError)):
+        _marcar_banco_indisponivel(exc)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": _MSG_503},
+        headers={"Retry-After": str(COOLDOWN_BANCO_S)},
+    )
+
+
+async def _handler_pandas_db_error(request, exc):
+    # pd.read_sql_query embrulha o erro do driver em pandas.errors.DatabaseError;
+    # se a causa for conexao, e banco fora (503). Senao e erro de SQL/dado (500), sem
+    # vazar a mensagem do driver na resposta.
+    if isinstance(exc.__cause__, (psycopg2.OperationalError, psycopg2.InterfaceError)):
+        return await _handler_banco_indisponivel(request, exc.__cause__)
+    print(f"[DB] Erro em consulta pandas: {_msg_segura(exc)}")
+    return JSONResponse(status_code=500, content={"detail": "Erro interno ao consultar o banco."})
+
+
+for _exc_banco in (BancoIndisponivel, psycopg2.OperationalError, psycopg2.InterfaceError, psycopg2.pool.PoolError):
+    app_api.add_exception_handler(_exc_banco, _handler_banco_indisponivel)
+app_api.add_exception_handler(pd.errors.DatabaseError, _handler_pandas_db_error)
+
 # Codigos de Justificativa Padrao aceitos no NRAV (IT-ENG-3113) -- so impedimento EXTERNO.
 # E001 (Ativo Inativado) e E008 (Plano incompativel com o ativo) ficam de fora de proposito:
 # pelo documento oficial sao causa de "Nao se Aplica" (cadastro errado), nao de NRAV (vistoria
@@ -387,7 +544,9 @@ app_api.add_middleware(
 # cruzado entre os dois arquivos, mantida em paralelo aqui.
 CODIGOS_NRAV_VALIDOS = {"E002", "E003", "E004", "E005", "E006", "E007", "E009", "E010", "E011"}
 
-init_connection_pool()
+# init_connection_pool() NAO roda mais no import (incidente 10/10/2026, ver bloco do
+# pool la em cima): Neon com cota estourada derrubava o boot inteiro. O pool nasce na
+# primeira requisicao que precisa de banco (_obter_pool).
 
 # ==============================================================================
 # ENDPOINT PRINCIPAL
@@ -441,6 +600,9 @@ async def sincronizar_baixa_offline(
 
     dist_km = haversine_vectorized(lat_final, lon_final, pd.Series([lat_ativo]), pd.Series([lon_ativo]))[0]
 
+    # Falha de banco aqui = BancoIndisponivel -> 503 ANTES do upload da foto (nao gasta
+    # storage nem grava evidencia sem baixa). NUNCA cair em default de coordenacao/
+    # geofence por falha de banco: validaria a baixa com a regra errada.
     coordenacao_os = obter_coordenacao_da_os(os_id)
     config_op = carregar_config_operacional(coordenacao_os)
     geofence_limite_km = config_op["geofence_km"]
@@ -450,7 +612,7 @@ async def sincronizar_baixa_offline(
 
     # 3.1) NRAV (Não Realizado Após Vistoria, IT-ENG-3113, pedido 29/07/2026): fluxo distinto
     # da Conclusão -- valida ANTES do upload da foto (falha rápido, sem gastar upload pro
-    # Supabase à toa). Causa validada contra a lista server-side (não confia só no <select> do
+    # storage à toa). Causa validada contra a lista server-side (não confia só no <select> do
     # cliente) e Observações truncada em 40 chars (limite real do campo "Txt. confirmação" do
     # SAP, corrigido de 38 para 40 em 26/08/2026).
     tipo_baixa_norm = (tipo_baixa or "CONCLUSAO").strip().upper()
@@ -476,19 +638,29 @@ async def sincronizar_baixa_offline(
 
     geo_string = f"Offline Sync - {fonte_gps} (Lat: {lat_final:.6f}, Lon: {lon_final:.6f})"
 
-    # 6) Upload ao Supabase e Gestão de Evidência
+    # 6) Upload ao storage (Cloudflare R2) e Gestão de Evidência
     # Nome fixo por OS (sem timestamp): reenvio da mesma baixa SOBRESCREVE a
     # foto em vez de criar arquivo novo. Com timestamp, cada reenvio virava um
     # órfão no bucket (~500 em out/2026) -- evidencias guarda 1 foto por OS.
     nome_foto = _sanear_nome_arquivo(f"{ativo_id}_OS{os_id}.jpg")
-    url_supabase = upload_foto_supabase(foto_bytes, nome_foto)
+    # Falha no upload = 503 ANTES de gravar evidencia e baixa (15/10/2026). O antigo
+    # "fallback emergencial" gravava a foto em base64 na coluna foto_url do Neon: cada
+    # foto virava ~100-500 KB de texto no banco (plano free, que ja estourou cota em
+    # 24/08 e 10/10) e a limpeza por prefixo de URL nunca apagava essas linhas. Com
+    # 503 o PWA mantem a baixa pendente no aparelho (so marca "sincronizado" em 200) e
+    # o tecnico reenvia depois -- nada se perde e o banco nao incha.
+    try:
+        url_foto = upload_foto_storage(foto_bytes, nome_foto)
+    except Exception as e:
+        # _msg_segura: a mensagem do boto3/RuntimeError nao deve levar nada sensivel
+        # pro log; o RuntimeError de config ja traz so NOMES de variaveis.
+        print(f"[STORAGE] Falha no upload de {nome_foto} (OS {os_id}): {type(e).__name__}: {_msg_segura(e)}")
+        raise HTTPException(
+            status_code=503,
+            detail="Falha ao salvar a foto da evidência; a baixa NÃO foi gravada e continua salva no aparelho. Tente sincronizar novamente em alguns minutos.",
+        )
 
-    if url_supabase:
-        upsert_evidencia(ativo=ativo_id, atividade="Baixa Offline", foto_url=url_supabase, os_referencia=os_id, concluido_por=usuario, geolocalizacao=geo_string)
-    else:
-        # Fallback emergencial: Salva direto e APENAS na tabela de evidencias.
-        foto_b64 = f"data:image/jpeg;base64,{base64.b64encode(foto_bytes).decode('utf-8')}"
-        upsert_evidencia(ativo=ativo_id, atividade="Baixa Offline", foto_url=foto_b64, os_referencia=os_id, concluido_por=usuario, geolocalizacao=geo_string)
+    upsert_evidencia(ativo=ativo_id, atividade="Baixa Offline", foto_url=url_foto, os_referencia=os_id, concluido_por=usuario, geolocalizacao=geo_string)
 
     # 7) Persistência da baixa (Sem a coluna de foto, respeitando o schema do banco)
     # NRAV: status "ABER NRAV" (conta como Concluída na Meta, mas fica Aberta pro Backlog --
@@ -529,7 +701,7 @@ async def sincronizar_baixa_offline(
 
 
 # ==============================================================================
-# LIMPEZA DE EVIDENCIAS EXPIRADAS (ciclagem de fotos no Supabase Storage)
+# LIMPEZA DE EVIDENCIAS EXPIRADAS (ciclagem de fotos no storage Cloudflare R2)
 # Expiracao = Data/Hora Realizado + Ciclo (dias, da planilha de OS Programadas) +
 # 30 dias de folga. Sem Ciclo identificavel para a OS -> nunca expira (fail-safe).
 # Apaga so o arquivo no Storage; a linha em "evidencias" continua existindo (so
@@ -584,9 +756,12 @@ async def limpar_evidencias_expiradas(
 
         if not dry_run:
             try:
-                storage_evidencias.apagar(nome_arquivo)
+                # Conexao ANTES de apagar o arquivo: se o banco caiu no meio do loop, o
+                # arquivo NAO pode sumir do storage com a linha ainda apontando pra ele
+                # (evidencia "fantasma" -- URL quebrada na auditoria).
                 conn2 = get_connection()
                 try:
+                    storage_evidencias.apagar(nome_arquivo)
                     cur = conn2.cursor()
                     cur.execute("UPDATE evidencias SET foto_url = '' WHERE id = %s", (int(row["id"]),))
                     conn2.commit()
@@ -594,6 +769,10 @@ async def limpar_evidencias_expiradas(
                 finally:
                     release_connection(conn2)
                 apagadas.append(row["os_referencia"])
+            except BancoIndisponivel:
+                # Banco fora: aborta a rodada inteira (503) em vez de acumular N erros
+                # identicos e martelar o Neon a cada candidata.
+                raise
             except Exception as e:
                 erros.append(f"OS {row['os_referencia']}: {e}")
 
@@ -743,6 +922,31 @@ async def health():
 
 
 # ==============================================================================
+# READINESS (o Render esta de pe E o banco responde?)
+# Uso EXCLUSIVO do botao de publicar Rota PWA no app.py: confirma o Neon antes de
+# mandar um HTML de varios MB, em vez de descobrir no meio do upload (503).
+# NUNCA apontar monitor externo (UptimeRobot etc.) para /ready -- cada ping acorda
+# o Neon free e queima as horas de compute do plano. Monitor, se houver, usa /health,
+# que continua sem tocar no banco.
+# ==============================================================================
+@app_api.get("/ready")
+def ready():
+    conn = None
+    try:
+        conn = get_connection()
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+            cur.fetchone()
+        return {"status": "ok"}
+    except Exception as e:
+        # Log so no servidor; a resposta nao vaza DSN/host/mensagem do driver.
+        print(f"[READY] Banco indisponivel: {_msg_segura(e)}")
+        return JSONResponse(status_code=503, content={"status": "banco indisponivel"})
+    finally:
+        release_connection(conn)
+
+
+# ==============================================================================
 # PUBLICACAO DO PACOTE PWA
 # Armazena o HTML self-contained e devolve uma URL HTTPS. Abrir a URL 1x online
 # entrega o pacote em contexto seguro (isSecureContext=True) -> geolocation do
@@ -768,6 +972,37 @@ def _garantir_tabela_pwa():
         release_connection(conn)
 
 
+# Roda UMA vez no boot (e a unica tentativa de banco no import: cria o pool sob
+# demanda; se o Neon estiver fora, falha rapido, arma o cooldown e o boot segue). A
+# chamada fica aqui porque a funcao so existe a partir deste ponto do modulo. Antes rodava a
+# cada publicacao: um CREATE TABLE IF NOT EXISTS extra no Neon por clique, justo no
+# momento mais pesado (upload de varios MB). Falha aqui NAO derruba o boot: o resto
+# da API (sincronizacao, fotos) nao depende desta tabela; se ela nao existir, so a
+# publicacao falha e o erro aparece no log abaixo.
+# _tabela_pwa_ok: com o banco fora no boot (incidente 10/10/2026), a tentativa abaixo
+# falha e a API sobe mesmo assim; a flag faz a PRIMEIRA publicacao depois que o banco
+# voltar garantir a tabela (uma vez so), em vez de depender de um novo deploy.
+# _env_int_positivo foi movida para o topo do arquivo (usada tambem pelo cooldown).
+_tabela_pwa_ok = False
+try:
+    _garantir_tabela_pwa()
+    _tabela_pwa_ok = True
+except Exception as e:
+    print(f"[PWA] Falha ao garantir tabela pwa_pacotes no boot: {_msg_segura(e)}")
+
+
+# Teto do HTML publicado: o Render free tem 512 MB e o pacote passa inteiro pela
+# memoria (bytes + str decodificada + parametro do INSERT ~= 3x o tamanho). Acima
+# disso o processo pode morrer por OOM e o usuario so ve 503, sem explicacao.
+PWA_MAX_HTML_MB = _env_int_positivo("PWA_MAX_HTML_MB", 8)
+# Retencao dos pacotes: cada publicacao grava o HTML inteiro e nada apagava -- o Neon
+# free tem 0,5 GB no total. Pacote antigo ja foi baixado pelo tecnico (fica offline
+# no aparelho); se precisar de novo, basta republicar a rota. 1 dia (decisao do Julio,
+# 15/10/2026): os tecnicos republicam a rota todo dia, entao pacote de ontem nao serve
+# mais pra nada. A limpeza roda a cada publicacao, sem cron.
+PWA_RETENCAO_DIAS = _env_int_positivo("PWA_RETENCAO_DIAS", 1)
+
+
 @app_api.post("/publicar_pacote")
 async def publicar_pacote(
     api_key: str = Security(validar_api_key),
@@ -778,10 +1013,21 @@ async def publicar_pacote(
     # teto de 1MB no Starlette/python-multipart; sem o limite de 100 OS por pacote (removido
     # a pedido), o HTML de uma rota grande passa disso facilmente.
     html_bytes = await html.read()
+    # Checado ANTES do decode/INSERT: barra a rota gigante com mensagem clara (413) em vez
+    # de triplicar o tamanho na memoria e arriscar OOM/503 no Render free.
+    if len(html_bytes) > PWA_MAX_HTML_MB * 1024 * 1024:
+        raise HTTPException(
+            status_code=413,
+            detail="Rota grande demais para publicar — reduza o raio de busca.",
+        )
     html_str = html_bytes.decode("utf-8")
 
-    _garantir_tabela_pwa()
     pacote_id = uuid.uuid4().hex[:12]
+
+    global _tabela_pwa_ok
+    if not _tabela_pwa_ok:
+        _garantir_tabela_pwa()
+        _tabela_pwa_ok = True
 
     conn = get_connection()
     try:
@@ -790,6 +1036,21 @@ async def publicar_pacote(
             "INSERT INTO pwa_pacotes (id, usuario, html) VALUES (%s, %s, %s);",
             (pacote_id, str(usuario), html_str),
         )
+        # Limpeza dos pacotes vencidos na mesma transacao (sem job/cron extra -- o Render
+        # free dorme). SAVEPOINT depois do INSERT: se o DELETE falhar, o ROLLBACK TO
+        # desfaz so ele e a transacao NAO fica abortada -- a publicacao segue e commita.
+        # O pacote recem-inserido tem criado_em = agora, entao nunca cai no filtro.
+        # Dias vem de int validado (_env_int_positivo) e ainda assim vai como parametro.
+        cur.execute("SAVEPOINT limpeza_pwa;")
+        try:
+            cur.execute(
+                "DELETE FROM pwa_pacotes WHERE criado_em < NOW() - (%s * INTERVAL '1 day');",
+                (PWA_RETENCAO_DIAS,),
+            )
+            cur.execute("RELEASE SAVEPOINT limpeza_pwa;")
+        except Exception as e:
+            cur.execute("ROLLBACK TO SAVEPOINT limpeza_pwa;")
+            print(f"[PWA] Falha ao limpar pacotes antigos (publicacao segue): {_msg_segura(e)}")
         conn.commit()
         cur.close()
     finally:
@@ -810,6 +1071,6 @@ async def servir_pacote(pacote_id: str):
         release_connection(conn)
 
     if not row or not row[0]:
-        raise HTTPException(status_code=404, detail="Pacote nao encontrado ou expirado.")
+        raise HTTPException(status_code=404, detail="Pacote não encontrado ou expirado — peça para republicar a rota.")
 
     return HTMLResponse(content=row[0], status_code=200)

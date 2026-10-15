@@ -81,7 +81,7 @@ Duas frentes de trabalho:
 
 ## 📌 Estado atual (05/09/2026)
 
-- **App:** em produção — painel Streamlit em **Streamlit Community Cloud** (`sgomrs.streamlit.app`, Python 3.12) + API FastAPI em **Render** (`gestao-os-ee-mrs-producao.onrender.com`) · Banco Neon · Storage Supabase. São **duas hospedagens diferentes**, cada push no `main` redeploya as duas.
+- **App:** em produção — painel Streamlit em **Streamlit Community Cloud** (`sgomrs.streamlit.app`, Python 3.12) + API FastAPI em **Render** (`gestao-os-ee-mrs-producao.onrender.com`) · Banco Neon · Storage Cloudflare R2 (Supabase Storage removido em 15/10/2026). São **duas hospedagens diferentes**, cada push no `main` redeploya as duas.
 - **Versão em produção:** **v19.0.x** — reconciliação de 04/09 (base v18.2.0 + correções de datas + parser de Data Inicial Programada + flag da Agenda Mensal) depois do rollback de 02/09. Tag `estavel-2026-09-05`.
 - **Configurações Operacionais** por coordenação (geofence/trava/escopo/ordem, vigência automática **+ toggle "sem expiração / novo padrão"**): **em produção**.
 - **Deck:** v11 concluído (13/07/2026).
