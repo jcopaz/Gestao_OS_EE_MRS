@@ -1,0 +1,40 @@
+name: Migração das fotos base64 do Neon -> R2
+
+# Migração única (15/10/2026) das 8 evidências que ficaram gravadas em base64
+# dentro de evidencias.foto_url (fallback antigo do PWA) -- ver
+# migracao_r2/migrar_fotos_base64.py. Roda aqui (e não no PC) porque a rede
+# corporativa da MRS bloqueia a conexão direta com o Neon (porta 5432).
+# Disparo manual apenas: primeiro dry-run (só lista), depois executar.
+on:
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: "Modo"
+        type: choice
+        options: [dry-run, executar]
+        default: dry-run
+
+jobs:
+  migrar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install boto3 psycopg2-binary requests Pillow
+      - name: migrar_fotos_base64.py (${{ github.event.inputs.modo }})
+        env:
+          NEON_POSTGRES_URL: ${{ secrets.NEON_POSTGRES_URL }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+          PYTHONUNBUFFERED: "1"
+        run: |
+          if [ "${{ github.event.inputs.modo }}" = "executar" ]; then
+            python migracao_r2/migrar_fotos_base64.py --executar
+          else
+            python migracao_r2/migrar_fotos_base64.py
+          fi
