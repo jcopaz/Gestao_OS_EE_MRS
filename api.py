@@ -6,6 +6,7 @@
 # ==============================================================================
 
 import io
+import json
 import os
 import re
 import time
@@ -579,6 +580,87 @@ app_api.add_exception_handler(pd.errors.DatabaseError, _handler_pandas_db_error)
 # cruzado entre os dois arquivos, mantida em paralelo aqui.
 CODIGOS_NRAV_VALIDOS = {"E002", "E003", "E004", "E005", "E006", "E007", "E009", "E010", "E011"}
 
+# Parametros de ativos (BASE 2, pedido 27/10/2026) -- mesma lista/regras de PARAMETROS_CAMPOS
+# e interpretar_parametro() em app.py (regiao 3.2.2), mantidas em paralelo aqui. "dec" =
+# tensao/corrente (virgula ou ponto, ate 2 casas); "int" = mm, so digitos.
+PARAMETROS_CAMPOS = [
+    ("tensao_entrada_v", "dec"), ("tensao_saida_v", "dec"),
+    ("corrente_op_normal_a", "dec"), ("corrente_op_reverso_a", "dec"),
+    ("corrente_desl_normal_a", "dec"), ("corrente_desl_reverso_a", "dec"),
+    ("bitola_larga_mm", "int"), ("bitola_metrica_mm", "int"),
+    ("flp_esquerda_mm", "int"), ("flp_direita_mm", "int"), ("flp_metrica_mm", "int"),
+]
+_RE_PARAM_DEC = re.compile(r"^\d{1,5}([.,]\d{1,2})?$")
+_RE_PARAM_INT = re.compile(r"^\d{1,5}$")
+
+
+def _interpretar_parametros_json(texto: str) -> dict:
+    """parametros_json do PWA -> {campo: valor}. Vazio = {}. Formato invalido = 400 (o PWA
+    ja valida antes de gravar na fila; aqui so chega lixo de pacote adulterado)."""
+    if not (texto or "").strip():
+        return {}
+    try:
+        bruto = json.loads(texto)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Parâmetros do ativo em formato inválido.")
+    if not isinstance(bruto, dict):
+        raise HTTPException(status_code=400, detail="Parâmetros do ativo em formato inválido.")
+    valores = {}
+    for campo, tipo in PARAMETROS_CAMPOS:
+        t = str(bruto.get(campo) or "").strip().replace(" ", "")
+        if not t:
+            continue
+        if tipo == "int":
+            if not _RE_PARAM_INT.match(t):
+                raise HTTPException(status_code=400, detail=f"Parâmetro {campo}: em mm use só números inteiros (sem ponto nem vírgula).")
+            valores[campo] = int(t)
+        else:
+            if not _RE_PARAM_DEC.match(t):
+                raise HTTPException(status_code=400, detail=f"Parâmetro {campo}: use número com vírgula decimal, até 2 casas.")
+            valores[campo] = float(t.replace(",", "."))
+    return valores
+
+
+# Schema "parametros" e criado pelo init_db do app.py; aqui so garante (1x por processo)
+# para o caso da API receber medicao antes do painel ter subido com a versao nova.
+_schema_parametros_ok = False
+
+
+def _garantir_schema_parametros_cur(cur) -> None:
+    # A flag so vira True depois do commit (no endpoint): rollback desfaz o CREATE tambem.
+    if _schema_parametros_ok:
+        return
+    cur.execute("CREATE SCHEMA IF NOT EXISTS parametros;")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS parametros.medicoes (
+            id SERIAL PRIMARY KEY, uid VARCHAR(64) UNIQUE NOT NULL,
+            data_hora TIMESTAMP NOT NULL, equipe TEXT, ativo VARCHAR(255) NOT NULL,
+            coordenacao VARCHAR(100), os_referencia VARCHAR(500),
+            tensao_entrada_v NUMERIC(7,2), tensao_saida_v NUMERIC(7,2),
+            corrente_op_normal_a NUMERIC(7,2), corrente_op_reverso_a NUMERIC(7,2),
+            corrente_desl_normal_a NUMERIC(7,2), corrente_desl_reverso_a NUMERIC(7,2),
+            bitola_larga_mm INTEGER, bitola_metrica_mm INTEGER,
+            flp_esquerda_mm INTEGER, flp_direita_mm INTEGER, flp_metrica_mm INTEGER,
+            registrado_por VARCHAR(255), origem VARCHAR(20), criado_em TIMESTAMP DEFAULT NOW()
+        );
+        """
+    )
+
+
+def _inserir_medicao_parametros_cur(cur, uid, data_hora, equipe, ativo, coordenacao, os_referencia, valores, registrado_por):
+    colunas = [c for c, _ in PARAMETROS_CAMPOS]
+    cur.execute(
+        f"""
+        INSERT INTO parametros.medicoes (uid, data_hora, equipe, ativo, coordenacao, os_referencia,
+            {", ".join(colunas)}, registrado_por, origem)
+        VALUES (%s, %s, %s, %s, %s, %s, {", ".join(["%s"] * len(colunas))}, %s, 'OFFLINE')
+        ON CONFLICT (uid) DO NOTHING;
+        """,
+        (str(uid), data_hora, str(equipe), str(ativo), str(coordenacao), str(os_referencia),
+         *[valores.get(c) for c in colunas], str(registrado_por)),
+    )
+
 # init_connection_pool() NAO roda mais no import (incidente 10/10/2026, ver bloco do
 # pool la em cima): Neon com cota estourada derrubava o boot inteiro. O pool nasce na
 # primeira requisicao que precisa de banco (_obter_pool).
@@ -604,8 +686,15 @@ async def sincronizar_baixa_offline(
     # Coordenacao embutida no pacote PWA na publicacao (15/10/2026). Fallback quando a OS
     # ja nao esta em os_programadas; pacotes antigos nao mandam (default "").
     coordenacao: str = Form(default=""),
+    # Parametros do ativo (BASE 2, 27/10/2026): JSON {campo: texto} + uid do item da fila
+    # PWA (idempotencia). Pacotes antigos nao mandam -> "" (nada gravado).
+    parametros_json: str = Form(default=""),
+    parametros_uid: str = Form(default=""),
+    # Todas as OS do mesmo ativo gravadas juntas no PWA ("123, 456"); vazio = so esta OS.
+    parametros_os_referencia: str = Form(default=""),
     foto: UploadFile = File(...)
 ):
+    global _schema_parametros_ok
     # OS sempre como inteiro em texto ("23089830.0" -> "23089830"), mesma regra de
     # normalizar_numero_os em app.py -- pacote PWA gerado antes da correção ainda manda ".0".
     os_id = str(os_id).strip()
@@ -671,6 +760,15 @@ async def sincronizar_baixa_offline(
             raise HTTPException(status_code=400, detail=f"Causa NRAV inválida ou não informada: '{causa_nrav}'.")
         if not texto_confirmacao_norm:
             raise HTTPException(status_code=400, detail="Observações (Texto de confirmação) obrigatórias para registrar NRAV.")
+
+    # 3.2) Parametros do ativo: validados ANTES do upload (mesma logica do NRAV acima). So
+    # na Conclusao -- o PWA nao mostra os campos no modo NRAV. Sem uid nao ha como deduplicar
+    # o reenvio, entao a medicao e ignorada (nao chega a acontecer com o PWA atual).
+    parametros_valores = _interpretar_parametros_json(parametros_json) if tipo_baixa_norm != "NRAV" else {}
+    parametros_uid_norm = (parametros_uid or "").strip()[:64]
+    if parametros_valores and not parametros_uid_norm:
+        print(f"[PARAMETROS] OS {os_id}: medicao recebida sem uid -- ignorada")
+        parametros_valores = {}
 
     # 4) Datas / horários
     hora_apontamento = datetime.fromisoformat(data_hora_local.replace("Z", "+00:00")).astimezone(timezone(timedelta(hours=-3)))
@@ -754,7 +852,21 @@ async def sincronizar_baixa_offline(
                 causa_nrav=causa_final,
                 texto_confirmacao=texto_final,
             )
+            # Medicao na MESMA transacao: ou grava baixa + medicao, ou nada (o PWA reenvia).
+            if parametros_valores:
+                _garantir_schema_parametros_cur(cur)
+                equipe_param = "; ".join(
+                    [usuario.strip()] + [p.strip() for p in acompanhante.split(",") if p.strip()]
+                )
+                _inserir_medicao_parametros_cur(
+                    cur, uid=parametros_uid_norm, data_hora=hora_apontamento.replace(tzinfo=None),
+                    equipe=equipe_param, ativo=ativo_id, coordenacao=coordenacao_os,
+                    os_referencia=((parametros_os_referencia or "").strip() or os_id)[:500],
+                    valores=parametros_valores, registrado_por=usuario,
+                )
         conn.commit()
+        if parametros_valores:
+            _schema_parametros_ok = True
     except Exception:
         # Rollback explicito antes de devolver; se a conexao morreu o rollback tambem
         # falha -- engole so ESSE erro pra nao mascarar o original.

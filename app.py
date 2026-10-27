@@ -406,7 +406,53 @@ def init_db():
                 cur.execute(_sql_idx)
                 conn.commit()
             except Exception: conn.rollback()
-        
+
+        # Parâmetros de ativos (BASE 2, pedido 27/10/2026): schema SEPARADO das tabelas do
+        # apontamento. ativos_habilitados = quais ativos mostram os campos (lista da BASE 2,
+        # substituível na tela Dados); medicoes = uma linha por ativo medido, independente de
+        # OS (os_referencia é só rastreio). uid vem do cliente (uuid do online / uid da fila
+        # PWA) e torna o reenvio do offline idempotente. Tensão/corrente NUMERIC (exibidas com
+        # vírgula), bitola/FLP INTEGER (mm sem ponto nem vírgula). Commit próprio: falha aqui
+        # não pode desfazer o resto do init_db.
+        try:
+            cur.execute("CREATE SCHEMA IF NOT EXISTS parametros;")
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS parametros.ativos_habilitados (
+                    ativo VARCHAR(255) PRIMARY KEY, departamento VARCHAR(50),
+                    atualizado_por VARCHAR(255), atualizado_em TIMESTAMP DEFAULT NOW()
+                );
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS parametros.medicoes (
+                    id SERIAL PRIMARY KEY, uid VARCHAR(64) UNIQUE NOT NULL,
+                    data_hora TIMESTAMP NOT NULL, equipe TEXT, ativo VARCHAR(255) NOT NULL,
+                    coordenacao VARCHAR(100), os_referencia VARCHAR(500),
+                    tensao_entrada_v NUMERIC(7,2), tensao_saida_v NUMERIC(7,2),
+                    corrente_op_normal_a NUMERIC(7,2), corrente_op_reverso_a NUMERIC(7,2),
+                    corrente_desl_normal_a NUMERIC(7,2), corrente_desl_reverso_a NUMERIC(7,2),
+                    bitola_larga_mm INTEGER, bitola_metrica_mm INTEGER,
+                    flp_esquerda_mm INTEGER, flp_direita_mm INTEGER, flp_metrica_mm INTEGER,
+                    registrado_por VARCHAR(255), origem VARCHAR(20), criado_em TIMESTAMP DEFAULT NOW()
+                );
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_param_medicoes_data_hora ON parametros.medicoes (data_hora);")
+            # Semente: lista da BASE 2 versionada no repo, só quando a tabela está vazia
+            # (nunca sobrescreve uma lista já carregada pela tela Dados).
+            cur.execute("SELECT COUNT(*) FROM parametros.ativos_habilitados")
+            if cur.fetchone()[0] == 0:
+                _csv_semente = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parametros_ativos_base2.csv")
+                if os.path.exists(_csv_semente):
+                    _df_semente = pd.read_csv(_csv_semente, sep=";", dtype=str).fillna("")
+                    execute_values(
+                        cur,
+                        "INSERT INTO parametros.ativos_habilitados (ativo, departamento, atualizado_por) VALUES %s ON CONFLICT (ativo) DO NOTHING",
+                        [(a.strip(), d.strip(), "semente BASE 2") for a, d in zip(_df_semente["ativo"], _df_semente["departamento"]) if a.strip()],
+                    )
+            conn.commit()
+        except Exception as e_param:
+            conn.rollback()
+            print(f"[init_db] Falha ao preparar schema parametros: {e_param}")
+
         # Criar o admin mestre se não existir
         cur.execute("SELECT COUNT(*) FROM usuarios")
         if cur.fetchone()[0] == 0:
@@ -1053,6 +1099,139 @@ def carregar_baixas_df() -> pd.DataFrame:
     # geolocalizacao_baixa, foto_evidencia), mas lendo do cache incremental (região 3.2.1).
     return obter_baixas_df(normalizado=True)
 #endregion 3.2.1
+
+#region 3.2.2: Parâmetros de Ativos (BASE 2 -- schema "parametros", pedido 27/10/2026)
+# Ordem e rótulos = colunas do modelo_parametros.xlsx (aba "Exemplo de extração"), depois de
+# Data - Hora / Equipe / Ativo. tipo "dec": tensão (V) e corrente (A), vírgula como separador
+# decimal, até 2 casas; tipo "int": bitola e FLP (mm), só dígitos -- "1.600" ou "1600,0" são
+# recusados (ambíguos). Lista espelhada em api.py (PARAMETROS_CAMPOS) sem import cruzado,
+# mesmo padrão de _JUSTIFICATIVAS_NRAV / CODIGOS_NRAV_VALIDOS.
+PARAMETROS_CAMPOS = [
+    ("tensao_entrada_v", "Tensão de entrada (V)", "dec"),
+    ("tensao_saida_v", "Tensão de saída (V)", "dec"),
+    ("corrente_op_normal_a", "Corrente de operação para normal (A)", "dec"),
+    ("corrente_op_reverso_a", "Corrente de operação para reverso (A)", "dec"),
+    ("corrente_desl_normal_a", "Corrente de deslizamento para normal (A)", "dec"),
+    ("corrente_desl_reverso_a", "Corrente de deslizamento para reverso (A)", "dec"),
+    ("bitola_larga_mm", "Bitola larga (mm)", "int"),
+    ("bitola_metrica_mm", "Bitola métrica (mm)", "int"),
+    ("flp_esquerda_mm", "FLP esquerda (mm)", "int"),
+    ("flp_direita_mm", "FLP direita (mm)", "int"),
+    ("flp_metrica_mm", "FLP métrica (mm)", "int"),
+]
+_RE_PARAM_DEC = re.compile(r"^\d{1,5}([.,]\d{1,2})?$")
+_RE_PARAM_INT = re.compile(r"^\d{1,5}$")
+
+def normalizar_ativo_parametro(ativo) -> str:
+    return " ".join(str(ativo or "").split()).upper()
+
+def interpretar_parametro(texto, tipo: str):
+    """Texto digitado -> (valor, erro). Vazio = (None, None): todos os campos são opcionais.
+    Ponto é aceito na corrente/tensão (teclado numérico de alguns Android não tem vírgula),
+    mas a exibição e o Excel saem sempre com vírgula."""
+    t = str(texto or "").strip().replace(" ", "")
+    if not t:
+        return None, None
+    if tipo == "int":
+        if not _RE_PARAM_INT.match(t):
+            return None, "em mm use só números inteiros, sem ponto nem vírgula (ex.: 1600)"
+        return int(t), None
+    if not _RE_PARAM_DEC.match(t):
+        return None, "use número com vírgula decimal, até 2 casas (ex.: 3,2)"
+    return float(t.replace(",", ".")), None
+
+def formatar_parametro_br(valor, tipo: str) -> str:
+    if valor is None or (isinstance(valor, float) and math.isnan(valor)):
+        return ""
+    if tipo == "int":
+        return str(int(valor))
+    return f"{float(valor):.2f}".replace(".", ",")
+
+@st.cache_data(ttl=600, show_spinner=False)
+def carregar_ativos_parametros() -> frozenset:
+    """Ativos da BASE 2 (normalizados). Falha de banco = conjunto vazio: o apontamento
+    segue normal, só sem os campos opcionais."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT ativo FROM parametros.ativos_habilitados")
+        ativos = frozenset(normalizar_ativo_parametro(r[0]) for r in cur.fetchall() if r[0])
+        cur.close()
+        return ativos
+    except Exception as e:
+        print(f"[PARAMETROS] Falha ao carregar ativos habilitados: {e}")
+        return frozenset()
+    finally:
+        if conn is not None: release_connection(conn)
+
+def inserir_medicao_parametros(uid: str, data_hora: datetime, equipe: str, ativo: str, coordenacao: str,
+                               os_referencia: str, valores: dict, registrado_por: str, origem: str):
+    colunas = [c for c, _, _ in PARAMETROS_CAMPOS]
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            INSERT INTO parametros.medicoes (uid, data_hora, equipe, ativo, coordenacao, os_referencia,
+                {", ".join(colunas)}, registrado_por, origem)
+            VALUES (%s, %s, %s, %s, %s, %s, {", ".join(["%s"] * len(colunas))}, %s, %s)
+            ON CONFLICT (uid) DO NOTHING;
+            """,
+            (str(uid), data_hora, str(equipe), str(ativo), str(coordenacao), str(os_referencia),
+             *[valores.get(c) for c in colunas], str(registrado_por), str(origem)),
+        )
+        conn.commit()
+        cur.close()
+    finally: release_connection(conn)
+
+def gerar_excel_parametros_bytes(df_med: pd.DataFrame) -> bytes:
+    """Excel no layout do modelo_parametros.xlsx: cabeçalho verde/branco, Data - Hora
+    d/m/aa hh:mm, tensão/corrente "0.00" (o Excel pt-BR exibe com vírgula) e mm "0" (sem
+    separador de milhar -- 1600, nunca 1.600). Número da OS logo após Data - Hora (pedido
+    27/10/2026, coluna "OS", não existe no modelo): número inteiro; texto quando a medição online cobriu
+    mais de uma OS do mesmo ativo ("23568082, 23568083")."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Parâmetros"
+    cabecalho = ["Data - Hora", "OS", "Equipe", "Ativo"] + [rot for _, rot, _ in PARAMETROS_CAMPOS]
+    ws.append(cabecalho)
+    for cel in ws[1]:
+        cel.font = Font(bold=True, color="FFFFFFFF")
+        cel.fill = PatternFill("solid", fgColor="FF174A67")
+        cel.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.row_dimensions[1].height = 45
+
+    for _, r in df_med.iterrows():
+        os_txt = str(r.get("os_referencia") or "").strip()
+        linha = [pd.to_datetime(r["data_hora"]).to_pydatetime(), int(os_txt) if os_txt.isdigit() else (os_txt or None),
+                 r["equipe"], r["ativo"]]
+        for col, _, tipo in PARAMETROS_CAMPOS:
+            v = r.get(col)
+            if v is None or pd.isna(v):
+                linha.append(None)
+            else:
+                linha.append(int(v) if tipo == "int" else float(v))
+        ws.append(linha)
+
+    for row in ws.iter_rows(min_row=2):
+        row[0].number_format = "d/m/yy\\ hh:mm;@"
+        row[1].number_format = "0"
+        for cel, (_, _, tipo) in zip(row[4:], PARAMETROS_CAMPOS):
+            cel.number_format = "0" if tipo == "int" else "0.00"
+
+    larguras = [17, 14, 30, 43] + [18] * len(PARAMETROS_CAMPOS)
+    for i, w in enumerate(larguras, start=1):
+        ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = w
+    ws.freeze_panes = "E2"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+#endregion 3.2.2
 #endregion
 
 #region 3.3: Storage Cloudflare R2 (Evidências Fotográficas com Compressão)
@@ -2110,6 +2289,167 @@ def render_tela_admin():
         if st.session_state.get("sap_massa_bytes"):
             st.download_button("⬇️ Baixar Arquivo SAP", data=st.session_state["sap_massa_bytes"], file_name=st.session_state["sap_massa_nome"], mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     #endregion 3.8.4
+
+#region 3.8.4b: Parâmetros de Ativos (BASE 2) -- exportação e lista de ativos
+    # Base à parte (schema "parametros", pedido 27/10/2026). Exportação com permissão própria
+    # "Exportar Parâmetros"; troca da lista de ativos fica com quem tem "Upload de Dados".
+    # Fica ANTES da 3.8.5, que dá return para quem não tem permissão de IW47.
+    if "Exportar Parâmetros" in st.session_state.get("governanca", ""):
+        st.markdown("---"); st.subheader("📐 Exportação de Parâmetros de Ativos")
+        st.caption(
+            "Medições opcionais registradas no apontamento dos ativos da BASE 2, no layout do "
+            "modelo_parametros.xlsx. Tensão/corrente com vírgula decimal; bitola e FLP em mm inteiros."
+        )
+        col_prm_1, col_prm_2 = st.columns(2)
+        with col_prm_1:
+            prm_data_ini = st.date_input(
+                "Data da Medição — Início", value=agora_dt().date() - timedelta(days=30),
+                key="prm_export_data_ini", format="DD/MM/YYYY"
+            )
+        with col_prm_2:
+            prm_data_fim = st.date_input(
+                "Data da Medição — Fim", value=agora_dt().date(),
+                key="prm_export_data_fim", format="DD/MM/YYYY"
+            )
+
+        if st.button("📦 Preparar Base de Parâmetros", type="primary", key="btn_prm_export"):
+            if prm_data_ini > prm_data_fim:
+                st.error("⛔ A data de início não pode ser depois da data de fim.")
+            else:
+                colunas_prm = ", ".join(c for c, _, _ in PARAMETROS_CAMPOS)
+                sql_prm = (
+                    f"SELECT data_hora, os_referencia, equipe, ativo, {colunas_prm} FROM parametros.medicoes "
+                    "WHERE data_hora >= %s AND data_hora < %s"
+                )
+                args_prm = [
+                    datetime.combine(prm_data_ini, datetime.min.time()),
+                    datetime.combine(prm_data_fim + timedelta(days=1), datetime.min.time()),
+                ]
+                # Mesmo recorte de escopo da base de OS (carregar_base_sem_overlay): quem não é
+                # "Todas" só exporta a própria coordenação.
+                escopo_prm = str(st.session_state.get("escopo", "Todas")).strip()
+                if escopo_prm != "Todas":
+                    sql_prm += " AND UPPER(TRIM(coordenacao)) = UPPER(%s)"
+                    args_prm.append(escopo_prm)
+                sql_prm += " ORDER BY data_hora, ativo"
+                conn = get_connection()
+                try:
+                    df_prm = pd.read_sql_query(sql_prm, conn, params=args_prm)
+                    df_nomes = pd.read_sql_query("SELECT username, nome FROM usuarios", conn)
+                finally:
+                    release_connection(conn)
+
+                if df_prm.empty:
+                    st.session_state.pop("prm_export_bytes", None)
+                    st.info("⚠️ Nenhuma medição de parâmetros no período selecionado.")
+                else:
+                    # Equipe gravada por matrícula ("; "); no Excel sai o nome (padrão do modelo).
+                    mapa_nomes = {
+                        str(u).strip(): (str(n).strip() if n and str(n).strip() else str(u).strip())
+                        for u, n in zip(df_nomes["username"], df_nomes["nome"])
+                    }
+                    df_prm["equipe"] = df_prm["equipe"].fillna("").apply(
+                        lambda e: "; ".join(mapa_nomes.get(m.strip(), m.strip()) for m in str(e).split(";") if m.strip())
+                    )
+                    st.session_state["prm_export_bytes"] = gerar_excel_parametros_bytes(df_prm)
+                    st.session_state["prm_export_nome"] = (
+                        f"Parametros_Ativos_{prm_data_ini.strftime('%Y%m%d')}_a_{prm_data_fim.strftime('%Y%m%d')}.xlsx"
+                    )
+                    st.success(f"✅ Base preparada ({len(df_prm)} medição(ões)).")
+
+        if st.session_state.get("prm_export_bytes"):
+            st.download_button(
+                "⬇️ Baixar Base de Parâmetros", data=st.session_state["prm_export_bytes"],
+                file_name=st.session_state["prm_export_nome"], key="btn_prm_download",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+    if tem_upload_dados:
+        st.markdown("---"); st.subheader("📐 Ativos com Parâmetros (BASE 2)")
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*), MAX(atualizado_em) FROM parametros.ativos_habilitados")
+            _qtd_hab, _dt_hab = cur.fetchone()
+            cur.close()
+        except Exception:
+            _qtd_hab, _dt_hab = 0, None
+        finally:
+            release_connection(conn)
+        st.caption(
+            f"{_qtd_hab} ativo(s) habilitado(s)"
+            + (f" — atualizado em {pd.to_datetime(_dt_hab).strftime('%d/%m/%Y %H:%M')}" if _dt_hab else "")
+            + ". Envie uma nova BASE 2 (todas as abas, coluna **Ativo**) para SUBSTITUIR a lista."
+        )
+        with st.expander("📖 Padrão da planilha BASE 2 (colunas exigidas + exemplo)", expanded=False):
+            st.markdown("""
+            **Colunas lidas** (a ordem não importa; o sistema procura pelo **nome do cabeçalho**):
+            * `Ativo` — **obrigatória**. Nome do ativo **exatamente como vem na OS do SAP**
+              (maiúsculas/minúsculas e espaços extras não importam; já `IAA A-ABR05-MCH1A` e
+              `IAA A-ABR 05 - MCH 1A` são ativos **diferentes**).
+            * `Codigo departamento` — opcional, só para registro (ex.: E.SP.IPG).
+            * Demais colunas (Atividade Ativo, Data inicial programada, Status...) podem ficar na
+              planilha — são ignoradas.
+
+            **Regras:**
+            * Todas as abas são lidas (ex.: uma aba por coordenação — IPG, IPA). Aba sem a
+              coluna `Ativo` é ignorada.
+            * Ativo repetido (várias OS do mesmo ativo) conta uma vez só.
+            * ⚠️ O envio **SUBSTITUI a lista inteira**: a planilha deve conter **todos** os
+              ativos que devem coletar parâmetros, não só os novos.
+            * A lista nova vale na hora para o apontamento online e para os pacotes offline
+              **publicados depois** do envio.
+
+            **Exemplo de linha preenchida:**
+            """)
+            st.dataframe(
+                pd.DataFrame([{
+                    "Atividade Ativo": "EE_INS_CONF_C_I_MAQ CHAVE M2/M3_0180",
+                    "Codigo departamento": "E.SP.IPG",
+                    "Data inicial programada": "06/10/2026",
+                    "Status": "ABER",
+                    "Status da Operação": "Liberado",
+                    "Ativo": "IPG 40N N1",
+                }]),
+                hide_index=True, use_container_width=True,
+            )
+            st.caption("Só a coluna **Ativo** é obrigatória — as outras do exemplo são as que já vêm na BASE 2 e podem ser mantidas.")
+        arq_base2 = st.file_uploader("Planilha BASE 2", type=["xlsx"], key="upload_base2_parametros")
+        if arq_base2 is not None and st.button("🔄 Substituir lista de ativos", key="btn_base2_parametros"):
+            try:
+                abas_b2 = pd.read_excel(arq_base2, sheet_name=None, dtype=str, engine="openpyxl")
+                ativos_b2 = {}
+                for _aba, _df_b2 in abas_b2.items():
+                    _cols_b2 = {str(c).strip().upper(): c for c in _df_b2.columns}
+                    if "ATIVO" not in _cols_b2:
+                        continue
+                    _col_dep = _cols_b2.get("CODIGO DEPARTAMENTO") or _cols_b2.get("CÓDIGO DEPARTAMENTO")
+                    for _i_b2, _a_b2 in _df_b2[_cols_b2["ATIVO"]].items():
+                        _a_b2 = " ".join(str(_a_b2 or "").split())
+                        if _a_b2 and _a_b2.lower() != "nan":
+                            _dep = str(_df_b2.at[_i_b2, _col_dep]).strip() if _col_dep else ""
+                            ativos_b2.setdefault(_a_b2, "" if _dep.lower() == "nan" else _dep)
+                if not ativos_b2:
+                    st.error("⛔ Nenhuma aba com a coluna 'Ativo' preenchida foi encontrada.")
+                else:
+                    conn = get_connection()
+                    try:
+                        cur = conn.cursor()
+                        cur.execute("DELETE FROM parametros.ativos_habilitados")
+                        execute_values(
+                            cur,
+                            "INSERT INTO parametros.ativos_habilitados (ativo, departamento, atualizado_por) VALUES %s",
+                            [(a, d, st.session_state.get("username", "")) for a, d in ativos_b2.items()],
+                        )
+                        conn.commit()
+                        cur.close()
+                    finally:
+                        release_connection(conn)
+                    carregar_ativos_parametros.clear()
+                    st.success(f"✅ Lista substituída: {len(ativos_b2)} ativo(s). Pacotes offline novos já usam a lista nova.")
+            except Exception as e_b2:
+                st.error(f"❌ Falha ao processar a BASE 2: {e_b2}")
+#endregion 3.8.4b
 
 #region 3.8.5: Importação de Baixas em Massa (IW47)
     if not tem_iw47_gov:
@@ -3341,7 +3681,7 @@ def render_tela_gestao_usuarios():
         # "Baixa Manual NAPL" adicionada em 24/08/2026 -- por enquanto so tem efeito
         # real pro username "admin" (trava extra em tem_napl_gov, regiao 3.8.6),
         # mesmo que outro usuario tambem marque essa opcao aqui.
-        opcoes_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Importação IW47", "Mapeamento de Ativos", "Gestão de Usuários", "Exportar SAP", "Governança", "Configurações Operacionais", "Baixa Manual NAPL"]
+        opcoes_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Importação IW47", "Mapeamento de Ativos", "Gestão de Usuários", "Exportar SAP", "Exportar Parâmetros", "Governança", "Configurações Operacionais", "Baixa Manual NAPL"]
 
         #region 8.2.1: Criar Novo Usuário (Formulário)
         with st.form("form_novo_user", clear_on_submit=True):
@@ -3355,13 +3695,13 @@ def render_tela_gestao_usuarios():
             st.markdown("**Governança (O que o usuário pode ver/fazer?)**")
 
             if n_perf == "Técnico": def_gov = ["Mapa de Campo"]
-            elif n_perf == "Assistente": def_gov = ["Painel Gerencial", "Upload de Dados", "Exportar SAP"]
-            elif n_perf == "Coordenador": def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Exportar SAP", "Governança"]
+            elif n_perf == "Assistente": def_gov = ["Painel Gerencial", "Upload de Dados", "Exportar SAP", "Exportar Parâmetros"]
+            elif n_perf == "Coordenador": def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Exportar SAP", "Exportar Parâmetros", "Governança"]
             # Especialista: visão híbrida -- execução de campo (Técnico) + visão do
             # Coordenador, EXCETO Governança/Auditoria (restrita a Gestores, pedido 26/07/2026).
-            elif n_perf == "Especialista": def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Exportar SAP"]
+            elif n_perf == "Especialista": def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Exportar SAP", "Exportar Parâmetros"]
             elif n_perf == "Administrador": def_gov = ["Configurações Operacionais"]
-            else: def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Gestão de Usuários", "Exportar SAP", "Governança"]
+            else: def_gov = ["Painel Gerencial", "Mapa de Campo", "Upload de Dados", "Gestão de Usuários", "Exportar SAP", "Exportar Parâmetros", "Governança"]
 
             n_gov = st.multiselect("Permissões de Acesso:", opcoes_gov, default=def_gov, key="novo_user_gov")
 
@@ -3624,6 +3964,19 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     # EXTERNO (sem E001/E008, que sao "Nao se Aplica" pelo IT-ENG-3113).
     justificativas_nrav_json = json.dumps(_JUSTIFICATIVAS_NRAV, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
 
+    # Parâmetros (BASE 2, pedido 27/10/2026): só os ativos habilitados QUE ESTÃO no pacote
+    # (normalizados), para o card saber se mostra os campos. Snapshot da publicação, igual
+    # à trava de prioridade -- lista nova na tela Dados vale para pacotes republicados.
+    _habilitados_param = carregar_ativos_parametros()
+    ativos_param_pacote = sorted({
+        normalizar_ativo_parametro(a) for a in df_export["Ativo"].astype(str)
+        if normalizar_ativo_parametro(a) in _habilitados_param
+    })
+    ativos_param_json = json.dumps(ativos_param_pacote, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
+    parametros_campos_json = json.dumps(
+        [{"campo": c, "rotulo": r, "tipo": t} for c, r, t in PARAMETROS_CAMPOS], ensure_ascii=False
+    ).replace("<", "\\u003c").replace(">", "\\u003e")
+
     html_head = f"""<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -3699,6 +4052,10 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         body.modo-nrav .field-horario-unico-toggle {{ display: none !important; }}
         body.modo-nrav .os-time-individual {{ display: none !important; }}
         body:not(.modo-nrav) .os-nrav-fields {{ display: none !important; }}
+        body.modo-nrav .param-box, body.modo-nrav .param-nota {{ display: none !important; }}
+        .param-box {{ margin: 10px 0; padding: 10px 12px; border: 1px dashed #94A3B8; border-radius: 10px; background: #F8FAFC; }}
+        .param-box summary {{ font-weight: 700; color: #1E3A8A; cursor: pointer; }}
+        .param-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; margin-top: 10px; }}
         .os-meta {{ font-size: 13px; color: #475569; margin: 4px 0; }}
         .desc-box {{ padding: 10px; background: #F8FAFC; border-radius: 10px; border: 1px solid #E2E8F0; font-size: 13px; color: #334155; }}
         .small {{ font-size: 12px; color: #64748B; }}
@@ -3873,6 +4230,10 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
     const API_KEY_FIXA = {json.dumps(api_key_fixa, ensure_ascii=False)};
     const TRAVA_PRIORIDADE_ATIVA = {json.dumps(trava_prioridade_ativa_pacote)};
     const JUSTIFICATIVAS_NRAV = {justificativas_nrav_json};
+    // Parametros do ativo (BASE 2): ATIVOS_PARAMETROS ja vem normalizado (espacos colapsados,
+    // maiusculo) -- mesma regra de normAtivoParam() abaixo.
+    const ATIVOS_PARAMETROS = new Set({ativos_param_json});
+    const PARAMETROS_CAMPOS = {parametros_campos_json};
 
     const DB_NAME = "sgo_mrs_offline_prod";
     const STORE_NAME = "fila";            // v3 (05/09/2026): keyPath "uid" (id sintetico unico) -- ver abrirDB()
@@ -3939,6 +4300,36 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         if (bNrav) bNrav.className = "btn " + (modo === "NRAV" ? "btn-primary" : "btn-secondary");
         const btnSalvar = document.getElementById("btnSalvarLote");
         if (btnSalvar) btnSalvar.textContent = modo === "NRAV" ? "🔍 Gravar NRAV(s)" : "💾 Gravar OS(s) Preenchida(s)";
+    }}
+
+    // Mesmas regras de interpretar_parametro() (app.py, região 3.2.2) e de api.py -- o
+    // servidor valida de novo. Devolve {{ valor, erro }}; vazio = {{ valor: null }} (opcional).
+    function normAtivoParam(s) {{
+        return String(s || "").trim().split(/\\s+/).join(" ").toUpperCase();
+    }}
+    function interpretarParametro(texto, tipo) {{
+        const t = String(texto || "").replace(/\\s+/g, "");
+        if (!t) return {{ valor: null, erro: null }};
+        if (tipo === "int") {{
+            if (!/^\\d{{1,5}}$/.test(t)) return {{ valor: null, erro: "em mm use só números inteiros, sem ponto nem vírgula (ex.: 1600)" }};
+            return {{ valor: t, erro: null }};
+        }}
+        if (!/^\\d{{1,5}}([.,]\\d{{1,2}})?$/.test(t)) return {{ valor: null, erro: "use número com vírgula decimal, até 2 casas (ex.: 3,2)" }};
+        return {{ valor: t.replace(".", ","), erro: null }};
+    }}
+    // Le os campos do card i. Retorna {{ valores, erros }}; valores = null se nada preenchido.
+    function lerParametrosCard(i) {{
+        const valores = {{}};
+        const erros = [];
+        let algum = false;
+        for (const p of PARAMETROS_CAMPOS) {{
+            const el = document.getElementById(`prm_${{p.campo}}_${{i}}`);
+            if (!el) continue;
+            const r = interpretarParametro(el.value, p.tipo);
+            if (r.erro) erros.push(`${{p.rotulo}}: ${{r.erro}}`);
+            else if (r.valor !== null) {{ valores[p.campo] = r.valor; algum = true; }}
+        }}
+        return {{ valores: algum ? valores : null, erros }};
     }}
 
     function gerarUid() {{
@@ -4210,6 +4601,25 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             .map(([cod, desc]) => `<option value="${{cod}}">${{cod}} - ${{desc}}</option>`)
             .join("");
 
+        // Parametros por ATIVO, igual ao online: o formulario aparece so no primeiro card
+        // (desbloqueado, se houver) de cada ativo habilitado; os outros cards do mesmo ativo
+        // apontam para ele. A medicao vai uma vez, ligada a todas as OS do ativo no lote.
+        const cardParamDoAtivo = new Map();  // ativo normalizado -> {{ idx, osId, travado, oss }}
+        listaBase.forEach((item) => {{
+            const k = normAtivoParam(item.Ativo);
+            if (!ATIVOS_PARAMETROS.has(k)) return;
+            const isCrit = String(item.Criticidade || "").trim().toUpperCase() === "MUITO ALTA";
+            const grp = String(item.Ativo || "").trim().toUpperCase() + " | " + String(item.Tipo_Intervalo || "N/D").trim().toUpperCase();
+            const trav = !isCrit && gruposBloq.has(grp) && TRAVA_PRIORIDADE_ATIVA;
+            const osIt = String(item["Ordem servico"] || "").trim();
+            const atual = cardParamDoAtivo.get(k);
+            if (!atual) cardParamDoAtivo.set(k, {{ idx: item._origIdx, osId: osIt, travado: trav, oss: [osIt] }});
+            else {{
+                atual.oss.push(osIt);
+                if (atual.travado && !trav) {{ atual.idx = item._origIdx; atual.osId = osIt; atual.travado = false; }}
+            }}
+        }});
+
         listaBase.forEach((item) => {{
             const idx = item._origIdx;
             const osId = String(item["Ordem servico"] || "").trim();
@@ -4226,6 +4636,9 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             // Selo NRAV (pedido 29/07/2026): identifica visualmente que essa OS já foi
             // vistoriada e está no Backlog por impedimento externo.
             const ehNrav = String(item.Status_norm || "").trim().toUpperCase() === "ABER NRAV";
+            const cardParam = cardParamDoAtivo.get(normAtivoParam(ativo));
+            const temParam = !!cardParam && cardParam.idx === idx;
+            const notaParam = !!cardParam && cardParam.idx !== idx;
 
             const wrapper = document.createElement("div");
             wrapper.className = "os-item" + (locked ? " locked" : "");
@@ -4274,6 +4687,17 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                         <input id="obs_${{idx}}" type="text" maxlength="40" ${{locked ? "disabled" : ""}}>
                     </div>
                 </div>
+
+                ${{temParam ? `<details class="param-box">
+                    <summary>📐 Parâmetros do Ativo (opcional)${{cardParam.oss.length > 1 ? ` — vale para as OS ${{cardParam.oss.join(", ")}}` : ""}}</summary>
+                    <div class="small">Tensão e corrente com vírgula (ex.: 3,2). Bitola e FLP em mm, só números (ex.: 1600).</div>
+                    <div class="param-grid">${{PARAMETROS_CAMPOS.map((p) => `
+                        <div class="field">
+                            <label for="prm_${{p.campo}}_${{idx}}">${{p.rotulo}}</label>
+                            <input id="prm_${{p.campo}}_${{idx}}" type="text" inputmode="${{p.tipo === "int" ? "numeric" : "decimal"}}" placeholder="${{p.tipo === "int" ? "Ex.: 1600" : "Ex.: 3,2"}}" ${{locked ? "disabled" : ""}}>
+                        </div>`).join("")}}</div>
+                </details>` : ""}}
+                ${{notaParam ? `<div class="small param-nota" style="margin: 8px 0;">📐 Parâmetros deste ativo: informe uma vez só, no card da OS ${{cardParam.osId}}.</div>` : ""}}
 
                 <div class="field">
                     <label for="foto_${{idx}}">📷 Evidência Fotográfica</label>
@@ -4432,6 +4856,19 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         const indicesParaLimpar = [];
         let horariosSemFoto = 0;
 
+        // Parametros do ativo (opcionais), um formulario por ativo (ver renderListaOS). Valor
+        // mal digitado trava a gravacao inteira -- o tecnico corrige e grava de novo.
+        const paramPorAtivo = new Map();  // ativo normalizado -> {{ valores, idxCard, ativo }}
+        for (let i = 0; i < OS_DATA.length; i += 1) {{
+            if (!document.getElementById(`card_os_${{i}}`)) continue;
+            const prm = lerParametrosCard(i);
+            if (prm.erros.length) {{
+                alert(`Ativo ${{OS_DATA[i]["Ativo"]}} — parâmetro inválido:\\n` + prm.erros.join("\\n"));
+                return;
+            }}
+            if (prm.valores) paramPorAtivo.set(normAtivoParam(OS_DATA[i]["Ativo"]), {{ valores: prm.valores, idxCard: i, ativo: String(OS_DATA[i]["Ativo"] || "").trim() }});
+        }}
+
         for (let i = 0; i < OS_DATA.length; i += 1) {{
             // So considera cards efetivamente renderizados (dentro do filtro atual). No modo
             // horario unico os campos de horario ficam sempre preenchidos; sem este guard,
@@ -4515,6 +4952,8 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                 lat_browser: gpsAtual.lat,
                 lon_browser: gpsAtual.lon,
                 criticidade: String(osItem["Criticidade"] || "").trim(),
+                parametros: null,       // preenchido abaixo, so no 1o item de cada ativo
+                parametros_os: "",
                 status_sync: "pendente",
                 foto_blob: fotoTratada,
                 foto_nome: fotoTratada && fotoTratada.name ? fotoTratada.name : "evidencia.jpg",
@@ -4533,6 +4972,19 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
             return;
         }}
 
+        // Medicao vai no PRIMEIRO item do ativo neste lote, com todas as OS do ativo gravadas
+        // juntas (parametros_os) -- uma medicao so, como no online.
+        const ativosSemOs = [];
+        paramPorAtivo.forEach((p, chave) => {{
+            const doAtivo = selecionadas.filter((it) => normAtivoParam(it.ativo_id) === chave);
+            if (!doAtivo.length) {{ ativosSemOs.push(p.ativo); return; }}
+            doAtivo[0].parametros = p.valores;
+            doAtivo[0].parametros_os = doAtivo.map((it) => it.os_id).join(", ");
+        }});
+        if (ativosSemOs.length && !confirm(
+            `Os parâmetros de ${{ativosSemOs.join(", ")}} NÃO serão gravados: nenhuma OS desse ativo está preenchida (horário + foto). Gravar as demais OS mesmo assim?`
+        )) return;
+
         await Promise.all(
             selecionadas.map((item) => new Promise((resolve, reject) => {{
                 const req = txStore("readwrite").put(item);
@@ -4542,6 +4994,16 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
         );
 
         selecionadas.forEach((it) => osGravadasSet.add(String(it.os_id).trim()));
+
+        // Limpa o formulario dos ativos cuja medicao ja foi para a fila (se o card do
+        // formulario continuar na tela, um novo "Gravar" nao manda a mesma medicao de novo).
+        paramPorAtivo.forEach((p) => {{
+            if (ativosSemOs.includes(p.ativo)) return;
+            PARAMETROS_CAMPOS.forEach((c) => {{
+                const el = document.getElementById(`prm_${{c.campo}}_${{p.idxCard}}`);
+                if (el) el.value = "";
+            }});
+        }});
 
         indicesParaLimpar.forEach((i) => {{
             const cardOS = document.getElementById(`card_os_${{i}}`);
@@ -4808,6 +5270,11 @@ def gerar_html_offline(df_pendentes: pd.DataFrame, usuario: str) -> bytes:
                     formData.append("texto_confirmacao", item.texto_confirmacao || "");
                     // Sempre enviado (pode ser ""): a API trata vazio como "nao informado".
                     formData.append("coordenacao", coordenacaoDaOS(item.os_id, item.coordenacao));
+                    // Parametros do ativo (BASE 2): uid do item = chave de idempotencia no
+                    // servidor (reenvio nao duplica a medicao). Vazio quando nao preenchido.
+                    formData.append("parametros_json", item.parametros ? JSON.stringify(item.parametros) : "");
+                    formData.append("parametros_uid", item.uid || "");
+                    formData.append("parametros_os_referencia", item.parametros_os || "");
                     formData.append("foto", item.foto_blob, item.foto_nome || "evidencia.jpg");
 
                     const resp = await fetch(apiUrl, {{
@@ -5688,7 +6155,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.sidebar.image("logo_mrs.png", use_container_width=True)
-st.sidebar.caption("SGO Eletroeletrônica • v21.4.0")
+st.sidebar.caption("SGO Eletroeletrônica • v21.5.0")
 st.sidebar.markdown(
     """
     <div style="margin-top:2px; margin-bottom:6px; line-height:1.35;">
@@ -5709,7 +6176,7 @@ tem_painel = "Painel Gerencial" in gov_usuario or "Mapa de Campo" in gov_usuario
 # -- antes só "Upload de Dados" abria, então usuário com só "Exportar SAP" (ex.:
 # Assistente sem Upload de Dados) ficava sem acesso à própria seção que tinha
 # (render_tela_admin já gate cada seção internamente por permissão).
-tem_dados = any(p in gov_usuario for p in ("Upload de Dados", "Importação IW47", "Mapeamento de Ativos", "Exportar SAP"))
+tem_dados = any(p in gov_usuario for p in ("Upload de Dados", "Importação IW47", "Mapeamento de Ativos", "Exportar SAP", "Exportar Parâmetros"))
 tem_gestao_usuarios = "Gestão de Usuários" in gov_usuario
 tem_governanca = "Governança" in gov_usuario
 tem_config_operacional = "Configurações Operacionais" in gov_usuario
@@ -8187,9 +8654,12 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
     if st.session_state.pop("_apontamento_retry_falhas", False):
         st.session_state["campo_os_selecionadas"] = st.session_state.pop("_apontamento_os_falhas", [])
     _falhas_anteriores = st.session_state.pop("_apontamento_falhas_relatorio", None)
+    _avisos_param = st.session_state.pop("_apontamento_param_avisos", None)
 
     st.markdown("---")
     st.markdown("#### ✅ Apontamento e Conclusão de OS")
+    for _aviso_p in _avisos_param or []:
+        st.warning("⚠️ " + _aviso_p)
     if _falhas_anteriores:
         st.error(f"⛔ {len(_falhas_anteriores)} OS NÃO foram gravadas (evidência falhou) — corrija a foto e reenvie:")
         for _os_falha, _motivo in _falhas_anteriores:
@@ -8417,6 +8887,36 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
                 if h_ini is None or h_fim is None:
                     todos_preenchidos = False
 
+        # Parâmetros (BASE 2, pedido 27/10/2026): um bloco por ATIVO habilitado entre as OS
+        # selecionadas -- não por OS, a medição independe do número de OS (duas OS do mesmo
+        # ativo = uma medição só). Todos opcionais; text_input (não number_input) para aceitar
+        # a vírgula decimal.
+        _ativos_param_habilitados = carregar_ativos_parametros()
+        ativos_param_os = {}  # ativo (como na OS) -> [os_id, ...]
+        for os_id_raw in os_selecionadas:
+            _os_p = str(os_id_raw).strip()
+            _lin_p = df_recomendado_ui.loc[df_recomendado_ui["Ordem servico"].astype(str).str.strip() == _os_p]
+            if _lin_p.empty:
+                continue
+            _ativo_p = str(_lin_p["Ativo"].iloc[0]).strip()
+            if normalizar_ativo_parametro(_ativo_p) in _ativos_param_habilitados:
+                ativos_param_os.setdefault(_ativo_p, []).append(_os_p)
+
+        parametros_digitados = {}  # ativo -> {campo: texto}
+        if ativos_param_os:
+            st.markdown("#### 📐 Parâmetros do Ativo (opcional)")
+            st.caption("Tensão e corrente com vírgula (ex.: 3,2). Bitola e FLP em mm, só números (ex.: 1600).")
+            for _ativo_p, _oss_p in ativos_param_os.items():
+                with st.expander(f"📐 {_ativo_p} — OS {', '.join(_oss_p)}", expanded=False):
+                    _cols_p = st.columns(3)
+                    parametros_digitados[_ativo_p] = {}
+                    for _i_p, (_campo, _rotulo, _tipo) in enumerate(PARAMETROS_CAMPOS):
+                        with _cols_p[_i_p % 3]:
+                            parametros_digitados[_ativo_p][_campo] = st.text_input(
+                                _rotulo, key=f"param_{_ativo_p}_{_campo}",
+                                placeholder="Ex.: 1600" if _tipo == "int" else "Ex.: 3,2",
+                            )
+
         st.markdown(
             """
             <style>
@@ -8532,6 +9032,25 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
                     st.error("⛔ " + _e)
                 return
 
+            # Parâmetros validados ANTES de qualquer upload: valor mal digitado trava o envio
+            # (o técnico corrige e reenvia) em vez de gravar a baixa e perder a medição.
+            parametros_validos = {}  # ativo -> {campo: valor} (só ativos com algum valor)
+            erros_param = []
+            for _ativo_p, _textos_p in parametros_digitados.items():
+                _vals_p = {}
+                for _campo, _rotulo, _tipo in PARAMETROS_CAMPOS:
+                    _v, _err = interpretar_parametro(_textos_p.get(_campo), _tipo)
+                    if _err:
+                        erros_param.append(f"{_ativo_p} — {_rotulo}: {_err}.")
+                    elif _v is not None:
+                        _vals_p[_campo] = _v
+                if _vals_p:
+                    parametros_validos[_ativo_p] = _vals_p
+            if erros_param:
+                for _e in erros_param:
+                    st.error("⛔ Parâmetro inválido: " + _e)
+                return
+
             # Evidência ANTES da baixa, por OS (pedido 24/07/2026, incidente da madrugada
             # de 22-23/07/2026: OS 23613736/37/38 foram gravadas em "baixas" com
             # foto_evidencia = null porque a baixa era gravada num laço separado, ANTES
@@ -8543,6 +9062,7 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
             # nenhuma OS boa é perdida por causa de uma ruim.
             fotos_enviadas = 0
             os_com_falha = []  # [(os_id, motivo), ...]
+            fim_por_os_ok = {}  # os_id -> (fim_dt, coordenação) das OS gravadas (para os parâmetros)
 
             total_selecionadas = len(os_selecionadas)
             barra_upload = st.progress(0, text=f"Enviando evidências e concluindo OS... 0/{total_selecionadas}")
@@ -8609,6 +9129,7 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
                         hora_fim=ap["fim"].strftime("%H:%M:%S")
                     )
                     fotos_enviadas += 1
+                    fim_por_os_ok[os_id] = (fim_dt, str(coord))
 
                 except Exception as e_foto:
                     os_com_falha.append((os_id, str(e_foto)))
@@ -8618,6 +9139,30 @@ def _render_apontamento(df_recomendado_ui: pd.DataFrame):
 
             if fotos_enviadas > 0:
                 st.info(f"📷 {fotos_enviadas} OS concluída(s) e evidência(s) registrada(s) com sucesso!")
+
+            # Parâmetros: só para ativo com pelo menos uma OS gravada (se todas as OS do ativo
+            # falharam, os campos ficam na tela e vão junto no reenvio). Falha aqui NÃO desfaz
+            # a baixa -- só avisa; o técnico pode reenviar a medição pela mesma tela.
+            import uuid
+            equipe_param = "; ".join([usr_logado] + list(equipe_selecionada))
+            for _ativo_p, _vals_p in parametros_validos.items():
+                _oss_ok = [o for o in ativos_param_os.get(_ativo_p, []) if o in fim_por_os_ok]
+                if not _oss_ok:
+                    continue
+                _fim_p, _coord_p = fim_por_os_ok[_oss_ok[0]]
+                try:
+                    inserir_medicao_parametros(
+                        uid=uuid.uuid4().hex, data_hora=_fim_p, equipe=equipe_param, ativo=_ativo_p,
+                        coordenacao=_coord_p, os_referencia=", ".join(_oss_ok), valores=_vals_p,
+                        registrado_por=usr_logado, origem="ONLINE",
+                    )
+                    for _campo, _, _ in PARAMETROS_CAMPOS:
+                        st.session_state.pop(f"param_{_ativo_p}_{_campo}", None)
+                except Exception as e_param:
+                    # session_state: o aviso precisa sobreviver ao st.rerun() logo abaixo.
+                    st.session_state.setdefault("_apontamento_param_avisos", []).append(
+                        f"Baixa gravada, mas os parâmetros do ativo {_ativo_p} não foram salvos ({e_param}). Reenvie a medição."
+                    )
 
             if os_com_falha:
                 # Persiste em session_state pro aviso e o retry (só das OS que falharam)
